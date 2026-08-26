@@ -372,13 +372,13 @@ func mascotFrames(_ status: String) -> (frames: [[String]], interval: Double, ti
         return ([f1, f2], 0.45, claudeOrange)
     case "gone":
         let f = [empty] + mascotBody(eyes: "closed", legs: "tuck")
-        return ([f], 1, claudeOrange.opacity(0.3))
+        return ([f], 1, claudeOrange.opacity(0.55))
     default: // idle — sleepy eyes, drifting z
         let z1 = "..............z."
         let z2 = ".............z.."
         let f1 = [z1] + mascotBody(eyes: "sleepy", legs: "a")
         let f2 = [z2] + mascotBody(eyes: "sleepy", legs: "a")
-        return ([f1, f2], 1.0, claudeOrange.opacity(0.55))
+        return ([f1, f2], 1.0, claudeOrange.opacity(0.85))
     }
 }
 
@@ -638,7 +638,7 @@ struct GroupHeaderRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 10)
             PixelGlyph(map: name == "__ungrouped__" ? soloMap : duoMap,
-                       color: name == "__ungrouped__" ? tint.opacity(0.55) : tint,
+                       color: name == "__ungrouped__" ? tint.opacity(0.8) : tint,
                        pixel: 1.5)
             Text(name == "__ungrouped__" ? "미배정" : name)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
