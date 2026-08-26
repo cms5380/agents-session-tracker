@@ -1391,12 +1391,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     // Global hotkeys via Carbon — no accessibility permission needed.
-    // Panel toggle default: ⌥` — override with:
+    // Panel toggle default: ⌥Space — override with:
     //   defaults write com.dean.claude-sessions hotkeyKeyCode -int <keycode>
     //   defaults write com.dean.claude-sessions hotkeyModifiers -int <carbon-modifier-mask>
     func registerHotkey() {
         let defaults = UserDefaults(suiteName: "com.dean.claude-sessions")
-        let keyCode = defaults?.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_ANSI_Grave
+        let keyCode = defaults?.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_Space
         let modifiers = defaults?.object(forKey: "hotkeyModifiers") as? Int ?? optionKey
 
         var eventType = EventTypeSpec(
