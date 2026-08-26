@@ -440,11 +440,10 @@ struct SessionRow: View {
     var animate: Bool = true
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
+    var onPeek: ((String, String?) -> Void)? = nil
     @State private var hovering = false
     @State private var peekText: String? = nil
-    @State private var showPeek = false
     @State private var peekWork: DispatchWorkItem? = nil
-    @State private var peekCloseWork: DispatchWorkItem? = nil
 
     var name: String {
         s.title ?? ((s.cwd ?? "?") as NSString).lastPathComponent
@@ -511,38 +510,25 @@ struct SessionRow: View {
             hovering = over
             peekWork?.cancel()
             if over {
-                // cancel any pending close (the popover appearing can retrigger
-                // a hover-exit, which used to dismiss it instantly)
-                peekCloseWork?.cancel()
-                if let cached = peekText, !cached.isEmpty {
-                    let work = DispatchWorkItem { if hovering { showPeek = true } }
-                    peekWork = work
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+                if let cached = peekText {
+                    if !cached.isEmpty { onPeek?(s.session_id, cached) }
                 } else {
                     let work = DispatchWorkItem {
                         let text = runCST(["peek", s.session_id], capture: true)
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         DispatchQueue.main.async {
                             peekText = text
-                            if !text.isEmpty, hovering { showPeek = true }
+                            if !text.isEmpty, hovering { onPeek?(s.session_id, text) }
                         }
                     }
                     peekWork = work
-                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.4, execute: work)
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.3, execute: work)
                 }
             } else {
-                let close = DispatchWorkItem { if !hovering { showPeek = false } }
-                peekCloseWork = close
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: close)
+                let work = DispatchWorkItem { if !hovering { onPeek?(s.session_id, nil) } }
+                peekWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
             }
-        }
-        .popover(isPresented: $showPeek, arrowEdge: .trailing) {
-            Text(peekText ?? "")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(12)
-                .frame(width: 300, alignment: .leading)
-                .padding(10)
         }
         .onTapGesture { model.jump(s) }
         .draggable(s.session_id)
@@ -675,6 +661,8 @@ struct PanelView: View {
     @State private var renameText = ""
     @State private var messagingSession: Session? = nil
     @State private var messageText = ""
+    @State private var peekPreview: String? = nil
+    @State private var peekSid: String? = nil
     @State private var dropTarget: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
@@ -978,6 +966,15 @@ struct PanelView: View {
                                                       onMessage: { sess in
                                                           messagingSession = sess
                                                           messageText = ""
+                                                      },
+                                                      onPeek: { sid, text in
+                                                          if let text {
+                                                              peekSid = sid
+                                                              peekPreview = text
+                                                          } else if peekSid == sid {
+                                                              peekPreview = nil
+                                                              peekSid = nil
+                                                          }
                                                       })
                                     .padding(.leading, indented ? 16 : 0)
                                     .id(r.id)
@@ -1011,6 +1008,21 @@ struct PanelView: View {
                 .onChange(of: scrollTarget) { t in
                     if let t { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) } }
                 }
+            }
+
+            if let p = peekPreview, !p.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    PixelGlyph(map: soloMap, color: claudeOrange.opacity(0.7), pixel: 1.3)
+                        .padding(.top, 2)
+                    Text(p)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(9)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
+                .padding(.horizontal, 12)
             }
 
             if let sess = messagingSession {
