@@ -3,14 +3,12 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.dean.claude-sessions-menubar</string>
+  <string>com.dean.claude-sessions</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/dean/.claude/session-tracker/claude-sessions-menubar</string>
+    <string>/Users/dean/.claude/session-tracker/ClaudeSessions.app/Contents/MacOS/ClaudeSessions</string>
   </array>
   <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
   <true/>
 </dict>
 </plist>

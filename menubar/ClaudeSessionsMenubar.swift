@@ -3,6 +3,7 @@
 import AppKit
 import Carbon.HIToolbox
 import SwiftUI
+import UserNotifications
 
 struct Session: Decodable, Identifiable, Equatable {
     let session_id: String
@@ -15,8 +16,20 @@ struct Session: Decodable, Identifiable, Equatable {
     let kind: String?
     let group: String?
     let pin_order: Int?
+    let group_color: String?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
+}
+
+func namedColor(_ name: String?) -> Color {
+    switch name {
+    case "blue": return Color(nsColor: .systemBlue)
+    case "green": return Color(nsColor: .systemGreen)
+    case "purple": return Color(nsColor: .systemPurple)
+    case "pink": return Color(nsColor: .systemPink)
+    case "gray": return Color(nsColor: .systemGray)
+    default: return Color(red: 0.85, green: 0.47, blue: 0.34)
+    }
 }
 
 let cstPath = ("~/.claude/session-tracker/cst" as NSString).expandingTildeInPath
@@ -58,6 +71,9 @@ final class Model: ObservableObject {
         }
     }
 
+    private var prevStatuses: [String: String] = [:]
+    private var firstLoad = true
+
     func refresh() {
         DispatchQueue.global(qos: .utility).async {
             let out = runCST(["sessions-json"], capture: true)
@@ -65,13 +81,72 @@ final class Model: ObservableObject {
             DispatchQueue.main.async {
                 if parsed != self.sessions { self.sessions = parsed }
                 appDelegate?.updateTitle(sessions: parsed)
+                // notify on transitions into states that need the user
+                if !self.firstLoad {
+                    for s in parsed {
+                        let old = self.prevStatuses[s.session_id]
+                        if old != s.status, ["waiting", "finished", "input"].contains(s.status) {
+                            appDelegate?.notify(session: s)
+                        }
+                    }
+                }
+                self.firstLoad = false
+                self.prevStatuses = Dictionary(uniqueKeysWithValues: parsed.map { ($0.session_id, $0.status) })
             }
+        }
+    }
+
+    @Published var archive: [Session] = []
+    private var archiveTask: DispatchWorkItem?
+
+    func searchArchive(_ query: String) {
+        archiveTask?.cancel()
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 2 else { archive = []; return }
+        let work = DispatchWorkItem { [weak self] in
+            let out = runCST(["archive-search", q], capture: true)
+            let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
+            DispatchQueue.main.async { self?.archive = parsed }
+        }
+        archiveTask = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    func sendMessage(_ sid: String, _ text: String) {
+        DispatchQueue.global().async { runCST(["send", sid, text]) }
+    }
+
+    func openAll(_ members: [Session]) {
+        DispatchQueue.global().async {
+            for s in members {
+                runCST(["jump", s.session_id])
+                usleep(900_000)
+            }
+        }
+    }
+
+    func setGroupColor(_ g: String, _ color: String) {
+        DispatchQueue.global().async {
+            runCST(["group-color", g, color])
+            self.refresh()
+        }
+    }
+
+    func pinInsert(_ sid: String, before: String) {
+        DispatchQueue.global().async {
+            runCST(["pin-insert", sid, before])
+            self.refresh()
         }
     }
 
     func jump(_ s: Session) {
         appDelegate?.hidePanel()
-        DispatchQueue.global().async { runCST(["jump", s.session_id]) }
+        if s.status == "archived" {
+            let cwd = s.cwd ?? NSHomeDirectory()
+            DispatchQueue.global().async { runCST(["resume-tab", s.session_id, cwd]) }
+        } else {
+            DispatchQueue.global().async { runCST(["jump", s.session_id]) }
+        }
     }
 
     func copyResume(_ s: Session) {
@@ -355,7 +430,11 @@ struct SessionRow: View {
     var hotkeyNumber: Int? = nil
     var animate: Bool = true
     var onRename: ((Session) -> Void)? = nil
+    var onMessage: ((Session) -> Void)? = nil
     @State private var hovering = false
+    @State private var peekText: String? = nil
+    @State private var showPeek = false
+    @State private var peekWork: DispatchWorkItem? = nil
 
     var name: String {
         s.title ?? ((s.cwd ?? "?") as NSString).lastPathComponent
@@ -407,13 +486,40 @@ struct SessionRow: View {
                     : hovering ? Color.primary.opacity(0.08) : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
-        .onHover { hovering = $0 }
+        .onHover { over in
+            hovering = over
+            peekWork?.cancel()
+            if over {
+                let work = DispatchWorkItem {
+                    let text = runCST(["peek", s.session_id], capture: true)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    DispatchQueue.main.async {
+                        if !text.isEmpty { peekText = text; showPeek = true }
+                    }
+                }
+                peekWork = work
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.45, execute: work)
+            } else {
+                showPeek = false
+            }
+        }
+        .popover(isPresented: $showPeek, arrowEdge: .trailing) {
+            Text(peekText ?? "")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(12)
+                .frame(width: 300, alignment: .leading)
+                .padding(10)
+        }
         .onTapGesture { model.jump(s) }
         .draggable(s.session_id)
         .contextMenu {
             Button("Jump") { model.jump(s) }
-            Button(s.pinned ? "Unpin" : "Pin to top") { model.togglePin(s.session_id) }
-            Button("Rename session") { onRename?(s) }
+            if s.status != "archived" {
+                Button(s.pinned ? "Unpin" : "Pin to top") { model.togglePin(s.session_id) }
+                Button("Send message…") { onMessage?(s) }
+                Button("Rename session") { onRename?(s) }
+            }
             Button("Copy resume command") { model.copyResume(s) }
             if s.group != nil {
                 Button("Remove from group") { model.assign(s.session_id, to: nil) }
@@ -478,6 +584,7 @@ struct GroupHeaderRow: View {
     let isSelected: Bool
     let highlight: Bool
     var hotkeyNumber: Int? = nil
+    var tint: Color = claudeOrange
     let toggle: () -> Void
 
     var body: some View {
@@ -495,7 +602,7 @@ struct GroupHeaderRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 10)
             PixelGlyph(map: name == "__ungrouped__" ? soloMap : duoMap,
-                       color: name == "__ungrouped__" ? claudeOrange.opacity(0.55) : claudeOrange,
+                       color: name == "__ungrouped__" ? tint.opacity(0.55) : tint,
                        pixel: 1.5)
             Text(name == "__ungrouped__" ? "미배정" : name)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -533,6 +640,8 @@ struct PanelView: View {
     @State private var renaming: String? = nil
     @State private var renamingSession: Session? = nil
     @State private var renameText = ""
+    @State private var messagingSession: Session? = nil
+    @State private var messageText = ""
     @State private var dropTarget: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
@@ -635,6 +744,12 @@ struct PanelView: View {
             for st in ["waiting", "input", "finished", "running", "done", "gone"] {
                 out += filtered.filter { $0.status == st }.map { .session($0, indented: false) }
             }
+            let liveIds = Set(model.sessions.map { $0.session_id })
+            let archived = model.archive.filter { !liveIds.contains($0.session_id) }
+            if !archived.isEmpty {
+                out.append(.label("ARCHIVE"))
+                out += archived.map { .session($0, indented: false) }
+            }
             return out
         }
         var out: [PanelRow] = []
@@ -717,11 +832,18 @@ struct PanelView: View {
             expanded: expanded.contains(g),
             isSelected: isSelected(.header(g)),
             highlight: dropTarget == g,
-            hotkeyNumber: groupNumbers[g]
+            hotkeyNumber: groupNumbers[g],
+            tint: namedColor(members.first?.group_color)
         ) { toggleExpand(g) }
         .contextMenu {
+            Button("Open all sessions") { model.openAll(members) }
             if g != "__ungrouped__" {
                 Button("Rename group") { renaming = g; renameText = g }
+                Menu("Color") {
+                    ForEach(["orange", "blue", "green", "purple", "pink", "gray"], id: \.self) { c in
+                        Button(c) { model.setGroupColor(g, c) }
+                    }
+                }
                 Button("Dissolve group") {
                     model.dissolveGroup(g)
                     pendingGroups.removeAll { $0 == g }
@@ -752,7 +874,10 @@ struct PanelView: View {
                     .focused($searchFocused)
                     .onSubmit { activateSelected() }
                     .onExitCommand { appDelegate?.hidePanel() }
-                    .onChange(of: query) { _ in selected = 0 }
+                    .onChange(of: query) { q in
+                        selected = 0
+                        model.searchArchive(q)
+                    }
                 let running = model.sessions.filter { $0.status == "running" }.count
                 let waiting = model.sessions.filter { $0.status == "waiting" }.count
                 if waiting > 0 {
@@ -791,15 +916,30 @@ struct PanelView: View {
                                 headerRow(g)
                                     .padding(.top, 5)
                             case .session(let s, let indented):
-                                SessionRow(s: s, model: model, isSelected: isSelected(r),
-                                           hotkeyNumber: sessionNumbers[s.session_id],
-                                           animate: model.panelVisible,
-                                           onRename: { sess in
-                                               renamingSession = sess
-                                               renameText = sess.title ?? ""
-                                           })
+                                let base = SessionRow(s: s, model: model, isSelected: isSelected(r),
+                                                      hotkeyNumber: sessionNumbers[s.session_id],
+                                                      animate: model.panelVisible,
+                                                      onRename: { sess in
+                                                          renamingSession = sess
+                                                          renameText = sess.title ?? ""
+                                                      },
+                                                      onMessage: { sess in
+                                                          messagingSession = sess
+                                                          messageText = ""
+                                                      })
                                     .padding(.leading, indented ? 16 : 0)
                                     .id(r.id)
+                                if s.pinned && !searching {
+                                    // drop another session here to pin it in this slot
+                                    base.dropDestination(for: String.self) { items, _ in
+                                        if let d = items.first, d != s.session_id {
+                                            model.pinInsert(d, before: s.session_id)
+                                        }
+                                        return true
+                                    }
+                                } else {
+                                    base
+                                }
                             }
                         }
                         if rows.isEmpty {
@@ -819,6 +959,23 @@ struct PanelView: View {
                 .onChange(of: scrollTarget) { t in
                     if let t { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) } }
                 }
+            }
+
+            if let sess = messagingSession {
+                HStack(spacing: 8) {
+                    Text("→ \((sess.title ?? "session").prefix(16))").font(.system(size: 11)).foregroundStyle(.secondary)
+                    TextField("message (headless turn)", text: $messageText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .onSubmit {
+                            let text = messageText.trimmingCharacters(in: .whitespaces)
+                            if !text.isEmpty { model.sendMessage(sess.session_id, text) }
+                            messagingSession = nil
+                            messageText = ""
+                        }
+                    Button("✕") { messagingSession = nil }.buttonStyle(.plain).font(.system(size: 10))
+                }
+                .padding(.horizontal, 14)
             }
 
             if let sess = renamingSession {
@@ -936,7 +1093,7 @@ final class FloatingPanel: NSPanel {
 
 var appDelegate: AppDelegate?
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate {
     var statusItem: NSStatusItem!
     var panel: FloatingPanel!
     let model = Model()
@@ -965,6 +1122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateTitle(sessions: [])
         model.start()
         registerHotkey()
+        setupNotifications()
 
         // arrow keys never reach SwiftUI while the search field editor has
         // focus — intercept them at the event level while the panel is key
@@ -1076,6 +1234,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func jumpAttention() {
         hidePanel()
         DispatchQueue.global().async { runCST(["attention"]) }
+    }
+
+    // notifications require a real bundle — skipped when run as a bare binary
+    var notificationsReady = false
+
+    func setupNotifications() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            self?.notificationsReady = granted
+        }
+    }
+
+    func notify(session s: Session) {
+        guard notificationsReady else { return }
+        let body: String
+        switch s.status {
+        case "waiting": body = "승인이 필요해요"
+        case "input": body = "답을 기다리고 있어요"
+        default: body = "작업 완료 — 결과를 확인하세요"
+        }
+        let content = UNMutableNotificationContent()
+        content.title = s.title ?? ((s.cwd ?? "session") as NSString).lastPathComponent
+        content.body = body
+        content.userInfo = ["sid": s.session_id]
+        let req = UNNotificationRequest(identifier: s.session_id, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let sid = response.notification.request.content.userInfo["sid"] as? String {
+            DispatchQueue.global().async { runCST(["jump", sid]) }
+        }
+        completionHandler()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner])
     }
 
     func updateTitle(sessions: [Session]) {

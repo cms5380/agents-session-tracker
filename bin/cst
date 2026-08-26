@@ -441,9 +441,12 @@ cmd_sessions_json() {
   jq -e . >/dev/null 2>&1 <<<"$names_json" || names_json='{}'
   pins_json=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pins_json" || pins_json='[]'
+  local colors_json
+  colors_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json" 2>/dev/null || echo '{}')
+  jq -e . >/dev/null 2>&1 <<<"$colors_json" || colors_json='{}'
   jq --argjson extra "$extra" --argjson agents "$agents_json" \
      --argjson groups "$groups_json" --argjson names "$names_json" \
-     --argjson pins "$pins_json" '
+     --argjson pins "$pins_json" --argjson colors "$colors_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
@@ -456,7 +459,8 @@ cmd_sessions_json() {
     | . + $extra
     | map(. + {group: ($groups[.session_id] // null),
                title: ($names[.session_id] // .title),
-               pin_order: (.session_id as $s | ($pins | index($s)))})' <<<"$sessions"
+               pin_order: (.session_id as $s | ($pins | index($s)))})
+    | map(. + {group_color: (if .group then ($colors[.group] // null) else null end)})' <<<"$sessions"
 }
 
 case "${1:-list}" in
@@ -475,6 +479,96 @@ case "${1:-list}" in
       jq --arg sid "$2" --arg g "$3" '.[$sid] = $g' <<<"$existing" >"$GROUPS_FILE.tmp"
     fi
     mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+    ;;
+  peek)
+    # cst peek <session-id> — last assistant reply text (for hover preview)
+    [ $# -ge 2 ] || { echo "usage: cst peek <session-id>" >&2; exit 1; }
+    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    [ -n "$f" ] || exit 0
+    t=$(jq -r '.transcript_path // empty' "$f")
+    if [ -z "$t" ] || [ ! -f "$t" ]; then
+      cwd=$(jq -r '.cwd // empty' "$f"); sid=$(jq -r '.session_id' "$f")
+      slug=$(sed 's/[\/._]/-/g' <<<"$cwd")
+      t="$HOME/.claude/projects/$slug/$sid.jsonl"
+    fi
+    [ -f "$t" ] || exit 0
+    tail -n 300 "$t" 2>/dev/null \
+      | jq -r 'select(.type == "assistant") | .message.content
+               | if type == "array" then (map(select(.type == "text") | .text) | join("")) else tostring end' 2>/dev/null \
+      | grep -v '^\s*$' | tail -n 8 | head -c 600 || true
+    ;;
+  send)
+    # cst send <session-id> <message…> — run one headless turn, notify when done
+    [ $# -ge 3 ] || { echo "usage: cst send <session-id> <message>" >&2; exit 1; }
+    sid="$2"; shift 2; msg="$*"
+    f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
+    cwd=$([ -n "$f" ] && jq -r '.cwd // empty' "$f" || echo "$HOME")
+    title=$([ -n "$f" ] && jq -r '(.title // "session")[:30]' "$f" || echo "session")
+    (
+      cd "$cwd" 2>/dev/null || cd "$HOME"
+      if claude -p --resume "$sid" "$msg" >/dev/null 2>&1; then
+        osascript -e "display notification \"응답 완료 — 패널에서 확인\" with title \"$title\"" 2>/dev/null
+      else
+        osascript -e "display notification \"전송 실패 (세션이 busy일 수 있음)\" with title \"$title\"" 2>/dev/null
+      fi
+    ) >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    ;;
+  resume-tab)
+    # cst resume-tab <session-id> <cwd> — reopen an archived session in a tab
+    [ $# -ge 3 ] || { echo "usage: cst resume-tab <session-id> <cwd>" >&2; exit 1; }
+    open_resume_tab "$3" "$2"
+    ;;
+  archive-search)
+    # cst archive-search <query> — grep past transcripts, newest first
+    [ $# -ge 2 ] || { echo "[]"; exit 0; }
+    q="$2"
+    hits=$(grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.claude/projects" 2>/dev/null \
+      | xargs -I{} stat -f '%m {}' {} 2>/dev/null | sort -rn | head -10 | cut -d' ' -f2-)
+    out="[]"
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      sid=$(basename "$t" .jsonl)
+      # skip sessions already shown live
+      [ -f "$STATE_DIR/$sid.json" ] && continue
+      cwd=$(head -n 5 "$t" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | grep -m1 . || true)
+      title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
+      if [ -z "$title" ]; then
+        title=$( (head -n 80 "$t" 2>/dev/null \
+          | jq -r 'select(.type=="user") | .message.content
+                   | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
+          | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-60) || true)
+      fi
+      mt=$(stat -f %m "$t" 2>/dev/null || echo 0)
+      out=$(jq --arg sid "$sid" --arg cwd "$cwd" --arg title "$title" --argjson mt "$mt" \
+        '. + [{session_id: $sid, cwd: $cwd, title: (if $title == "" then null else $title end),
+               status: "archived", updated_at: $mt}]' <<<"$out")
+    done <<<"$hits"
+    printf '%s\n' "$out"
+    ;;
+  pin-insert)
+    # cst pin-insert <sid> <before-sid|end> — reorder pins
+    [ $# -ge 3 ] || { echo "usage: cst pin-insert <sid> <before-sid|end>" >&2; exit 1; }
+    existing=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
+    jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
+    jq --arg sid "$2" --arg before "$3" '
+      map(select(. != $sid))
+      | if $before == "end" then . + [$sid]
+        else (index($before) // length) as $i | .[:$i] + [$sid] + .[$i:] end' \
+      <<<"$existing" >"$PINS_FILE.tmp" && mv "$PINS_FILE.tmp" "$PINS_FILE"
+    ;;
+  group-color)
+    # cst group-color <group> <color|-> — colors.json (named accents)
+    [ $# -ge 3 ] || { echo "usage: cst group-color <group> <color|->" >&2; exit 1; }
+    COLORS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json"
+    existing=$(cat "$COLORS_FILE" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
+    if [ "$3" = "-" ]; then
+      jq --arg g "$2" 'del(.[$g])' <<<"$existing" >"$COLORS_FILE.tmp"
+    else
+      jq --arg g "$2" --arg c "$3" '.[$g] = $c' <<<"$existing" >"$COLORS_FILE.tmp"
+    fi
+    mv "$COLORS_FILE.tmp" "$COLORS_FILE"
     ;;
   pin)
     # cst pin <session-id> — toggle pin-to-top (pins.json keeps pin order)
