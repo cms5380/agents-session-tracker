@@ -733,6 +733,11 @@ struct PanelView: View {
             if let kw = keywordMatch { model.runCommand(kw.name, arg: kw.arg) }
             return
         }
+        if id.hasPrefix("kwc|") {
+            let parts = id.split(separator: "|", maxSplits: 2).map(String.init)
+            if parts.count == 3 { model.runCommand(parts[1], arg: parts[2]) }
+            return
+        }
         if id == "hub" { model.hub() }
         else if id == "clean" { model.clean(); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
@@ -827,7 +832,7 @@ struct PanelView: View {
 
     // Raycast keyword: first word matches a commands.json name → run with
     // the rest of the query as {query}
-    var keywordMatch: (name: String, arg: String, preview: String)? {
+    var keywordMatch: (name: String, arg: String, preview: String, template: String)? {
         guard commandQuery == nil, searching else { return nil }
         let parts = query.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
         guard let first = parts.first, !first.isEmpty else { return nil }
@@ -837,14 +842,48 @@ struct PanelView: View {
         let silent = cmd.hasPrefix("@")
         let preview = String(cmd.dropFirst(silent ? 1 : 0))
             .replacingOccurrences(of: "{query}", with: arg.isEmpty ? "…" : arg)
-        return (name, arg, preview)
+        return (name, arg, preview, cmd)
+    }
+
+    // templates shaped like "cd <base>/{query}" autocomplete folder names
+    // under <base> as you type the argument
+    func keywordCompletions(template: String, arg: String) -> [(String, String)] {
+        guard let r = template.range(of: #"cd ([^ ]+)/\{query\}"#, options: .regularExpression) else { return [] }
+        let sub = String(template[r])
+        let base = String(sub.dropFirst(3).dropLast("/{query}".count))
+        let baseExp = (base as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(atPath: baseExp) else { return [] }
+        let q = arg.lowercased()
+        let matches = items.filter { item in
+            var isDir: ObjCBool = false
+            fm.fileExists(atPath: baseExp + "/" + item, isDirectory: &isDir)
+            return isDir.boolValue && !item.hasPrefix(".")
+                && (q.isEmpty || item.lowercased().contains(q))
+        }
+        // prefix matches first, then the rest, alphabetical within each
+        let sorted = matches.sorted { a, b in
+            let ap = a.lowercased().hasPrefix(q), bp = b.lowercased().hasPrefix(q)
+            if ap != bp { return ap }
+            return a.lowercased() < b.lowercased()
+        }
+        return sorted.prefix(8).map { ($0, baseExp + "/" + $0) }
     }
 
     // the navigable list, in display order
     var rows: [PanelRow] {
         if commandQuery != nil { return commandRows }
         if let kw = keywordMatch {
-            var out: [PanelRow] = [.command("kw", "\(kw.name) \(kw.arg)", String(kw.preview.prefix(50)))]
+            var out: [PanelRow] = []
+            let comps = keywordCompletions(template: kw.template, arg: kw.arg)
+            if comps.isEmpty {
+                out.append(.command("kw", "\(kw.name) \(kw.arg)", String(kw.preview.prefix(50))))
+            } else {
+                for (folder, path) in comps {
+                    out.append(.command("kwc|\(kw.name)|\(folder)", "\(kw.name) \(folder)",
+                               path.replacingOccurrences(of: NSHomeDirectory(), with: "~")))
+                }
+            }
             out += filtered.map { .session($0, indented: false) }
             return out
         }
