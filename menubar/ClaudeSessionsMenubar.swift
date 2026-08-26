@@ -359,7 +359,7 @@ struct SessionRow: View {
                     .frame(width: 14, height: 14)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
-                    .help("⌃⌥\(n)")
+                    .help("⌘⌥\(n)")
             }
             statusGlyph(s.status, animate: animate)
             VStack(alignment: .leading, spacing: 1) {
@@ -470,7 +470,7 @@ struct GroupHeaderRow: View {
                     .frame(width: 14, height: 14)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
-                    .help("⌃⌥\(n)")
+                    .help("⌘⌥\(n)")
             }
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 9, weight: .bold))
@@ -536,7 +536,7 @@ struct PanelView: View {
 
     static let attentionOrder = ["waiting": 0, "input": 1, "finished": 2, "running": 3]
 
-    // ⌃⌥N targets follow the visible structure: attention sessions and
+    // ⌘⌥N targets follow the visible structure: attention sessions and
     // expanded members get numbers; a collapsed group gets one number itself
     enum HotkeyTarget {
         case session(Session)
@@ -972,14 +972,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hidePanel()
     }
 
-    // Global hotkey (default ⌃⌥C) via Carbon — no accessibility permission
-    // needed. Override with:
+    // Global hotkeys via Carbon — no accessibility permission needed.
+    // Panel toggle default: ⌥` — override with:
     //   defaults write com.dean.claude-sessions hotkeyKeyCode -int <keycode>
     //   defaults write com.dean.claude-sessions hotkeyModifiers -int <carbon-modifier-mask>
     func registerHotkey() {
         let defaults = UserDefaults(suiteName: "com.dean.claude-sessions")
-        let keyCode = defaults?.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_ANSI_C
-        let modifiers = defaults?.object(forKey: "hotkeyModifiers") as? Int ?? (controlKey | optionKey)
+        let keyCode = defaults?.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_ANSI_Grave
+        let modifiers = defaults?.object(forKey: "hotkeyModifiers") as? Int ?? optionKey
 
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -1004,18 +1004,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID,
                             GetApplicationEventTarget(), 0, &hotKeyRef)
 
-        // ⌃⌥A — jump straight to the top attention session
+        // ⌘⌥A — jump straight to the top attention session
         let attentionID = EventHotKeyID(signature: OSType(0x43535453), id: 2)
-        RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(controlKey | optionKey), attentionID,
+        RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(cmdKey | optionKey), attentionID,
                             GetApplicationEventTarget(), 0, &attentionHotKeyRef)
 
-        // ⌃⌥1..9 — jump to the Nth session (canonical order, matches badges)
+        // ⌘⌥1..9 — jump to the Nth numbered target (matches badges)
         let digitCodes: [Int] = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
                                  kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
         for (i, code) in digitCodes.enumerated() {
             var ref: EventHotKeyRef?
             let id = EventHotKeyID(signature: OSType(0x43535453), id: UInt32(10 + i))
-            RegisterEventHotKey(UInt32(code), UInt32(controlKey | optionKey), id,
+            RegisterEventHotKey(UInt32(code), UInt32(cmdKey | optionKey), id,
                                 GetApplicationEventTarget(), 0, &ref)
             digitHotKeyRefs.append(ref)
         }
