@@ -1080,8 +1080,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let button = statusItem.button else { return }
         // always the mascot; status rides in the text next to it
         button.image = mascotNSImage(pixel: 1.6)
-        let count = { (st: String) in sessions.filter { $0.status == st }.count }
-        let n = count("waiting") + count("input") + count("finished") + count("running")
+        // only sessions blocked on an approval (permission prompt)
+        let n = sessions.filter { $0.status == "waiting" }.count
         button.title = n > 0 ? " \(n)" : ""
         button.imagePosition = .imageLeading
     }
