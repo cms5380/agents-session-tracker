@@ -127,11 +127,10 @@ resolve_live() { # $1=session cwd → sets R_ITERM/R_CMUX/R_TMUX/R_TERM/R_TTY
   return 1
 }
 
-# open a new terminal tab resuming the session — for sessions with no live
-# terminal (background jobs, dead sessions, desktop app)
-open_resume_tab() { # $1=cwd, $2=session id
-  local cmd
-  cmd="cd $(printf '%q' "$1") && claude --resume $2"
+# open a new terminal tab running a command — used to resume dead sessions
+# and attach to live background agents
+open_tab_with() { # $1=shell command
+  local cmd="$1"
   if [ -d "/Applications/iTerm.app" ]; then
     osascript - "$cmd" <<'APPLESCRIPT'
 on run argv
@@ -155,6 +154,19 @@ APPLESCRIPT
   fi
 }
 
+open_resume_tab() { # $1=cwd, $2=session id
+  open_tab_with "cd $(printf '%q' "$1") && claude --resume $2"
+}
+
+open_agents_tab() { # $1=cwd — attach picker filtered to that directory
+  open_tab_with "claude agents --cwd $(printf '%q' "$1")"
+}
+
+bg_agent_status() { # $1=session id → busy|idle|empty
+  claude agents --json 2>/dev/null \
+    | jq -r --arg sid "$1" '[.[] | select(.sessionId == $sid)] | (first // {}).status // empty'
+}
+
 cmd_jump() {
   local sid="$1" file
   file="$STATE_DIR/$sid.json"
@@ -172,6 +184,11 @@ cmd_jump() {
   app=$(jq -r '.terminal.app // empty' "$file")
   pid=$(jq -r '.pid // empty' "$file")
   cwd=$(jq -r '.cwd // empty' "$file")
+
+  # live background agent — resume is refused, attach via the agents picker
+  if [ -n "$(bg_agent_status "$sid")" ]; then
+    open_agents_tab "$cwd" >/dev/null 2>&1 && exit 0
+  fi
 
   # dead session — its terminal handles are stale, reopen in a new tab
   if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
@@ -232,6 +249,7 @@ case "${1:-list}" in
   list) cmd_list ;;
   jump) [ $# -ge 2 ] || { echo "usage: cst jump <session-id>" >&2; exit 1; }; cmd_jump "$2" ;;
   copy-resume) [ $# -ge 2 ] || { echo "usage: cst copy-resume <session-id>" >&2; exit 1; }; cmd_copy_resume "$2" ;;
+  agents-tab) [ $# -ge 2 ] || { echo "usage: cst agents-tab <cwd>" >&2; exit 1; }; open_agents_tab "$2" ;;
   clean) cmd_clean "${2:-}" ;;
   *) echo "usage: cst [list|jump <id>|copy-resume <id>|clean [hours]]" >&2; exit 1 ;;
 esac

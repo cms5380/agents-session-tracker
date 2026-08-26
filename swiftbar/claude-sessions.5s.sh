@@ -22,15 +22,33 @@ sessions=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s --argjson now "$now" '
   [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
   | sort_by(-.updated_at)')
 
-# sessions whose claude process died (no SessionEnd) are stale — demote to "gone"
+# live background agents (daemon-hosted; tracker pids don't apply to them)
+agents_json=$(claude agents --json 2>/dev/null || echo '[]')
+
+# sessions whose claude process died (no SessionEnd) are stale — demote to
+# "gone", unless the daemon still lists them as a live background agent
 sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
+  sid=$(jq -r '.session_id' <<<"$s")
   pid=$(jq -r '.pid // empty' <<<"$s")
-  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+  bg=$(jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | length' <<<"$agents_json")
+  if [ "$bg" = "0" ] && [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
     jq -c '.status = "gone"' <<<"$s"
   else
     printf '%s\n' "$s"
   fi
 done | jq -s '.')
+
+# background agents the tracker has no record of (started before hook install)
+extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" '
+  [.[] | select([.sessionId] | inside($tracked) | not) | {
+    session_id: .sessionId,
+    status: (if .status == "busy" then "running" else "done" end),
+    cwd: .cwd,
+    title: (if (.name // "") != "" then .name else null end),
+    updated_at: 0,
+    bg: true
+  }]' <<<"$agents_json")
+sessions=$(jq --argjson extra "$extra" '. + $extra' <<<"$sessions")
 
 waiting=$(jq 'map(select(.status == "waiting")) | length' <<<"$sessions")
 running=$(jq 'map(select(.status == "running")) | length' <<<"$sessions")
@@ -67,11 +85,15 @@ render_group() { # $1=status filter, $2=header, $3=dot color, $4=click action
     msg=$(jq -r '.message // ""' <<<"$s")
     name="${title:-${cwd##*/}}"
     name="${name:0:44}"
-    age=$(age_of "$updated")
     tip="${cwd/#$HOME/~}"
     [ -n "$msg" ] && tip="$msg — $tip"
-    echo "$name  ·  $age | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=$action param2=$sid terminal=false refresh=false"
-    echo "${cwd/#$HOME/~}  ·  ⌥=copy resume | alternate=true sfimage=doc.on.doc bash=$CST param1=copy-resume param2=$sid terminal=false refresh=false"
+    if [ "$(jq -r '.bg // false' <<<"$s")" = "true" ]; then
+      echo "$name  ·  bg | sfimage=circle.dotted sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=agents-tab param2=\"$cwd\" terminal=false refresh=false"
+    else
+      age=$(age_of "$updated")
+      echo "$name  ·  $age | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=$action param2=$sid terminal=false refresh=false"
+      echo "${cwd/#$HOME/~}  ·  ⌥=copy resume | alternate=true sfimage=doc.on.doc bash=$CST param1=copy-resume param2=$sid terminal=false refresh=false"
+    fi
   done <<<"$rows"
 }
 
