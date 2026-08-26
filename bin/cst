@@ -415,6 +415,21 @@ case "${1:-list}" in
     fi
     mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
     ;;
+  group-rename)
+    [ $# -ge 3 ] || { echo "usage: cst group-rename <old> <new>" >&2; exit 1; }
+    existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
+    jq --arg old "$2" --arg new "$3" \
+      'with_entries(if .value == $old then .value = $new else . end)' \
+      <<<"$existing" >"$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+    ;;
+  group-dissolve)
+    [ $# -ge 2 ] || { echo "usage: cst group-dissolve <name>" >&2; exit 1; }
+    existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
+    jq --arg g "$2" 'with_entries(select(.value != $g))' \
+      <<<"$existing" >"$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+    ;;
   hub) focus_hub ;;
   agents-tab) focus_hub ;;
   focus-agent)

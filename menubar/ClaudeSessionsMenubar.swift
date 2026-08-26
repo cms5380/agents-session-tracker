@@ -72,6 +72,20 @@ final class Model: ObservableObject {
         }
     }
 
+    func renameGroup(_ old: String, to new: String) {
+        DispatchQueue.global().async {
+            runCST(["group-rename", old, new])
+            self.refresh()
+        }
+    }
+
+    func dissolveGroup(_ name: String) {
+        DispatchQueue.global().async {
+            runCST(["group-dissolve", name])
+            self.refresh()
+        }
+    }
+
     func clean() {
         DispatchQueue.global().async {
             runCST(["clean"])
@@ -171,19 +185,46 @@ struct GroupCard<Content: View>: View {
     let label: String
     let emoji: String
     let highlight: Bool
+    var onRename: ((String) -> Void)? = nil
+    var onDissolve: (() -> Void)? = nil
     @ViewBuilder let content: Content
+    @State private var editing = false
+    @State private var editText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
                 Text(emoji).font(.system(size: 11))
-                Text(label)
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
+                if editing {
+                    TextField("group name", text: $editText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 10, weight: .bold))
+                        .onSubmit {
+                            let name = editText.trimmingCharacters(in: .whitespaces)
+                            if !name.isEmpty, name != label { onRename?(name) }
+                            editing = false
+                        }
+                        .onExitCommand { editing = false }
+                } else {
+                    Text(label)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .onTapGesture(count: 2) {
+                            if onRename != nil { editText = label; editing = true }
+                        }
+                }
                 Spacer()
             }
             .padding(.horizontal, 10).padding(.top, 8)
+            .contextMenu {
+                if onRename != nil {
+                    Button("Rename group") { editText = label; editing = true }
+                }
+                if onDissolve != nil {
+                    Button("Dissolve group") { onDissolve?() }
+                }
+            }
             content
                 .padding(.horizontal, 4).padding(.bottom, 6)
         }
@@ -235,7 +276,9 @@ struct PopoverView: View {
             ScrollView {
                 VStack(spacing: 8) {
                     ForEach(groups, id: \.self) { g in
-                        GroupCard(label: g, emoji: "📁", highlight: dropTarget == g) {
+                        GroupCard(label: g, emoji: "📁", highlight: dropTarget == g,
+                                  onRename: { model.renameGroup(g, to: $0) },
+                                  onDissolve: { model.dissolveGroup(g); pendingGroups.removeAll { $0 == g } }) {
                             VStack(spacing: 1) {
                                 let members = model.sessions.filter { $0.group == g }
                                 if members.isEmpty {
