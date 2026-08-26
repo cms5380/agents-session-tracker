@@ -349,14 +349,23 @@ cmd_sessions_json() {
   agents_json=$(claude agents --json 2>/dev/null || echo '[]')
 
   sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
-    local sid pid bg
+    local sid pid bg pcmd
     sid=$(jq -r '.session_id' <<<"$s")
     pid=$(jq -r '.pid // empty' <<<"$s")
     bg=$(jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | length' <<<"$agents_json")
-    if [ "$bg" = "0" ] && [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+    if [ "$bg" != "0" ]; then
+      # daemon-listed → real session
+      printf '%s\n' "$s"
+    elif [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
       jq -c '.status = "gone"' <<<"$s"
     else
-      printf '%s\n' "$s"
+      # alive but unknown to the daemon: real only if owned by a real client.
+      # agents-view TUIs and spare-pool processes register phantom sessions.
+      pcmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
+      case "$pcmd" in
+        (*bg-spare*|*bg-pty-host*|*"claude agents"*|"") : ;; # phantom — drop
+        (*) printf '%s\n' "$s" ;;
+      esac
     fi
   done | jq -s '.')
 
