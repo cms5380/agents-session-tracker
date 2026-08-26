@@ -441,12 +441,15 @@ cmd_sessions_json() {
   jq -e . >/dev/null 2>&1 <<<"$names_json" || names_json='{}'
   pins_json=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pins_json" || pins_json='[]'
-  local colors_json
+  local colors_json order_json
   colors_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json" 2>/dev/null || echo '{}')
   jq -e . >/dev/null 2>&1 <<<"$colors_json" || colors_json='{}'
+  order_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json" 2>/dev/null || echo '[]')
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$order_json" || order_json='[]'
   jq --argjson extra "$extra" --argjson agents "$agents_json" \
      --argjson groups "$groups_json" --argjson names "$names_json" \
-     --argjson pins "$pins_json" --argjson colors "$colors_json" '
+     --argjson pins "$pins_json" --argjson colors "$colors_json" \
+     --argjson gorder "$order_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
@@ -460,7 +463,8 @@ cmd_sessions_json() {
     | map(. + {group: ($groups[.session_id] // null),
                title: ($names[.session_id] // .title),
                pin_order: (.session_id as $s | ($pins | index($s)))})
-    | map(. + {group_color: (if .group then ($colors[.group] // null) else null end)})' <<<"$sessions"
+    | map(. + {group_color: (if .group then ($colors[.group] // null) else null end),
+               group_order: (if .group then (.group as $g | ($gorder | index($g))) else null end)})' <<<"$sessions"
 }
 
 case "${1:-list}" in
@@ -590,6 +594,18 @@ case "${1:-list}" in
       jq --arg sid "$2" --arg t "$3" '.[$sid] = $t' <<<"$existing" >"$NAMES_FILE.tmp"
     fi
     mv "$NAMES_FILE.tmp" "$NAMES_FILE"
+    ;;
+  group-move)
+    # cst group-move <name> <before-name|end> — reorder groups
+    [ $# -ge 3 ] || { echo "usage: cst group-move <name> <before|end>" >&2; exit 1; }
+    ORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json"
+    existing=$(cat "$ORDER_FILE" 2>/dev/null || echo '[]')
+    jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
+    jq --arg g "$2" --arg before "$3" '
+      map(select(. != $g))
+      | if $before == "end" then . + [$g]
+        else (index($before) // length) as $i | .[:$i] + [$g] + .[$i:] end' \
+      <<<"$existing" >"$ORDER_FILE.tmp" && mv "$ORDER_FILE.tmp" "$ORDER_FILE"
     ;;
   group-rename)
     [ $# -ge 3 ] || { echo "usage: cst group-rename <old> <new>" >&2; exit 1; }

@@ -17,6 +17,7 @@ struct Session: Decodable, Identifiable, Equatable {
     let group: String?
     let pin_order: Int?
     let group_color: String?
+    let group_order: Int?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
 }
@@ -123,6 +124,13 @@ final class Model: ObservableObject {
                 runCST(["jump", s.session_id])
                 usleep(900_000)
             }
+        }
+    }
+
+    func groupMove(_ g: String, before: String) {
+        DispatchQueue.global().async {
+            runCST(["group-move", g, before])
+            self.refresh()
         }
     }
 
@@ -756,7 +764,16 @@ struct PanelView: View {
 
     var groups: [String] {
         let derived = Set(model.sessions.compactMap { $0.group })
-        return Array(derived.union(Set(pendingGroups))).sorted()
+        var orderOf: [String: Int] = [:]
+        for s in model.sessions {
+            if let g = s.group, let o = s.group_order { orderOf[g] = o }
+        }
+        return Array(derived.union(Set(pendingGroups))).sorted { a, b in
+            let oa = orderOf[a] ?? Int.max
+            let ob = orderOf[b] ?? Int.max
+            if oa != ob { return oa < ob }
+            return a < b
+        }
     }
 
     func restMembers(_ g: String?) -> [Session] {
@@ -876,11 +893,20 @@ struct PanelView: View {
                 }
             }
         }
+        .draggable("group:\(g)")
         .dropDestination(for: String.self) { items, _ in
-            if let sid = items.first {
-                model.assign(sid, to: g == "__ungrouped__" ? nil : g)
-                pendingGroups.removeAll { $0 == g }
-                expanded.insert(g)
+            if let item = items.first {
+                if item.hasPrefix("group:") {
+                    // reordering a group card: drop before this one (end on 🌊)
+                    let dragged = String(item.dropFirst(6))
+                    if dragged != g {
+                        model.groupMove(dragged, before: g == "__ungrouped__" ? "end" : g)
+                    }
+                } else {
+                    model.assign(item, to: g == "__ungrouped__" ? nil : g)
+                    pendingGroups.removeAll { $0 == g }
+                    expanded.insert(g)
+                }
             }
             dropTarget = nil
             return true
