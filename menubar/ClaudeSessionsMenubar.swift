@@ -501,9 +501,9 @@ struct SessionRow: View {
     var body: some View {
         HStack(spacing: 9) {
             if let n = hotkeyNumber {
-                Text("\(n)")
+                Text("⌘\(n)")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .frame(width: 14, height: 14)
+                    .frame(width: 24, height: 14)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
                     .help("⌘\(n)")
@@ -642,9 +642,9 @@ struct GroupHeaderRow: View {
             .padding(.bottom, insertLine ? 3 : 0)
         HStack(spacing: 7) {
             if let n = hotkeyNumber {
-                Text("\(n)")
+                Text("⌘\(n)")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .frame(width: 14, height: 14)
+                    .frame(width: 24, height: 14)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
                     .help("⌘\(n)")
