@@ -116,6 +116,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(it)
         }
         menu.addItem(.separator())
+        let hub = NSMenuItem(title: "Open agents hub", action: #selector(openHub), keyEquivalent: "")
+        hub.target = self
+        hub.image = NSImage(systemSymbolName: "rectangle.on.rectangle", accessibilityDescription: nil)
+        menu.addItem(hub)
         let clean = NSMenuItem(title: "Clean stale sessions", action: #selector(cleanStale), keyEquivalent: "")
         clean.target = self
         clean.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
@@ -186,6 +190,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func copyResume(_ sender: NSMenuItem) {
         guard let s = sender.representedObject as? Session else { return }
         DispatchQueue.global().async { runCST(["copy-resume", s.session_id]) }
+    }
+
+    @objc func openHub() {
+        DispatchQueue.global().async { runCST(["hub"]) }
     }
 
     @objc func cleanStale() {
