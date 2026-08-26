@@ -122,10 +122,21 @@ cmd_jump() {
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
 
-  # fallback: no live handle — tell the user where the session lives
-  osascript -e "display notification \"cwd: ${cwd/#$HOME/~}\" with title \"session $sid\" subtitle \"jump failed — resume with: claude --resume\"" 2>/dev/null || true
-  echo "no jump handle for $sid (cwd: $cwd). Resume: cd $cwd && claude --resume" >&2
+  # fallback: no live handle (headless/desktop session) — hand over a resume command instead
+  printf 'cd %s && claude --resume %s' "$cwd" "$sid" | pbcopy 2>/dev/null || true
+  osascript -e "display notification \"resume 명령 복사됨 — 터미널에 붙여넣으세요\" with title \"터미널 핸들 없는 세션\" subtitle \"${cwd/#$HOME/~}\"" 2>/dev/null || true
+  echo "no jump handle for $sid — resume command copied: cd $cwd && claude --resume $sid" >&2
   exit 1
+}
+
+cmd_copy_resume() {
+  local sid="$1" file
+  file="$STATE_DIR/$sid.json"
+  [ -f "$file" ] || { echo "unknown session: $sid" >&2; exit 1; }
+  local cwd
+  cwd=$(jq -r '.cwd // empty' "$file")
+  printf 'cd %s && claude --resume %s' "$cwd" "$sid" | pbcopy
+  osascript -e "display notification \"cd ${cwd/#$HOME/~} && claude --resume …\" with title \"resume command copied\"" 2>/dev/null || true
 }
 
 cmd_clean() {
@@ -145,6 +156,7 @@ cmd_clean() {
 case "${1:-list}" in
   list) cmd_list ;;
   jump) [ $# -ge 2 ] || { echo "usage: cst jump <session-id>" >&2; exit 1; }; cmd_jump "$2" ;;
+  copy-resume) [ $# -ge 2 ] || { echo "usage: cst copy-resume <session-id>" >&2; exit 1; }; cmd_copy_resume "$2" ;;
   clean) cmd_clean "${2:-}" ;;
-  *) echo "usage: cst [list|jump <id>|clean [hours]]" >&2; exit 1 ;;
+  *) echo "usage: cst [list|jump <id>|copy-resume <id>|clean [hours]]" >&2; exit 1 ;;
 esac

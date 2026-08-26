@@ -3,6 +3,8 @@
 # Install: copy (or symlink) into your SwiftBar plugin folder.
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
+# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
+# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 set -uo pipefail
 
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
@@ -10,42 +12,65 @@ STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 CST="$HOME/.claude/session-tracker/cst"
 [ -x "$CST" ] || CST="$(cd "$(dirname "$0")/.." && pwd)/bin/cst"
 
-running=0 waiting=0 done_=0
-rows=""
+C_WAIT="#F5A623"
+C_RUN="#34C759"
+C_DONE="#98989D"
+C_DIM="#98989D"
+
 now=$(date +%s)
+sessions=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s --argjson now "$now" '
+  [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
+  | sort_by(-.updated_at)')
 
-for f in "$STATE_DIR"/*.json; do
-  [ -e "$f" ] || continue
-  IFS=$'\t' read -r status sid cwd updated msg < <(
-    jq -r '[.status, .session_id, (.cwd // "?"), (.updated_at // 0), (.message // "")] | @tsv' "$f")
-  [ "$status" = "ended" ] && continue
-  age=$(( now - updated ))
-  [ "$age" -gt 86400 ] && continue
-  case "$status" in
-    running) icon="🟢"; running=$((running+1)) ;;
-    waiting) icon="🟡"; waiting=$((waiting+1)) ;;
-    done)    icon="⚪"; done_=$((done_+1)) ;;
-    *)       icon="❔" ;;
-  esac
-  age_s="$((age / 60))m"; [ "$age" -ge 3600 ] && age_s="$((age / 3600))h"
-  label="$icon ${cwd##*/} · ${age_s}"
-  [ -n "$msg" ] && label="$label · ${msg:0:40}"
-  rows+="$label | bash=$CST param1=jump param2=$sid terminal=false refresh=false"$'\n'
-done
+waiting=$(jq 'map(select(.status == "waiting")) | length' <<<"$sessions")
+running=$(jq 'map(select(.status == "running")) | length' <<<"$sessions")
 
-# menubar title: waiting sessions demand attention first
+# ── menubar title ────────────────────────────────────────────────
 if [ "$waiting" -gt 0 ]; then
-  echo "🟡 $waiting"
+  echo "$waiting | sfimage=bell.badge.fill"
 elif [ "$running" -gt 0 ]; then
-  echo "🟢 $running"
+  echo "$running | sfimage=terminal.fill"
 else
-  echo "⚪️"
+  echo "| sfimage=terminal"
 fi
 echo "---"
-if [ -n "$rows" ]; then
-  printf '%s' "$rows"
+
+age_of() {
+  local a=$(( now - $1 ))
+  if   [ "$a" -lt 60 ];   then echo "now"
+  elif [ "$a" -lt 3600 ]; then echo "$((a / 60))m"
+  else                         echo "$((a / 3600))h"
+  fi
+}
+
+render_group() { # $1=status filter, $2=header, $3=dot color
+  local rows
+  rows=$(jq -c --arg st "$1" '.[] | select(.status == $st)' <<<"$sessions")
+  [ -n "$rows" ] || return 0
+  echo "$2 | size=11 color=$C_DIM"
+  while IFS= read -r s; do
+    local sid name cwd updated msg age tip
+    sid=$(jq -r '.session_id' <<<"$s")
+    cwd=$(jq -r '.cwd // "?"' <<<"$s")
+    updated=$(jq -r '.updated_at // 0' <<<"$s")
+    msg=$(jq -r '.message // ""' <<<"$s")
+    name="${cwd##*/}"
+    age=$(age_of "$updated")
+    tip="${cwd/#$HOME/~}"
+    [ -n "$msg" ] && tip="$msg — $tip"
+    echo "$name  ·  $age | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=jump param2=$sid terminal=false refresh=false"
+    echo "Copy resume command | alternate=true sfimage=doc.on.doc bash=$CST param1=copy-resume param2=$sid terminal=false refresh=false"
+  done <<<"$rows"
+}
+
+total=$(jq 'length' <<<"$sessions")
+if [ "$total" -eq 0 ]; then
+  echo "No active sessions | color=$C_DIM sfimage=moon.zzz"
 else
-  echo "no active sessions"
+  render_group waiting "NEEDS INPUT" "$C_WAIT"
+  render_group running "RUNNING"     "$C_RUN"
+  render_group done    "IDLE"        "$C_DONE"
 fi
+
 echo "---"
-echo "Clean stale | bash=$CST param1=clean terminal=false refresh=true"
+echo "Clean stale sessions | sfimage=trash bash=$CST param1=clean terminal=false refresh=true"
