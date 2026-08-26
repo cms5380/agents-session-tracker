@@ -162,64 +162,101 @@ func mascotNSImage(pixel: CGFloat) -> NSImage {
     return img
 }
 
-// 8x8 dot glyphs for session status, same pixel flavor as the mascot
-let glyphBell: [String] = [
-    "...oo...",
-    "..oooo..",
-    ".oooooo.",
-    ".oooooo.",
-    ".oooooo.",
-    "oooooooo",
-    "...oo...",
-    "........",
-]
-let glyphBolt: [String] = [
-    "....ooo.",
-    "...ooo..",
-    "..ooo...",
-    ".ooooooo",
-    "ooooooo.",
-    "...ooo..",
-    "..ooo...",
-    ".ooo....",
-]
-let glyphZ: [String] = [
-    ".oooooo.",
-    ".....oo.",
-    "....oo..",
-    "...oo...",
-    "..oo....",
-    ".oo.....",
-    ".oooooo.",
-    "........",
-]
+// ── animated status mascots ──────────────────────────────────────
+// Each status is the mascot itself doing a motion, as 11-row pixel
+// frames (row 0 = effect/headroom row, rows 1-10 = body).
+// chars: o=body  != orange alert  z=gray z  -=closed eye
 
-struct PixelGlyph: View {
-    let map: [String]
-    let color: Color
-    var pixel: CGFloat = 2
+func mascotBody(eyes: String, legs: String) -> [String] {
+    // eyes: "open" | "sleepy" | "closed", legs: "a" | "b" | "tuck"
+    let eyeRowOpen = "..oo.oooooo.oo.."
+    let eyeRowSolid = "..oooooooooooo.."
+    let eyeRowClosed = "..oo-oooooo-oo.."
+    let (e1, e2): (String, String)
+    switch eyes {
+    case "sleepy": (e1, e2) = (eyeRowSolid, eyeRowOpen)
+    case "closed": (e1, e2) = (eyeRowSolid, eyeRowClosed)
+    default: (e1, e2) = (eyeRowOpen, eyeRowOpen)
+    }
+    let legRow: String
+    switch legs {
+    case "b": legRow = "..o...o..o...o.."
+    case "tuck": legRow = "....o.o..o.o...."
+    default: legRow = "...o.o....o.o..."
+    }
+    return [
+        "..oooooooooooo..",
+        "..oooooooooooo..",
+        e1,
+        e2,
+        "oooooooooooooooo",
+        "oooooooooooooooo",
+        "..oooooooooooo..",
+        "..oooooooooooo..",
+        legRow,
+        legRow,
+    ]
+}
+
+func mascotFrames(_ status: String) -> (frames: [[String]], interval: Double, tint: Color) {
+    let empty = String(repeating: ".", count: 16)
+    switch status {
+    case "running":
+        // bounce: body alternates one row up/down while legs alternate
+        let f1 = [empty] + mascotBody(eyes: "open", legs: "a")
+        let f2 = mascotBody(eyes: "open", legs: "b") + [empty]
+        return ([f1, f2], 0.22, claudeOrange)
+    case "waiting":
+        // blinking !! overhead, feet fidgeting
+        let alert = ".......!!......."
+        let f1 = [alert] + mascotBody(eyes: "open", legs: "a")
+        let f2 = [empty] + mascotBody(eyes: "open", legs: "tuck")
+        return ([f1, f2], 0.4, claudeOrange)
+    case "gone":
+        let f = [empty] + mascotBody(eyes: "closed", legs: "tuck")
+        return ([f], 1, claudeOrange.opacity(0.3))
+    default: // idle — sleepy eyes, drifting z
+        let z1 = "..............z."
+        let z2 = ".............z.."
+        let f1 = [z1] + mascotBody(eyes: "sleepy", legs: "a")
+        let f2 = [z2] + mascotBody(eyes: "sleepy", legs: "a")
+        return ([f1, f2], 1.0, claudeOrange.opacity(0.55))
+    }
+}
+
+struct StatusMascot: View {
+    let status: String
+    var pixel: CGFloat = 1.5
+
     var body: some View {
-        Canvas { ctx, _ in
-            for (y, row) in map.enumerated() {
-                for (x, ch) in row.enumerated() where ch == "o" {
-                    ctx.fill(Path(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
-                                         width: pixel, height: pixel)),
-                             with: .color(color))
+        let spec = mascotFrames(status)
+        TimelineView(.periodic(from: .now, by: spec.interval)) { timeline in
+            let idx = spec.frames.count > 1
+                ? Int(timeline.date.timeIntervalSince1970 / spec.interval) % spec.frames.count
+                : 0
+            Canvas { ctx, _ in
+                for (y, row) in spec.frames[idx].enumerated() {
+                    for (x, ch) in row.enumerated() {
+                        let rect = CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                                          width: pixel, height: pixel)
+                        switch ch {
+                        case "o": ctx.fill(Path(rect), with: .color(spec.tint))
+                        case "!": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemOrange)))
+                        case "z": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGray)))
+                        case "-": ctx.fill(Path(rect), with: .color(Color(red: 0.45, green: 0.2, blue: 0.13)))
+                        default: break
+                        }
+                    }
                 }
             }
+            .frame(width: pixel * 16, height: pixel * 11)
         }
-        .frame(width: pixel * 8, height: pixel * 8)
     }
 }
 
 @ViewBuilder
 func statusGlyph(_ status: String) -> some View {
-    switch status {
-    case "waiting": PixelGlyph(map: glyphBell, color: Color(nsColor: .systemOrange))
-    case "running": PixelGlyph(map: glyphBolt, color: Color(nsColor: .systemGreen))
-    case "gone": PixelGlyph(map: glyphZ, color: Color(nsColor: .systemGray).opacity(0.45))
-    default: PixelGlyph(map: glyphZ, color: Color(nsColor: .systemGray))
-    }
+    StatusMascot(status: status)
 }
 
 func statusColor(_ status: String) -> Color {
