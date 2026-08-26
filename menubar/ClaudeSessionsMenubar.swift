@@ -580,13 +580,13 @@ struct SessionRow: View {
         .contextMenu {
             Button("Jump  ↩") { model.jump(s) }
             if s.status != "archived" {
-                Button("\(s.pinned ? "Unpin" : "Pin to top")  ⌘P") { model.togglePin(s.session_id) }
+                Button("\(s.pinned ? "Unpin" : "Pin to top")  ⌃P") { model.togglePin(s.session_id) }
                 Button("Send message…  ⇥") { onMessage?(s) }
-                Button("Rename session  ⌘R") { onRename?(s) }
+                Button("Rename session  ⌃R") { onRename?(s) }
             }
-            Button("Copy resume command  ⌘⇧C") { model.copyResume(s) }
+            Button("Copy resume command  ⌃C") { model.copyResume(s) }
             if s.group != nil {
-                Button("Remove from group  ⌘⌫") { model.assign(s.session_id, to: nil) }
+                Button("Remove from group  ⌃⌫") { model.assign(s.session_id, to: nil) }
             }
         }
         .help(s.message ?? s.cwd ?? "")
@@ -1466,18 +1466,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                         self.model.hotkeyNumber?(n)
                         return nil
                     }
-                    // context-menu actions on the selected session
+                }
+                if event.modifierFlags.contains(.control), !event.modifierFlags.contains(.command) {
+                    // ⌃ actions on the selected session (less conflict-prone)
                     let shift = event.modifierFlags.contains(.shift)
-                    if event.keyCode == 15, shift { // ⌘⇧R — refresh now
+                    if event.keyCode == 15, shift { // ⌃⇧R — refresh now
                         self.model.refresh()
                         return nil
                     }
                     let action: String?
                     switch (event.keyCode, shift) {
-                    case (35, _): action = "pin"        // ⌘P
-                    case (15, false): action = "rename" // ⌘R
-                    case (8, true): action = "copyresume" // ⌘⇧C
-                    case (51, _): action = "ungroup"    // ⌘⌫
+                    case (35, _): action = "pin"        // ⌃P
+                    case (15, false): action = "rename" // ⌃R
+                    case (8, _): action = "copyresume"  // ⌃C
+                    case (51, _): action = "ungroup"    // ⌃⌫
                     default: action = nil
                     }
                     if let action, self.model.actionKey?(action) == true {
