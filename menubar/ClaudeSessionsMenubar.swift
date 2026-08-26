@@ -139,9 +139,14 @@ struct VisualEffect: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
+extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
+}
+
 struct SessionRow: View {
     let s: Session
     let model: Model
+    var isSelected: Bool = false
     @State private var hovering = false
 
     var name: String {
@@ -177,7 +182,8 @@ struct SessionRow: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 9)
-                .fill(hovering ? Color.primary.opacity(0.08) : Color.clear)
+                .fill(isSelected ? Color.accentColor.opacity(0.22)
+                    : hovering ? Color.primary.opacity(0.08) : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
         .onHover { hovering = $0 }
@@ -260,6 +266,8 @@ struct PanelView: View {
     @State private var addingGroup = false
     @State private var dropTarget: String? = nil
     @State private var pendingGroups: [String] = []
+    @State private var selected = 0
+    @State private var scrollTarget: String? = nil
     @FocusState private var searchFocused: Bool
 
     var filtered: [Session] {
@@ -285,6 +293,28 @@ struct PanelView: View {
         return min(max(rows + cards, 120), 460)
     }
 
+    // flat display order for arrow-key navigation: group cards then ungrouped
+    var orderedSessions: [Session] {
+        var out: [Session] = []
+        for g in groups { out += filtered.filter { $0.group == g } }
+        let ungrouped = filtered.filter { $0.group == nil }
+        for st in ["waiting", "running", "done", "gone"] {
+            out += ungrouped.filter { $0.status == st }
+        }
+        return out
+    }
+
+    func isSelected(_ s: Session) -> Bool {
+        orderedSessions[safe: selected]?.session_id == s.session_id
+    }
+
+    func move(_ delta: Int) {
+        let count = orderedSessions.count
+        guard count > 0 else { return }
+        selected = min(max(selected + delta, 0), count - 1)
+        scrollTarget = orderedSessions[safe: selected]?.session_id
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
@@ -295,15 +325,26 @@ struct PanelView: View {
                     .font(.system(size: 16))
                     .focused($searchFocused)
                     .onSubmit {
-                        if let first = filtered.first { model.jump(first) }
+                        if let s = orderedSessions[safe: selected] ?? orderedSessions.first {
+                            model.jump(s)
+                        }
                     }
                     .onExitCommand { appDelegate?.hidePanel() }
+                    .onMoveCommand { dir in
+                        switch dir {
+                        case .down: move(1)
+                        case .up: move(-1)
+                        default: break
+                        }
+                    }
+                    .onChange(of: query) { _ in selected = 0 }
                 Text("🐾").font(.system(size: 16))
             }
             .padding(.horizontal, 16).padding(.top, 14)
 
             Divider().padding(.horizontal, 10)
 
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 9) {
                     ForEach(groups, id: \.self) { g in
@@ -319,7 +360,8 @@ struct PanelView: View {
                                         .padding(.vertical, 8)
                                 }
                                 ForEach(members) { s in
-                                    SessionRow(s: s, model: model)
+                                    SessionRow(s: s, model: model, isSelected: isSelected(s))
+                                        .id(s.session_id)
                                 }
                             }
                         }
@@ -346,7 +388,8 @@ struct PanelView: View {
                             }
                             ForEach(["waiting", "running", "done", "gone"], id: \.self) { st in
                                 ForEach(ungrouped.filter { $0.status == st }) { s in
-                                    SessionRow(s: s, model: model)
+                                    SessionRow(s: s, model: model, isSelected: isSelected(s))
+                                        .id(s.session_id)
                                 }
                             }
                         }
@@ -362,6 +405,10 @@ struct PanelView: View {
                 .padding(.horizontal, 12)
             }
             .frame(height: listHeight)
+            .onChange(of: scrollTarget) { t in
+                if let t { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) } }
+            }
+            }
 
             HStack(spacing: 8) {
                 if addingGroup {
@@ -417,6 +464,7 @@ struct PanelView: View {
         )
         .onChange(of: model.focusTick) { _ in
             query = ""
+            selected = 0
             searchFocused = true
         }
     }
