@@ -58,6 +58,7 @@ final class Model: ObservableObject {
     var moveSelection: ((Int) -> Void)?
     var arrowLR: ((Int) -> Bool)?
     var hotkeyNumber: ((Int) -> Void)?
+    var messageSelected: (() -> Void)?
     var timer: Timer?
 
     func start() {
@@ -435,6 +436,7 @@ struct SessionRow: View {
     @State private var peekText: String? = nil
     @State private var showPeek = false
     @State private var peekWork: DispatchWorkItem? = nil
+    @State private var peekCloseWork: DispatchWorkItem? = nil
 
     var name: String {
         s.title ?? ((s.cwd ?? "?") as NSString).lastPathComponent
@@ -474,6 +476,17 @@ struct SessionRow: View {
                     .foregroundStyle(statusColor(s.status))
             }
             if hovering {
+                if s.status != "archived", onMessage != nil {
+                    Button {
+                        onMessage?(s)
+                    } label: {
+                        Image(systemName: "paperplane")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Send message (Tab)")
+                }
                 Image(systemName: "arrow.up.forward.app")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -490,17 +503,29 @@ struct SessionRow: View {
             hovering = over
             peekWork?.cancel()
             if over {
-                let work = DispatchWorkItem {
-                    let text = runCST(["peek", s.session_id], capture: true)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    DispatchQueue.main.async {
-                        if !text.isEmpty { peekText = text; showPeek = true }
+                // cancel any pending close (the popover appearing can retrigger
+                // a hover-exit, which used to dismiss it instantly)
+                peekCloseWork?.cancel()
+                if let cached = peekText, !cached.isEmpty {
+                    let work = DispatchWorkItem { if hovering { showPeek = true } }
+                    peekWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+                } else {
+                    let work = DispatchWorkItem {
+                        let text = runCST(["peek", s.session_id], capture: true)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        DispatchQueue.main.async {
+                            peekText = text
+                            if !text.isEmpty, hovering { showPeek = true }
+                        }
                     }
+                    peekWork = work
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.4, execute: work)
                 }
-                peekWork = work
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.45, execute: work)
             } else {
-                showPeek = false
+                let close = DispatchWorkItem { if !hovering { showPeek = false } }
+                peekCloseWork = close
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: close)
             }
         }
         .popover(isPresented: $showPeek, arrowEdge: .trailing) {
@@ -648,6 +673,7 @@ struct PanelView: View {
     @State private var selected = 0
     @State private var scrollTarget: String? = nil
     @FocusState private var searchFocused: Bool
+    @FocusState private var msgFocused: Bool
 
     var filtered: [Session] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -967,6 +993,8 @@ struct PanelView: View {
                     TextField("message (headless turn)", text: $messageText)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11))
+                        .focused($msgFocused)
+                        .onAppear { msgFocused = true }
                         .onSubmit {
                             let text = messageText.trimmingCharacters(in: .whitespaces)
                             if !text.isEmpty { model.sendMessage(sess.session_id, text) }
@@ -1076,6 +1104,12 @@ struct PanelView: View {
             model.moveSelection = { move($0) }
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
+            model.messageSelected = {
+                if case .session(let s, _)? = rows[safe: selected], s.status != "archived" {
+                    messagingSession = s
+                    messageText = ""
+                }
+            }
         }
     }
 }
@@ -1133,6 +1167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             case 126: self.model.moveSelection?(-1); return nil // up
             case 123: return self.model.arrowLR?(-1) == true ? nil : event // left
             case 124: return self.model.arrowLR?(1) == true ? nil : event // right
+            case 48: self.model.messageSelected?(); return nil // tab → quick prompt
             default:
                 // ⌥1..9 while the panel is open — jump to the badged target
                 if event.modifierFlags.contains(.option) {
