@@ -1,4 +1,4 @@
-// Claude Sessions — native menubar tracker with a SwiftUI popover.
+// Claude Sessions — Raycast-style floating session switcher.
 // Build: swiftc -O -o claude-sessions-menubar ClaudeSessionsMenubar.swift
 import AppKit
 import Carbon.HIToolbox
@@ -38,6 +38,7 @@ func runCST(_ args: [String], capture: Bool = false) -> String {
 
 final class Model: ObservableObject {
     @Published var sessions: [Session] = []
+    @Published var focusTick = 0
     var timer: Timer?
 
     func start() {
@@ -59,6 +60,7 @@ final class Model: ObservableObject {
     }
 
     func jump(_ s: Session) {
+        appDelegate?.hidePanel()
         DispatchQueue.global().async { runCST(["jump", s.session_id]) }
     }
 
@@ -95,6 +97,7 @@ final class Model: ObservableObject {
     }
 
     func hub() {
+        appDelegate?.hidePanel()
         DispatchQueue.global().async { runCST(["hub"]) }
     }
 }
@@ -125,6 +128,17 @@ func ageString(_ updated: Double?) -> String {
     return "\(Int(a / 3600))h"
 }
 
+struct VisualEffect: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .hudWindow
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
 struct SessionRow: View {
     let s: Session
     let model: Model
@@ -135,39 +149,37 @@ struct SessionRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(statusEmoji(s.status)).font(.system(size: 13))
+        HStack(spacing: 9) {
+            Text(statusEmoji(s.status)).font(.system(size: 14))
             VStack(alignment: .leading, spacing: 1) {
                 Text(name)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                 Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                    .font(.system(size: 9))
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
             if !ageString(s.updated_at).isEmpty {
                 Text(ageString(s.updated_at))
-                    .font(.system(size: 9, weight: .semibold))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Capsule().fill(statusColor(s.status).opacity(0.18)))
                     .foregroundStyle(statusColor(s.status))
             }
             if hovering {
                 Image(systemName: "arrow.up.forward.app")
-                    .font(.system(size: 11))
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 8).padding(.vertical, 6)
+        .padding(.horizontal, 10).padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(hovering ? Color.primary.opacity(0.07) : Color.clear)
+            RoundedRectangle(cornerRadius: 9)
+                .fill(hovering ? Color.primary.opacity(0.08) : Color.clear)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 8))
-        .scaleEffect(hovering ? 1.015 : 1)
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        .contentShape(RoundedRectangle(cornerRadius: 9))
         .onHover { hovering = $0 }
         .onTapGesture { model.jump(s) }
         .draggable(s.session_id)
@@ -195,11 +207,11 @@ struct GroupCard<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
-                Text(emoji).font(.system(size: 11))
+                Text(emoji).font(.system(size: 12))
                 if editing {
                     TextField("group name", text: $editText)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .onSubmit {
                             let name = editText.trimmingCharacters(in: .whitespaces)
                             if !name.isEmpty, name != label { onRename?(name) }
@@ -208,7 +220,7 @@ struct GroupCard<Content: View>: View {
                         .onExitCommand { editing = false }
                 } else {
                     Text(label)
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
                         .onTapGesture(count: 2) {
@@ -217,7 +229,7 @@ struct GroupCard<Content: View>: View {
                 }
                 Spacer()
             }
-            .padding(.horizontal, 10).padding(.top, 8)
+            .padding(.horizontal, 11).padding(.top, 9)
             .contextMenu {
                 if onRename != nil {
                     Button("Rename group") { editText = label; editing = true }
@@ -227,61 +239,71 @@ struct GroupCard<Content: View>: View {
                 }
             }
             content
-                .padding(.horizontal, 4).padding(.bottom, 6)
+                .padding(.horizontal, 5).padding(.bottom, 7)
         }
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.primary.opacity(highlight ? 0.10 : 0.045))
+            RoundedRectangle(cornerRadius: 13)
+                .fill(Color.primary.opacity(highlight ? 0.11 : 0.05))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 13)
                 .strokeBorder(highlight ? Color.accentColor.opacity(0.7) : Color.clear, lineWidth: 1.5)
         )
         .animation(.easeOut(duration: 0.15), value: highlight)
     }
 }
 
-struct PopoverView: View {
+struct PanelView: View {
     @ObservedObject var model: Model
+    @State private var query = ""
     @State private var newGroupName = ""
     @State private var addingGroup = false
     @State private var dropTarget: String? = nil
     @State private var pendingGroups: [String] = []
+    @FocusState private var searchFocused: Bool
+
+    var filtered: [Session] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        if q.isEmpty { return model.sessions }
+        return model.sessions.filter {
+            ($0.title ?? "").lowercased().contains(q)
+                || ($0.cwd ?? "").lowercased().contains(q)
+                || ($0.group ?? "").lowercased().contains(q)
+        }
+    }
 
     var groups: [String] {
-        let derived = Set(model.sessions.compactMap { $0.group })
-        return Array(derived.union(pendingGroups)).sorted()
+        let derived = Set(filtered.compactMap { $0.group })
+        return Array(derived.union(query.isEmpty ? Set(pendingGroups) : [])).sorted()
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("🐾 Claude Sessions")
-                    .font(.system(size: 13, weight: .bold))
-                Spacer()
-                Button { model.hub() } label: {
-                    Image(systemName: "rectangle.on.rectangle")
-                }
-                .buttonStyle(.plain).help("Open agents hub")
-                Button { model.clean() } label: {
-                    Image(systemName: "sparkles")
-                }
-                .buttonStyle(.plain).help("Clean stale sessions")
-                Button { NSApp.terminate(nil) } label: {
-                    Image(systemName: "power")
-                }
-                .buttonStyle(.plain).foregroundStyle(.secondary).help("Quit")
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search sessions…", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 16))
+                    .focused($searchFocused)
+                    .onSubmit {
+                        if let first = filtered.first { model.jump(first) }
+                    }
+                    .onExitCommand { appDelegate?.hidePanel() }
+                Text("🐾").font(.system(size: 16))
             }
-            .padding(.horizontal, 12).padding(.top, 12)
+            .padding(.horizontal, 16).padding(.top, 14)
+
+            Divider().padding(.horizontal, 10)
 
             ScrollView {
-                VStack(spacing: 8) {
+                VStack(spacing: 9) {
                     ForEach(groups, id: \.self) { g in
                         GroupCard(label: g, emoji: "📁", highlight: dropTarget == g,
                                   onRename: { model.renameGroup(g, to: $0) },
                                   onDissolve: { model.dissolveGroup(g); pendingGroups.removeAll { $0 == g } }) {
                             VStack(spacing: 1) {
-                                let members = model.sessions.filter { $0.group == g }
+                                let members = filtered.filter { $0.group == g }
                                 if members.isEmpty {
                                     Text("drag a session here 🫳")
                                         .font(.system(size: 11))
@@ -307,9 +329,9 @@ struct PopoverView: View {
 
                     GroupCard(label: "Sessions", emoji: "🌊", highlight: dropTarget == "__ungrouped__") {
                         VStack(spacing: 1) {
-                            let ungrouped = model.sessions.filter { $0.group == nil }
+                            let ungrouped = filtered.filter { $0.group == nil }
                             if ungrouped.isEmpty {
-                                Text("all grouped ✨")
+                                Text(query.isEmpty ? "all grouped ✨" : "no match 🔍")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.secondary)
                                     .padding(.vertical, 8)
@@ -329,15 +351,16 @@ struct PopoverView: View {
                         dropTarget = over ? "__ungrouped__" : (dropTarget == "__ungrouped__" ? nil : dropTarget)
                     }
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
             }
-            .frame(maxHeight: 420)
+            .frame(maxHeight: 440)
 
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if addingGroup {
                     TextField("group name", text: $newGroupName)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11))
+                        .frame(width: 160)
                         .onSubmit {
                             let name = newGroupName.trimmingCharacters(in: .whitespaces)
                             if !name.isEmpty, !groups.contains(name) {
@@ -348,6 +371,7 @@ struct PopoverView: View {
                         }
                     Button("✕") { addingGroup = false; newGroupName = "" }
                         .buttonStyle(.plain).font(.system(size: 10))
+                    Spacer()
                 } else {
                     Button {
                         addingGroup = true
@@ -355,49 +379,116 @@ struct PopoverView: View {
                         Label("New group", systemImage: "folder.badge.plus")
                             .font(.system(size: 11))
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
                     Spacer()
-                    Text("drag rows into groups 🖐️")
+                    Text("↩ jump · esc close · drag to group")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
+                Button { model.hub() } label: {
+                    Image(systemName: "rectangle.on.rectangle")
+                }
+                .buttonStyle(.plain).help("Open agents hub")
+                Button { model.clean() } label: {
+                    Image(systemName: "sparkles")
+                }
+                .buttonStyle(.plain).help("Clean stale sessions")
+                Button { NSApp.terminate(nil) } label: {
+                    Image(systemName: "power")
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary).help("Quit")
             }
-            .padding(.horizontal, 12).padding(.bottom, 10)
+            .padding(.horizontal, 14).padding(.bottom, 12)
         }
-        .frame(width: 330)
+        .frame(width: 480)
+        .background(VisualEffect())
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+        )
+        .onChange(of: model.focusTick) { _ in
+            query = ""
+            searchFocused = true
+        }
+    }
+}
+
+final class FloatingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { // esc
+            appDelegate?.hidePanel()
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 
 var appDelegate: AppDelegate?
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusItem: NSStatusItem!
-    var popover: NSPopover!
+    var panel: FloatingPanel!
     let model = Model()
+    var hotKeyRef: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
         appDelegate = self
 
-        popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: PopoverView(model: model))
+        panel = FloatingPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        panel.level = .floating
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+        panel.delegate = self
+        panel.contentViewController = NSHostingController(rootView: PanelView(model: model))
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.action = #selector(togglePopover)
+        statusItem.button?.action = #selector(togglePanel)
         statusItem.button?.target = self
         updateTitle(sessions: [])
         model.start()
         registerHotkey()
     }
 
+    @objc func togglePanel() {
+        if panel.isVisible { hidePanel() } else { showPanel() }
+    }
+
+    func showPanel() {
+        model.refresh()
+        panel.layoutIfNeeded()
+        if let screen = NSScreen.main {
+            let vf = screen.visibleFrame
+            let size = panel.frame.size
+            let x = vf.midX - size.width / 2
+            let y = vf.origin.y + vf.height * 0.72
+            panel.setFrameTopLeftPoint(NSPoint(x: x, y: y))
+        }
+        panel.makeKeyAndOrderFront(nil)
+        model.focusTick += 1
+    }
+
+    func hidePanel() {
+        panel.orderOut(nil)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // Raycast behavior: clicking elsewhere dismisses the panel
+        hidePanel()
+    }
+
     // Global hotkey (default ⌃⌥C) via Carbon — no accessibility permission
     // needed. Override with:
     //   defaults write com.dean.claude-sessions hotkeyKeyCode -int <keycode>
     //   defaults write com.dean.claude-sessions hotkeyModifiers -int <carbon-modifier-mask>
-    var hotKeyRef: EventHotKeyRef?
-
     func registerHotkey() {
         let defaults = UserDefaults(suiteName: "com.dean.claude-sessions")
         let keyCode = defaults?.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_ANSI_C
@@ -406,25 +497,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ -> OSStatus in
-            DispatchQueue.main.async { appDelegate?.togglePopover() }
+            DispatchQueue.main.async { appDelegate?.togglePanel() }
             return noErr
         }, 1, &eventType, nil, nil)
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x43535453), id: 1) // 'CSTS'
         RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID,
                             GetApplicationEventTarget(), 0, &hotKeyRef)
-    }
-
-    @objc func togglePopover() {
-        guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
-        } else {
-            model.refresh()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
-            NSApp.activate(ignoringOtherApps: true)
-        }
     }
 
     func updateTitle(sessions: [Session]) {
