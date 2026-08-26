@@ -39,6 +39,7 @@ func runCST(_ args: [String], capture: Bool = false) -> String {
 final class Model: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var focusTick = 0
+    @Published var panelVisible = false
     var moveSelection: ((Int) -> Void)?
     var arrowLR: ((Int) -> Bool)?
     var hotkeyNumber: ((Int) -> Void)?
@@ -46,8 +47,12 @@ final class Model: ObservableObject {
 
     func start() {
         refresh()
+        var tick = 0
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            self?.refresh()
+            guard let self else { return }
+            tick += 1
+            // panel hidden → refresh every 15s (menubar badge only)
+            if self.panelVisible || tick % 3 == 0 { self.refresh() }
         }
     }
 
@@ -253,39 +258,50 @@ func mascotFrames(_ status: String) -> (frames: [[String]], interval: Double, ti
 
 struct StatusMascot: View {
     let status: String
+    var animate: Bool = true
     var pixel: CGFloat = 1.5
 
     var body: some View {
         let spec = mascotFrames(status)
-        TimelineView(.periodic(from: .now, by: spec.interval)) { timeline in
-            let idx = spec.frames.count > 1
-                ? Int(timeline.date.timeIntervalSince1970 / spec.interval) % spec.frames.count
-                : 0
-            Canvas { ctx, _ in
-                for (y, row) in spec.frames[idx].enumerated() {
-                    for (x, ch) in row.enumerated() {
-                        let rect = CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
-                                          width: pixel, height: pixel)
-                        switch ch {
-                        case "o": ctx.fill(Path(rect), with: .color(spec.tint))
-                        case "g": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGreen)))
-                        case "?": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemBlue)))
-                        case "!": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemOrange)))
-                        case "z": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGray)))
-                        case "-": ctx.fill(Path(rect), with: .color(Color(red: 0.45, green: 0.2, blue: 0.13)))
-                        default: break
-                        }
+        // panel hidden → render a static frame; a ticking TimelineView in an
+        // ordered-out window still burns CPU
+        if !animate {
+            frameView(spec.frames[0], tint: spec.tint)
+        } else {
+            TimelineView(.periodic(from: .now, by: spec.interval)) { timeline in
+                let idx = spec.frames.count > 1
+                    ? Int(timeline.date.timeIntervalSince1970 / spec.interval) % spec.frames.count
+                    : 0
+                frameView(spec.frames[idx], tint: spec.tint)
+            }
+        }
+    }
+
+    func frameView(_ frame: [String], tint: Color) -> some View {
+        Canvas { ctx, _ in
+            for (y, row) in frame.enumerated() {
+                for (x, ch) in row.enumerated() {
+                    let rect = CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                                      width: pixel, height: pixel)
+                    switch ch {
+                    case "o": ctx.fill(Path(rect), with: .color(tint))
+                    case "g": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGreen)))
+                    case "?": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemBlue)))
+                    case "!": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemOrange)))
+                    case "z": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGray)))
+                    case "-": ctx.fill(Path(rect), with: .color(Color(red: 0.45, green: 0.2, blue: 0.13)))
+                    default: break
                     }
                 }
             }
-            .frame(width: pixel * 16, height: pixel * 11)
         }
+        .frame(width: pixel * 16, height: pixel * 11)
     }
 }
 
 @ViewBuilder
-func statusGlyph(_ status: String) -> some View {
-    StatusMascot(status: status)
+func statusGlyph(_ status: String, animate: Bool = true) -> some View {
+    StatusMascot(status: status, animate: animate)
 }
 
 func statusColor(_ status: String) -> Color {
@@ -327,6 +343,7 @@ struct SessionRow: View {
     let model: Model
     var isSelected: Bool = false
     var hotkeyNumber: Int? = nil
+    var animate: Bool = true
     var onRename: ((Session) -> Void)? = nil
     @State private var hovering = false
 
@@ -344,7 +361,7 @@ struct SessionRow: View {
                     .foregroundStyle(.secondary)
                     .help("⌃⌥\(n)")
             }
-            statusGlyph(s.status)
+            statusGlyph(s.status, animate: animate)
             VStack(alignment: .leading, spacing: 1) {
                 Text(name)
                     .font(.system(size: 13, weight: .medium, design: .rounded))
@@ -402,6 +419,39 @@ enum PanelRow: Identifiable, Equatable {
     }
 }
 
+struct PixelGlyph: View {
+    let map: [String]
+    let color: Color
+    var pixel: CGFloat = 2
+    var body: some View {
+        Canvas { ctx, _ in
+            for (y, row) in map.enumerated() {
+                for (x, ch) in row.enumerated() where ch == "o" {
+                    ctx.fill(Path(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                                         width: pixel, height: pixel)),
+                             with: .color(color))
+                }
+            }
+        }
+        .frame(width: pixel * CGFloat(map.first?.count ?? 8),
+               height: pixel * CGFloat(map.count))
+    }
+}
+
+// group icons: a duo of mini mascots; ungrouped gets a lone one
+let duoMap: [String] = [
+    ".oooooo..oooooo.",
+    ".o.oo.o..o.oo.o.",
+    ".oooooo..oooooo.",
+    "..o..o....o..o..",
+]
+let soloMap: [String] = [
+    ".....oooooo.....",
+    ".....o.oo.o.....",
+    ".....oooooo.....",
+    "......o..o......",
+]
+
 struct GroupHeaderRow: View {
     let name: String
     let count: Int
@@ -426,7 +476,9 @@ struct GroupHeaderRow: View {
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.secondary)
                 .frame(width: 10)
-            Text(name == "__ungrouped__" ? "🌊" : "📁").font(.system(size: 12))
+            PixelGlyph(map: name == "__ungrouped__" ? soloMap : duoMap,
+                       color: name == "__ungrouped__" ? claudeOrange.opacity(0.55) : claudeOrange,
+                       pixel: 1.5)
             Text(name == "__ungrouped__" ? "미배정" : name)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .lineLimit(1)
@@ -702,6 +754,7 @@ struct PanelView: View {
                             case .session(let s, let indented):
                                 SessionRow(s: s, model: model, isSelected: isSelected(r),
                                            hotkeyNumber: sessionNumbers[s.session_id],
+                                           animate: model.panelVisible,
                                            onRename: { sess in
                                                renamingSession = sess
                                                renameText = sess.title ?? ""
@@ -905,11 +958,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panel.setFrameTopLeftPoint(NSPoint(x: x, y: y))
         }
         panel.makeKeyAndOrderFront(nil)
+        model.panelVisible = true
         model.focusTick += 1
     }
 
     func hidePanel() {
         panel.orderOut(nil)
+        model.panelVisible = false
     }
 
     func windowDidResignKey(_ notification: Notification) {
