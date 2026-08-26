@@ -261,16 +261,34 @@ let mascotMap: [String] = [
     "...o.o....o.o...",
 ]
 
+// Cells snapped to shared integer edges + antialiasing off — fractional
+// cell sizes otherwise leave hairline seams on non-retina/scaled displays.
+func snappedCell(_ x: Int, _ y: Int, _ pixel: CGFloat) -> CGRect {
+    let x0 = (CGFloat(x) * pixel).rounded()
+    let y0 = (CGFloat(y) * pixel).rounded()
+    let x1 = (CGFloat(x + 1) * pixel).rounded()
+    let y1 = (CGFloat(y + 1) * pixel).rounded()
+    return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+}
+
+func drawPixelMap(_ cg: CGContext, map: [String], pixel: CGFloat,
+                  colorFor: (Character) -> NSColor?) {
+    cg.setShouldAntialias(false)
+    for (y, row) in map.enumerated() {
+        for (x, ch) in row.enumerated() {
+            guard let c = colorFor(ch) else { continue }
+            cg.setFillColor(c.cgColor)
+            cg.fill(snappedCell(x, y, pixel))
+        }
+    }
+}
+
 struct PixelMascot: View {
     var pixel: CGFloat = 3
     var body: some View {
         Canvas { ctx, _ in
-            for (y, row) in mascotMap.enumerated() {
-                for (x, ch) in row.enumerated() where ch == "o" {
-                    ctx.fill(Path(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
-                                         width: pixel, height: pixel)),
-                             with: .color(claudeOrange))
-                }
+            ctx.withCGContext { cg in
+                drawPixelMap(cg, map: mascotMap, pixel: pixel) { $0 == "o" ? claudeOrangeNS : nil }
             }
         }
         .frame(width: pixel * 16, height: pixel * 10)
@@ -281,12 +299,16 @@ func mascotNSImage(pixel: CGFloat) -> NSImage {
     let size = NSSize(width: pixel * 16, height: pixel * 10)
     let img = NSImage(size: size)
     img.lockFocus()
-    NSColor.black.setFill() // template image — the menubar tints it like every other icon
-    for (y, row) in mascotMap.enumerated() {
-        for (x, ch) in row.enumerated() where ch == "o" {
-            NSRect(x: CGFloat(x) * pixel,
-                   y: size.height - CGFloat(y + 1) * pixel,
-                   width: pixel, height: pixel).fill()
+    if let cg = NSGraphicsContext.current?.cgContext {
+        cg.setShouldAntialias(false)
+        // template image — the menubar tints it like every other icon
+        cg.setFillColor(NSColor.black.cgColor)
+        for (y, row) in mascotMap.enumerated() {
+            for (x, ch) in row.enumerated() where ch == "o" {
+                var r = snappedCell(x, y, pixel)
+                r.origin.y = size.height - r.origin.y - r.size.height
+                cg.fill(r)
+            }
         }
     }
     img.unlockFocus()
@@ -405,18 +427,16 @@ struct StatusMascot: View {
 
     func frameView(_ frame: [String], tint: Color) -> some View {
         Canvas { ctx, _ in
-            for (y, row) in frame.enumerated() {
-                for (x, ch) in row.enumerated() {
-                    let rect = CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
-                                      width: pixel, height: pixel)
+            ctx.withCGContext { cg in
+                drawPixelMap(cg, map: frame, pixel: pixel) { ch in
                     switch ch {
-                    case "o": ctx.fill(Path(rect), with: .color(tint))
-                    case "g": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGreen)))
-                    case "?": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemBlue)))
-                    case "!": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemOrange)))
-                    case "z": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGray)))
-                    case "-": ctx.fill(Path(rect), with: .color(Color(red: 0.45, green: 0.2, blue: 0.13)))
-                    default: break
+                    case "o": return NSColor(tint)
+                    case "g": return .systemGreen
+                    case "?": return .systemBlue
+                    case "!": return .systemOrange
+                    case "z": return .systemGray
+                    case "-": return NSColor(red: 0.45, green: 0.2, blue: 0.13, alpha: 1)
+                    default: return nil
                     }
                 }
             }
@@ -576,12 +596,8 @@ struct PixelGlyph: View {
     var pixel: CGFloat = 2
     var body: some View {
         Canvas { ctx, _ in
-            for (y, row) in map.enumerated() {
-                for (x, ch) in row.enumerated() where ch == "o" {
-                    ctx.fill(Path(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
-                                         width: pixel, height: pixel)),
-                             with: .color(color))
-                }
+            ctx.withCGContext { cg in
+                drawPixelMap(cg, map: map, pixel: pixel) { $0 == "o" ? NSColor(color) : nil }
             }
         }
         .frame(width: pixel * CGFloat(map.first?.count ?? 8),
