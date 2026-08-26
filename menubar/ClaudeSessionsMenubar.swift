@@ -1472,14 +1472,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                         self.model.hotkeyNumber?(n)
                         return nil
                     }
+                    if event.keyCode == 15 { // ⌘R — refresh now
+                        self.model.refresh()
+                        return nil
+                    }
                 }
                 if event.modifierFlags.contains(.control), !event.modifierFlags.contains(.command) {
                     // ⌃ actions on the selected session (less conflict-prone)
                     let shift = event.modifierFlags.contains(.shift)
-                    if event.keyCode == 15, shift { // ⌃⇧R — refresh now
-                        self.model.refresh()
-                        return nil
-                    }
                     let action: String?
                     switch (event.keyCode, shift) {
                     case (35, _): action = "pin"        // ⌃P
