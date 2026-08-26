@@ -57,6 +57,7 @@ final class Model: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var focusTick = 0
     @Published var panelVisible = false
+    @Published var refreshing = false
     var moveSelection: ((Int) -> Void)?
     var arrowLR: ((Int) -> Bool)?
     var hotkeyNumber: ((Int) -> Void)?
@@ -79,10 +80,12 @@ final class Model: ObservableObject {
     private var firstLoad = true
 
     func refresh() {
+        DispatchQueue.main.async { self.refreshing = true }
         DispatchQueue.global(qos: .utility).async {
             let out = runCST(["sessions-json"], capture: true)
             let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
             DispatchQueue.main.async {
+                self.refreshing = false
                 if parsed != self.sessions { self.sessions = parsed }
                 appDelegate?.updateTitle(sessions: parsed)
                 // notify on transitions into states that need the user
@@ -1100,6 +1103,9 @@ struct PanelView: View {
                         selected = 0
                         model.searchArchive(q)
                     }
+                if model.refreshing {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                }
                 let running = model.sessions.filter { $0.status == "running" }.count
                 let waiting = model.sessions.filter { $0.status == "waiting" }.count
                 if waiting > 0 {
