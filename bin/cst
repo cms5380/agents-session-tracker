@@ -1,0 +1,150 @@
+#!/bin/bash
+# cst — Claude Session Tracker CLI
+#   cst list              show tracked sessions
+#   cst jump <session-id> focus the terminal session (cmux / iTerm2 / tmux / Terminal.app)
+#   cst clean [hours]     drop ended sessions and sessions idle > N hours (default 24)
+set -euo pipefail
+
+STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
+mkdir -p "$STATE_DIR"
+
+status_icon() {
+  case "$1" in
+    running) echo "🟢" ;;
+    waiting) echo "🟡" ;;
+    done)    echo "⚪" ;;
+    ended)   echo "✖️ " ;;
+    *)       echo "❔" ;;
+  esac
+}
+
+cmd_list() {
+  local found=0
+  printf "%-3s %-10s %-36s %-28s %s\n" "" "STATUS" "SESSION" "CWD" "AGE"
+  for f in "$STATE_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    found=1
+    local s
+    s=$(jq -r '[.status, .session_id, (.cwd // "?"), .updated_at] | @tsv' "$f")
+    IFS=$'\t' read -r status sid cwd updated <<<"$s"
+    local age=$(( $(date +%s) - updated ))
+    local age_h="$((age / 60))m"
+    [ "$age" -ge 3600 ] && age_h="$((age / 3600))h"
+    printf "%-3s %-10s %-36s %-28s %s\n" \
+      "$(status_icon "$status")" "$status" "$sid" "${cwd/#$HOME/~}" "$age_h"
+  done
+  [ "$found" -eq 1 ] || echo "(no tracked sessions — hooks installed?)"
+}
+
+jump_cmux() { # $1=workspace uuid
+  command -v cmux >/dev/null || return 1
+  # focus verb per cmux workspace-action / rpc surface; try both forms
+  cmux workspace-action --action focus --workspace "$1" 2>/dev/null ||
+    cmux rpc workspace.focus "{\"workspace_id\":\"$1\"}" 2>/dev/null || return 1
+  open -a cmux 2>/dev/null || true
+}
+
+jump_iterm() { # $1=ITERM_SESSION_ID (w0t2p0:UUID)
+  local uuid="${1##*:}"
+  osascript - "$uuid" <<'APPLESCRIPT'
+on run argv
+  set target to item 1 of argv
+  tell application "iTerm2"
+    activate
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if id of s is target then
+            select s
+            select t
+            set index of w to 1
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  error "session not found"
+end run
+APPLESCRIPT
+}
+
+jump_tmux() { # $1=TMUX_PANE, $2=term_program
+  command -v tmux >/dev/null || return 1
+  tmux switch-client -t "$1" 2>/dev/null || tmux select-pane -t "$1" 2>/dev/null || return 1
+  # bring the terminal hosting the tmux client to front
+  case "${2:-}" in
+    iTerm.app) open -a iTerm 2>/dev/null || true ;;
+    Apple_Terminal) open -a Terminal 2>/dev/null || true ;;
+    *) [ -n "${2:-}" ] && open -a "${2%.app}" 2>/dev/null || true ;;
+  esac
+}
+
+jump_terminal_app() { # $1=tty (e.g. ttys003)
+  osascript - "/dev/$1" <<'APPLESCRIPT'
+on run argv
+  set target to item 1 of argv
+  tell application "Terminal"
+    activate
+    repeat with w in windows
+      repeat with t in tabs of w
+        if tty of t is target then
+          set selected tab of w to t
+          set index of w to 1
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end tell
+  error "tab not found"
+end run
+APPLESCRIPT
+}
+
+cmd_jump() {
+  local sid="$1" file
+  file="$STATE_DIR/$sid.json"
+  if [ ! -f "$file" ]; then
+    # allow prefix match
+    file=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
+    [ -n "$file" ] || { echo "unknown session: $sid" >&2; exit 1; }
+  fi
+  local cmux_ws iterm_id tmux_pane tty term_program cwd
+  cmux_ws=$(jq -r '.terminal.cmux_workspace_id // empty' "$file")
+  iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$file")
+  tmux_pane=$(jq -r '.terminal.tmux_pane // empty' "$file")
+  tty=$(jq -r '.terminal.tty // empty' "$file")
+  term_program=$(jq -r '.terminal.term_program // empty' "$file")
+  cwd=$(jq -r '.cwd // empty' "$file")
+
+  if [ -n "$cmux_ws" ] && jump_cmux "$cmux_ws"; then exit 0; fi
+  if [ -n "$iterm_id" ] && jump_iterm "$iterm_id" >/dev/null 2>&1; then exit 0; fi
+  if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
+  if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
+
+  # fallback: no live handle — tell the user where the session lives
+  osascript -e "display notification \"cwd: ${cwd/#$HOME/~}\" with title \"session $sid\" subtitle \"jump failed — resume with: claude --resume\"" 2>/dev/null || true
+  echo "no jump handle for $sid (cwd: $cwd). Resume: cd $cwd && claude --resume" >&2
+  exit 1
+}
+
+cmd_clean() {
+  local max_h="${1:-24}" now
+  now=$(date +%s)
+  for f in "$STATE_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    local status updated
+    status=$(jq -r '.status' "$f")
+    updated=$(jq -r '.updated_at // 0' "$f")
+    if [ "$status" = "ended" ] || [ $((now - updated)) -gt $((max_h * 3600)) ]; then
+      rm -f "$f"
+    fi
+  done
+}
+
+case "${1:-list}" in
+  list) cmd_list ;;
+  jump) [ $# -ge 2 ] || { echo "usage: cst jump <session-id>" >&2; exit 1; }; cmd_jump "$2" ;;
+  clean) cmd_clean "${2:-}" ;;
+  *) echo "usage: cst [list|jump <id>|clean [hours]]" >&2; exit 1 ;;
+esac
