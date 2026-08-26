@@ -1,6 +1,7 @@
 // Claude Sessions — native menubar tracker with a SwiftUI popover.
 // Build: swiftc -O -o claude-sessions-menubar ClaudeSessionsMenubar.swift
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 struct Session: Decodable, Identifiable, Equatable {
@@ -388,6 +389,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.target = self
         updateTitle(sessions: [])
         model.start()
+        registerHotkey()
+    }
+
+    // Global hotkey (default ⌃⌥C) via Carbon — no accessibility permission
+    // needed. Override with:
+    //   defaults write com.dean.claude-sessions hotkeyKeyCode -int <keycode>
+    //   defaults write com.dean.claude-sessions hotkeyModifiers -int <carbon-modifier-mask>
+    var hotKeyRef: EventHotKeyRef?
+
+    func registerHotkey() {
+        let defaults = UserDefaults(suiteName: "com.dean.claude-sessions")
+        let keyCode = defaults?.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_ANSI_C
+        let modifiers = defaults?.object(forKey: "hotkeyModifiers") as? Int ?? (controlKey | optionKey)
+
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ -> OSStatus in
+            DispatchQueue.main.async { appDelegate?.togglePopover() }
+            return noErr
+        }, 1, &eventType, nil, nil)
+
+        let hotKeyID = EventHotKeyID(signature: OSType(0x43535453), id: 1) // 'CSTS'
+        RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID,
+                            GetApplicationEventTarget(), 0, &hotKeyRef)
     }
 
     @objc func togglePopover() {
