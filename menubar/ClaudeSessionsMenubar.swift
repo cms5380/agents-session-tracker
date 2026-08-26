@@ -3,6 +3,7 @@
 import AppKit
 import Carbon.HIToolbox
 import SwiftUI
+import UniformTypeIdentifiers
 import UserNotifications
 
 struct Session: Decodable, Identifiable, Equatable {
@@ -440,10 +441,7 @@ struct SessionRow: View {
     var animate: Bool = true
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
-    var onPeek: ((String, String?) -> Void)? = nil
     @State private var hovering = false
-    @State private var peekText: String? = nil
-    @State private var peekWork: DispatchWorkItem? = nil
 
     var name: String {
         s.title ?? ((s.cwd ?? "?") as NSString).lastPathComponent
@@ -506,30 +504,7 @@ struct SessionRow: View {
                     : hovering ? Color.primary.opacity(0.08) : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
-        .onHover { over in
-            hovering = over
-            peekWork?.cancel()
-            if over {
-                if let cached = peekText {
-                    if !cached.isEmpty { onPeek?(s.session_id, cached) }
-                } else {
-                    let work = DispatchWorkItem {
-                        let text = runCST(["peek", s.session_id], capture: true)
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        DispatchQueue.main.async {
-                            peekText = text
-                            if !text.isEmpty, hovering { onPeek?(s.session_id, text) }
-                        }
-                    }
-                    peekWork = work
-                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.3, execute: work)
-                }
-            } else {
-                let work = DispatchWorkItem { if !hovering { onPeek?(s.session_id, nil) } }
-                peekWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
-            }
-        }
+        .onHover { hovering = $0 }
         .onTapGesture { model.jump(s) }
         .draggable(s.session_id)
         .contextMenu {
@@ -602,11 +577,20 @@ struct GroupHeaderRow: View {
     let expanded: Bool
     let isSelected: Bool
     let highlight: Bool
+    var insertLine: Bool = false
     var hotkeyNumber: Int? = nil
     var tint: Color = claudeOrange
     let toggle: () -> Void
 
     var body: some View {
+        VStack(spacing: 0) {
+        // insertion indicator while a group card is being dragged
+        Rectangle()
+            .fill(insertLine ? claudeOrange : Color.clear)
+            .frame(height: 2)
+            .cornerRadius(1)
+            .padding(.horizontal, 6)
+            .padding(.bottom, insertLine ? 3 : 0)
         HStack(spacing: 7) {
             if let n = hotkeyNumber {
                 Text("\(n)")
@@ -648,6 +632,7 @@ struct GroupHeaderRow: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
         .onTapGesture(perform: toggle)
+        }
     }
 }
 
@@ -661,9 +646,8 @@ struct PanelView: View {
     @State private var renameText = ""
     @State private var messagingSession: Session? = nil
     @State private var messageText = ""
-    @State private var peekPreview: String? = nil
-    @State private var peekSid: String? = nil
     @State private var dropTarget: String? = nil
+    @State private var draggingGroup: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
     @State private var selected = 0
@@ -862,7 +846,8 @@ struct PanelView: View {
             hasAttention: hasAttention,
             expanded: expanded.contains(g),
             isSelected: isSelected(.header(g)),
-            highlight: dropTarget == g,
+            highlight: dropTarget == g && draggingGroup == nil,
+            insertLine: dropTarget == g && draggingGroup != nil,
             hotkeyNumber: groupNumbers[g],
             tint: namedColor(members.first?.group_color)
         ) { toggleExpand(g) }
@@ -881,25 +866,34 @@ struct PanelView: View {
                 }
             }
         }
-        .draggable("group:\(g)")
-        .dropDestination(for: String.self) { items, _ in
-            if let item = items.first {
-                if item.hasPrefix("group:") {
-                    // reordering a group card: drop before this one (end on 🌊)
-                    let dragged = String(item.dropFirst(6))
-                    if dragged != g {
-                        model.groupMove(dragged, before: g == "__ungrouped__" ? "end" : g)
+        .onDrag {
+            // group reorder drag — flag it so targets show an insertion line
+            DispatchQueue.main.async { draggingGroup = g }
+            return NSItemProvider(object: "group:\(g)" as NSString)
+        }
+        .onDrop(of: [.plainText, .utf8PlainText], isTargeted: Binding(
+            get: { dropTarget == g },
+            set: { over in dropTarget = over ? g : (dropTarget == g ? nil : dropTarget) }
+        )) { providers in
+            guard let p = providers.first else { return false }
+            _ = p.loadObject(ofClass: NSString.self) { obj, _ in
+                guard let item = obj as? String else { return }
+                DispatchQueue.main.async {
+                    if item.hasPrefix("group:") {
+                        let dragged = String(item.dropFirst(6))
+                        if dragged != g {
+                            model.groupMove(dragged, before: g == "__ungrouped__" ? "end" : g)
+                        }
+                    } else {
+                        model.assign(item, to: g == "__ungrouped__" ? nil : g)
+                        pendingGroups.removeAll { $0 == g }
+                        expanded.insert(g)
                     }
-                } else {
-                    model.assign(item, to: g == "__ungrouped__" ? nil : g)
-                    pendingGroups.removeAll { $0 == g }
-                    expanded.insert(g)
+                    draggingGroup = nil
+                    dropTarget = nil
                 }
             }
-            dropTarget = nil
             return true
-        } isTargeted: { over in
-            dropTarget = over ? g : (dropTarget == g ? nil : dropTarget)
         }
         .id("hdr-\(g)")
     }
@@ -966,15 +960,6 @@ struct PanelView: View {
                                                       onMessage: { sess in
                                                           messagingSession = sess
                                                           messageText = ""
-                                                      },
-                                                      onPeek: { sid, text in
-                                                          if let text {
-                                                              peekSid = sid
-                                                              peekPreview = text
-                                                          } else if peekSid == sid {
-                                                              peekPreview = nil
-                                                              peekSid = nil
-                                                          }
                                                       })
                                     .padding(.leading, indented ? 16 : 0)
                                     .id(r.id)
@@ -1008,21 +993,6 @@ struct PanelView: View {
                 .onChange(of: scrollTarget) { t in
                     if let t { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) } }
                 }
-            }
-
-            if let p = peekPreview, !p.isEmpty {
-                HStack(alignment: .top, spacing: 6) {
-                    PixelGlyph(map: soloMap, color: claudeOrange.opacity(0.7), pixel: 1.3)
-                        .padding(.top, 2)
-                    Text(p)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(9)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
-                .padding(.horizontal, 12)
             }
 
             if let sess = messagingSession {
@@ -1137,6 +1107,8 @@ struct PanelView: View {
             query = ""
             selected = 0
             searchFocused = true
+            draggingGroup = nil
+            dropTarget = nil
         }
         .onAppear {
             model.moveSelection = { move($0) }
