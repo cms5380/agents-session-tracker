@@ -1077,25 +1077,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func updateTitle(sessions: [Session]) {
-        let waiting = sessions.filter { $0.status == "waiting" }.count
-        let running = sessions.filter { $0.status == "running" }.count
         guard let button = statusItem.button else { return }
-        if waiting > 0 {
-            button.image = NSImage(systemSymbolName: "bell.badge.fill", accessibilityDescription: nil)
-            button.title = " \(waiting)"
-        } else if sessions.contains(where: { $0.status == "input" }) {
-            let n = sessions.filter { $0.status == "input" }.count
-            button.image = mascotNSImage(pixel: 1.6)
-            button.title = " ?\(n)"
-        } else if sessions.contains(where: { $0.status == "finished" }) {
-            let n = sessions.filter { $0.status == "finished" }.count
-            button.image = mascotNSImage(pixel: 1.6)
-            button.title = " ✓\(n)"
-        } else if running > 0 {
-            button.image = mascotNSImage(pixel: 1.6)
-            button.title = " \(running)"
+        // always the mascot; status rides in the text next to it
+        button.image = mascotNSImage(pixel: 1.6)
+        let count = { (st: String) in sessions.filter { $0.status == st }.count }
+        if count("waiting") > 0 {
+            button.title = " !\(count("waiting"))"
+        } else if count("input") > 0 {
+            button.title = " ?\(count("input"))"
+        } else if count("finished") > 0 {
+            button.title = " ✓\(count("finished"))"
+        } else if count("running") > 0 {
+            button.title = " \(count("running"))"
         } else {
-            button.image = mascotNSImage(pixel: 1.6)
             button.title = ""
         }
         button.imagePosition = .imageLeading
