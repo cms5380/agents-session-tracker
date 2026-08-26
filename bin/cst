@@ -294,13 +294,30 @@ cmd_jump() {
     open -a "Visual Studio Code" "$cwd" 2>/dev/null && exit 0
   fi
 
-  # exact: the daemon knows the interactive client pid for this session
-  if resolve_by_session "$sid" && jump_resolved; then exit 0; fi
-
+  # fast path first: recorded handles need no claude CLI round-trip
   if [ -n "$cmux_ws" ] && jump_cmux "$cmux_ws"; then exit 0; fi
   if [ -n "$iterm_id" ] && jump_iterm "$iterm_id" >/dev/null 2>&1; then exit 0; fi
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
+
+  # one daemon lookup, reused for every remaining strategy
+  local agents entry kind daemon_pid agent_name
+  agents=$(claude agents --json 2>/dev/null || echo '[]')
+  entry=$(jq -c --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | first // {}' <<<"$agents")
+  kind=$(jq -r '.kind // empty' <<<"$entry")
+  daemon_pid=$(jq -r '.pid // empty' <<<"$entry")
+  agent_name=$(jq -r '.name // empty' <<<"$entry")
+
+  # interactive: the daemon-reported client pid gives the exact terminal
+  if [ "$kind" = "interactive" ] && [ -n "$daemon_pid" ] && read_pid_env "$daemon_pid" && jump_resolved; then
+    exit 0
+  fi
+
+  # background agent: focus an attached tab by title, else attach in a new tab
+  if [ "$kind" = "background" ]; then
+    if [ -n "$agent_name" ] && jump_iterm_by_title "$agent_name" >/dev/null 2>&1; then exit 0; fi
+    open_tab_with "claude attach $sid" >/dev/null 2>&1 && exit 0
+  fi
 
   # live background agent — attach directly by id (existing attach tab wins)
   if [ -n "$(bg_agent_status "$sid")" ]; then
