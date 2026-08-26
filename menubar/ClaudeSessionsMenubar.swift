@@ -131,9 +131,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var name = s.title ?? (cwd as NSString).lastPathComponent
         if name.count > 46 { name = String(name.prefix(46)) + "…" }
         let isBG = s.bg ?? false
+        let isDaemon = s.kind == "background"
         let badge: String
         if isBG {
             badge = s.kind == "interactive" ? "term" : "bg"
+        } else if isDaemon {
+            badge = "\(age(s.updated_at ?? 0)) · bg"
         } else {
             badge = age(s.updated_at ?? 0)
         }
@@ -141,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: "\(name)  ·  \(badge)", action: #selector(rowClicked(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = s
-        item.image = (isBG && s.kind != "interactive") ? dottedDot(color) : dot(color)
+        item.image = isDaemon ? dottedDot(color) : dot(color)
         var tip = shortCwd
         if let m = s.message, !m.isEmpty { tip = "\(m) — \(shortCwd)" }
         item.toolTip = tip

@@ -234,13 +234,14 @@ cmd_jump() {
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
 
-  # recorded handles missing/stale — resolve from a live client process by cwd
-  if resolve_live "$cwd" && jump_resolved; then exit 0; fi
-
-  # no existing terminal to focus. live background agent → attach picker
+  # live background agent — no terminal of its own; a cwd scan could focus an
+  # unrelated tab, so go straight to the attach picker
   if [ -n "$(bg_agent_status "$sid")" ]; then
     open_agents_tab "$cwd" >/dev/null 2>&1 && exit 0
   fi
+
+  # recorded handles missing/stale — resolve from a live client process by cwd
+  if resolve_live "$cwd" && jump_resolved; then exit 0; fi
 
   # dead session → reopen in a new tab
   if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
@@ -312,7 +313,14 @@ cmd_sessions_json() {
       bg: true,
       kind: .kind
     }]' <<<"$agents_json")
-  jq --argjson extra "$extra" '. + $extra' <<<"$sessions"
+
+  # annotate tracked rows with the daemon's kind + name so UIs can label
+  # daemon-hosted sessions correctly
+  jq --argjson extra "$extra" --argjson agents "$agents_json" '
+    map(. as $s
+      | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
+      | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)})
+    | . + $extra' <<<"$sessions"
 }
 
 case "${1:-list}" in
