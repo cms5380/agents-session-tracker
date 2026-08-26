@@ -1103,9 +1103,18 @@ struct PanelView: View {
                         selected = 0
                         model.searchArchive(q)
                     }
-                if model.refreshing {
-                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                Button { model.refresh() } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(model.refreshing ? claudeOrange : Color.secondary.opacity(0.7))
+                        .rotationEffect(.degrees(model.refreshing ? 360 : 0))
+                        .animation(model.refreshing
+                                   ? .linear(duration: 0.7).repeatForever(autoreverses: false)
+                                   : .default,
+                                   value: model.refreshing)
                 }
+                .buttonStyle(.plain)
+                .help("Refresh (⌘R)")
                 let running = model.sessions.filter { $0.status == "running" }.count
                 let waiting = model.sessions.filter { $0.status == "waiting" }.count
                 if waiting > 0 {
