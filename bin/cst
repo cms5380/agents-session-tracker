@@ -215,6 +215,16 @@ focus_hub() {
 # kept for compatibility; the hub replaces per-directory pickers
 open_agents_tab() { focus_hub; }
 
+# jump to a background session: focus a tab already attached to it, else open
+# a new tab attaching directly by id
+jump_bg() { # $1=session id
+  local pid
+  for pid in $(pgrep -f "claude attach $1" 2>/dev/null); do
+    if read_pid_env "$pid" && jump_resolved; then return 0; fi
+  done
+  open_tab_with "claude attach $1"
+}
+
 bg_agent_status() { # $1=session id → busy|idle|empty (background kind only —
                     # interactive sessions live in a terminal we can focus)
   claude agents --json 2>/dev/null \
@@ -228,7 +238,12 @@ cmd_jump() {
   if [ ! -f "$file" ]; then
     # allow prefix match
     file=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
-    [ -n "$file" ] || { echo "unknown session: $sid" >&2; exit 1; }
+    if [ -z "$file" ]; then
+      # no tracker record — the daemon may still know this session
+      if resolve_by_session "$sid" && jump_resolved; then exit 0; fi
+      if [ -n "$(bg_agent_status "$sid")" ]; then jump_bg "$sid" && exit 0; fi
+      echo "unknown session: $sid" >&2; exit 1
+    fi
   fi
   local cmux_ws iterm_id tmux_pane tty term_program app pid cwd
   cmux_ws=$(jq -r '.terminal.cmux_workspace_id // empty' "$file")
@@ -252,9 +267,9 @@ cmd_jump() {
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
 
-  # live background agent — no terminal of its own; focus the agents hub tab
+  # live background agent — attach directly by id (existing attach tab wins)
   if [ -n "$(bg_agent_status "$sid")" ]; then
-    focus_hub >/dev/null 2>&1 && exit 0
+    jump_bg "$sid" >/dev/null 2>&1 && exit 0
   fi
 
   # recorded handles missing/stale — resolve from a live client process by cwd

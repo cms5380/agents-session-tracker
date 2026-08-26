@@ -174,17 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func rowClicked(_ sender: NSMenuItem) {
         guard let s = sender.representedObject as? Session else { return }
-        DispatchQueue.global().async {
-            if s.bg ?? false {
-                if s.kind == "interactive" {
-                    runCST(["focus-agent", s.session_id, s.cwd ?? ""])
-                } else {
-                    runCST(["agents-tab", s.cwd ?? ""])
-                }
-            } else {
-                runCST(["jump", s.session_id])
-            }
-        }
+        DispatchQueue.global().async { runCST(["jump", s.session_id]) }
     }
 
     @objc func copyResume(_ sender: NSMenuItem) {
