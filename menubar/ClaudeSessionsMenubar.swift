@@ -61,6 +61,7 @@ final class Model: ObservableObject {
     var arrowLR: ((Int) -> Bool)?
     var hotkeyNumber: ((Int) -> Void)?
     var messageSelected: (() -> Void)?
+    var actionKey: ((String) -> Bool)?
     var timer: Timer?
 
     func start() {
@@ -559,15 +560,15 @@ struct SessionRow: View {
         .onTapGesture { model.jump(s) }
         .draggable(s.session_id)
         .contextMenu {
-            Button("Jump") { model.jump(s) }
+            Button("Jump  ↩") { model.jump(s) }
             if s.status != "archived" {
-                Button(s.pinned ? "Unpin" : "Pin to top") { model.togglePin(s.session_id) }
-                Button("Send message…") { onMessage?(s) }
-                Button("Rename session") { onRename?(s) }
+                Button("\(s.pinned ? "Unpin" : "Pin to top")  ⌘P") { model.togglePin(s.session_id) }
+                Button("Send message…  ⇥") { onMessage?(s) }
+                Button("Rename session  ⌘R") { onRename?(s) }
             }
-            Button("Copy resume command") { model.copyResume(s) }
+            Button("Copy resume command  ⌘⇧C") { model.copyResume(s) }
             if s.group != nil {
-                Button("Remove from group") { model.assign(s.session_id, to: nil) }
+                Button("Remove from group  ⌘⌫") { model.assign(s.session_id, to: nil) }
             }
         }
         .help(s.message ?? s.cwd ?? "")
@@ -1349,6 +1350,21 @@ struct PanelView: View {
             model.moveSelection = { move($0) }
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
+            model.actionKey = { action in
+                guard case .session(let s, _)? = rows[safe: selected], s.status != "archived" else {
+                    return false
+                }
+                switch action {
+                case "pin": model.togglePin(s.session_id)
+                case "rename": renamingSession = s; renameText = s.title ?? ""
+                case "copyresume": model.copyResume(s)
+                case "ungroup":
+                    guard s.group != nil else { return false }
+                    model.assign(s.session_id, to: nil)
+                default: return false
+                }
+                return true
+            }
             model.messageSelected = {
                 // keyword mode: Tab completes the folder name into the field
                 // so a prompt can be typed after it
@@ -1436,12 +1452,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             case 124: return self.model.arrowLR?(1) == true ? nil : event // right
             case 48: self.model.messageSelected?(); return nil // tab → quick prompt
             default:
-                // ⌘1..9 while the panel is open — jump to the badged target
                 if event.modifierFlags.contains(.command) {
+                    // ⌘1..9 — jump to the badged target
                     let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5,
                                                  22: 6, 26: 7, 28: 8, 25: 9]
                     if let n = digits[event.keyCode] {
                         self.model.hotkeyNumber?(n)
+                        return nil
+                    }
+                    // context-menu actions on the selected session
+                    let shift = event.modifierFlags.contains(.shift)
+                    let action: String?
+                    switch (event.keyCode, shift) {
+                    case (35, _): action = "pin"        // ⌘P
+                    case (15, _): action = "rename"     // ⌘R
+                    case (8, true): action = "copyresume" // ⌘⇧C
+                    case (51, _): action = "ungroup"    // ⌘⌫
+                    default: action = nil
+                    }
+                    if let action, self.model.actionKey?(action) == true {
                         return nil
                     }
                 }
