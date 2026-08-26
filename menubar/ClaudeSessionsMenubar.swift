@@ -1468,10 +1468,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     }
                     // context-menu actions on the selected session
                     let shift = event.modifierFlags.contains(.shift)
+                    if event.keyCode == 15, shift { // ⌘⇧R — refresh now
+                        self.model.refresh()
+                        return nil
+                    }
                     let action: String?
                     switch (event.keyCode, shift) {
                     case (35, _): action = "pin"        // ⌘P
-                    case (15, _): action = "rename"     // ⌘R
+                    case (15, false): action = "rename" // ⌘R
                     case (8, true): action = "copyresume" // ⌘⇧C
                     case (51, _): action = "ungroup"    // ⌘⌫
                     default: action = nil
