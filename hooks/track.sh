@@ -29,7 +29,16 @@ fi
 
 case "$event" in
   SessionStart|UserPromptSubmit|PreToolUse) status="running" ;;
-  Notification) status="waiting" ;;
+  Notification)
+    # only actionable asks raise NEEDS INPUT: permission prompts. The 60s-idle
+    # ping means the turn is over; other notifications (completion notices,
+    # forwarded task events) keep the current status.
+    case "$message" in
+      *permission*|*Permission*) status="waiting" ;;
+      *"waiting for your input"*) status="done" ;;
+      *) status="" ;;
+    esac
+    ;;
   Stop) status="done" ;;
   SessionEnd) status="ended" ;;
   *) status="running" ;;
@@ -69,11 +78,11 @@ jq -n \
   --arg transcript "$transcript" \
   '$prev * {
     session_id: $session_id,
-    status: $status,
     last_event: $event,
     pid: ($pid | tonumber),
     updated_at: ($updated_at | tonumber)
   }
+  | .status = (if $status == "" then (.status // "running") else $status end)
   | .started_at = (.started_at // ($updated_at | tonumber))
   | if $cwd != "" then .cwd = $cwd else . end
   | if $message != "" then .message = $message else . end
