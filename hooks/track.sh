@@ -15,15 +15,16 @@ cwd=$(jq -r '.cwd // empty' <<<"$input")
 message=$(jq -r '.message // empty' <<<"$input")
 transcript=$(jq -r '.transcript_path // empty' <<<"$input")
 
-# human-readable session title: latest summary, else first user prompt
+# human-readable session title: first user prompt (immutable), else the
+# transcript summary — summaries evolve every few turns and made names churn
 title=""
 if [ -n "$transcript" ] && [ -f "$transcript" ]; then
-  title=$( (grep '"type":"summary"' "$transcript" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
+  title=$( (head -n 80 "$transcript" 2>/dev/null \
+    | jq -r 'select(.type=="user") | .message.content
+             | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
+    | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-80) || true)
   if [ -z "$title" ]; then
-    title=$( (head -n 80 "$transcript" 2>/dev/null \
-      | jq -r 'select(.type=="user") | .message.content
-               | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
-      | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-80) || true)
+    title=$( (grep '"type":"summary"' "$transcript" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
   fi
 fi
 
