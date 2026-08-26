@@ -164,22 +164,28 @@ resolve_live() { # $1=session cwd → sets R_ITERM/R_CMUX/R_TMUX/R_TERM/R_TTY
 
 # open a new terminal tab running a command — used to resume dead sessions
 # and attach to live background agents
-open_tab_with() { # $1=shell command
-  local cmd="$1"
+open_tab_with() { # $1=shell command, $2=auto-press-enter after N seconds (optional)
+  local cmd="$1" enter_after="${2:-}"
   if [ -d "/Applications/iTerm.app" ]; then
-    osascript - "$cmd" <<'APPLESCRIPT'
+    osascript - "$cmd" "$enter_after" <<'APPLESCRIPT'
 on run argv
   set cmd to item 1 of argv
+  set enterAfter to item 2 of argv
   tell application "iTerm2"
     activate
     if (count of windows) = 0 then
       set w to (create window with default profile)
-      tell current session of w to write text cmd
+      set s to current session of w
     else
       tell current window
         set t to (create tab with default profile)
-        tell current session of t to write text cmd
+        set s to current session of t
       end tell
+    end if
+    tell s to write text cmd
+    if enterAfter is not "" then
+      delay (enterAfter as number)
+      tell s to write text ""
     end if
   end tell
 end run
@@ -193,8 +199,16 @@ open_resume_tab() { # $1=cwd, $2=session id
   open_tab_with "cd $(printf '%q' "$1") && claude --resume $2"
 }
 
-open_agents_tab() { # $1=cwd — attach picker filtered to that directory
-  open_tab_with "claude agents --cwd $(printf '%q' "$1")"
+open_agents_tab() { # $1=cwd — attach picker filtered to that directory.
+  # exactly one session there → auto-press enter so it attaches hands-free
+  local n
+  n=$(claude agents --json 2>/dev/null \
+    | jq -r --arg cwd "$1" '[.[] | select(.cwd == $cwd)] | length' 2>/dev/null || echo 0)
+  if [ "$n" = "1" ]; then
+    open_tab_with "claude agents --cwd $(printf '%q' "$1")" 2
+  else
+    open_tab_with "claude agents --cwd $(printf '%q' "$1")"
+  fi
 }
 
 bg_agent_status() { # $1=session id → busy|idle|empty (background kind only —
