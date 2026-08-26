@@ -115,19 +115,19 @@ final class Model: ObservableObject {
 let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
 let claudeOrangeNS = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
 
-// dot-style mascot, Claude Code splash flavor
-// o=body e=eye m=mouth .=empty
+// official Claude Code pixel icon (thesvg.org/icon/claude-code, #D97757),
+// 24x24 path quantized to a 16x10 dot grid: eye cutouts, side arms, four legs
 let mascotMap: [String] = [
-    "..oooooo..",
-    ".oooooooo.",
-    "oooooooooo",
-    "ooeeooeeoo",
-    "ooeeooeeoo",
-    "oooooooooo",
-    "oo.mmmm.oo",
-    "oooooooooo",
-    ".oooooooo.",
-    ".oo....oo.",
+    "..oooooooooooo..",
+    "..oooooooooooo..",
+    "..oo.oooooo.oo..",
+    "..oo.oooooo.oo..",
+    "oooooooooooooooo",
+    "oooooooooooooooo",
+    "..oooooooooooo..",
+    "..oooooooooooo..",
+    "...o.o....o.o...",
+    "...o.o....o.o...",
 ]
 
 struct PixelMascot: View {
@@ -135,38 +135,27 @@ struct PixelMascot: View {
     var body: some View {
         Canvas { ctx, _ in
             for (y, row) in mascotMap.enumerated() {
-                for (x, ch) in row.enumerated() {
-                    let rect = CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
-                                      width: pixel, height: pixel)
-                    switch ch {
-                    case "o": ctx.fill(Path(rect), with: .color(claudeOrange))
-                    case "e": ctx.fill(Path(rect), with: .color(.white))
-                    case "m": ctx.fill(Path(rect), with: .color(Color(red: 0.45, green: 0.2, blue: 0.13)))
-                    default: break
-                    }
+                for (x, ch) in row.enumerated() where ch == "o" {
+                    ctx.fill(Path(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                                         width: pixel, height: pixel)),
+                             with: .color(claudeOrange))
                 }
             }
         }
-        .frame(width: pixel * 10, height: pixel * 10)
+        .frame(width: pixel * 16, height: pixel * 10)
     }
 }
 
 func mascotNSImage(pixel: CGFloat) -> NSImage {
-    let size = NSSize(width: pixel * 10, height: pixel * 10)
+    let size = NSSize(width: pixel * 16, height: pixel * 10)
     let img = NSImage(size: size)
     img.lockFocus()
+    claudeOrangeNS.setFill()
     for (y, row) in mascotMap.enumerated() {
-        for (x, ch) in row.enumerated() {
-            let rect = NSRect(x: CGFloat(x) * pixel,
-                              y: size.height - CGFloat(y + 1) * pixel,
-                              width: pixel, height: pixel)
-            switch ch {
-            case "o": claudeOrangeNS.setFill()
-            case "e": NSColor.white.setFill()
-            case "m": NSColor(red: 0.45, green: 0.2, blue: 0.13, alpha: 1).setFill()
-            default: continue
-            }
-            rect.fill()
+        for (x, ch) in row.enumerated() where ch == "o" {
+            NSRect(x: CGFloat(x) * pixel,
+                   y: size.height - CGFloat(y + 1) * pixel,
+                   width: pixel, height: pixel).fill()
         }
     }
     img.unlockFocus()
@@ -523,7 +512,7 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                PixelMascot(pixel: 2.6)
+                PixelMascot(pixel: 2.2)
                 TextField("Search sessions…", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
@@ -815,10 +804,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 .withSymbolConfiguration(.init(paletteColors: [.systemOrange, .labelColor]))
             button.title = " \(waiting)"
         } else if running > 0 {
-            button.image = mascotNSImage(pixel: 1.7)
+            button.image = mascotNSImage(pixel: 1.6)
             button.title = " \(running)"
         } else {
-            button.image = mascotNSImage(pixel: 1.7)
+            button.image = mascotNSImage(pixel: 1.6)
             button.title = ""
         }
         button.imagePosition = .imageLeading
