@@ -10,6 +10,7 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.json"
+NAMES_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/names.json"
 mkdir -p "$STATE_DIR"
 
 status_icon() {
@@ -383,10 +384,13 @@ cmd_sessions_json() {
 
   # annotate tracked rows with the daemon's kind + name so UIs can label
   # daemon-hosted sessions correctly; attach user-defined group names
-  local groups_json
+  local groups_json names_json
   groups_json=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
-  jq --argjson groups "$groups_json" '.' <<<'{}' >/dev/null 2>&1 || groups_json='{}'
-  jq --argjson extra "$extra" --argjson agents "$agents_json" --argjson groups "$groups_json" '
+  jq -e . >/dev/null 2>&1 <<<"$groups_json" || groups_json='{}'
+  names_json=$(cat "$NAMES_FILE" 2>/dev/null || echo '{}')
+  jq -e . >/dev/null 2>&1 <<<"$names_json" || names_json='{}'
+  jq --argjson extra "$extra" --argjson agents "$agents_json" \
+     --argjson groups "$groups_json" --argjson names "$names_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
@@ -395,7 +399,8 @@ cmd_sessions_json() {
         elif $a.kind == "background" and $a.status == "idle" and .status == "running" then .status = "done"
         else . end)
     | . + $extra
-    | map(. + {group: ($groups[.session_id] // null)})' <<<"$sessions"
+    | map(. + {group: ($groups[.session_id] // null),
+               title: ($names[.session_id] // .title)})' <<<"$sessions"
 }
 
 case "${1:-list}" in
@@ -414,6 +419,18 @@ case "${1:-list}" in
       jq --arg sid "$2" --arg g "$3" '.[$sid] = $g' <<<"$existing" >"$GROUPS_FILE.tmp"
     fi
     mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+    ;;
+  title)
+    # cst title <session-id> <custom-name>   ("-" reverts to the auto title)
+    [ $# -ge 3 ] || { echo "usage: cst title <session-id> <name|->" >&2; exit 1; }
+    existing=$(cat "$NAMES_FILE" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
+    if [ "$3" = "-" ]; then
+      jq --arg sid "$2" 'del(.[$sid])' <<<"$existing" >"$NAMES_FILE.tmp"
+    else
+      jq --arg sid "$2" --arg t "$3" '.[$sid] = $t' <<<"$existing" >"$NAMES_FILE.tmp"
+    fi
+    mv "$NAMES_FILE.tmp" "$NAMES_FILE"
     ;;
   group-rename)
     [ $# -ge 3 ] || { echo "usage: cst group-rename <old> <new>" >&2; exit 1; }

@@ -40,6 +40,7 @@ final class Model: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var focusTick = 0
     var moveSelection: ((Int) -> Void)?
+    var arrowLR: ((Int) -> Bool)?
     var timer: Timer?
 
     func start() {
@@ -72,6 +73,13 @@ final class Model: ObservableObject {
     func assign(_ sid: String, to group: String?) {
         DispatchQueue.global().async {
             runCST(["group", sid, group ?? "-"])
+            self.refresh()
+        }
+    }
+
+    func renameSession(_ sid: String, to name: String) {
+        DispatchQueue.global().async {
+            runCST(["title", sid, name.isEmpty ? "-" : name])
             self.refresh()
         }
     }
@@ -148,6 +156,7 @@ struct SessionRow: View {
     let s: Session
     let model: Model
     var isSelected: Bool = false
+    var onRename: ((Session) -> Void)? = nil
     @State private var hovering = false
 
     var name: String {
@@ -192,6 +201,7 @@ struct SessionRow: View {
         .draggable(s.session_id)
         .contextMenu {
             Button("Jump") { model.jump(s) }
+            Button("Rename session") { onRename?(s) }
             Button("Copy resume command") { model.copyResume(s) }
             if s.group != nil {
                 Button("Remove from group") { model.assign(s.session_id, to: nil) }
@@ -201,62 +211,59 @@ struct SessionRow: View {
     }
 }
 
-struct GroupCard<Content: View>: View {
-    let label: String
-    let emoji: String
+enum PanelRow: Identifiable, Equatable {
+    case header(String)     // group name, or "__ungrouped__"
+    case session(Session, indented: Bool)
+
+    var id: String {
+        switch self {
+        case .header(let g): return "hdr-\(g)"
+        case .session(let s, _): return s.session_id
+        }
+    }
+}
+
+struct GroupHeaderRow: View {
+    let name: String
+    let count: Int
+    let hasAttention: Bool
+    let expanded: Bool
+    let isSelected: Bool
     let highlight: Bool
-    var onRename: ((String) -> Void)? = nil
-    var onDissolve: (() -> Void)? = nil
-    @ViewBuilder let content: Content
-    @State private var editing = false
-    @State private var editText = ""
+    let toggle: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                Text(emoji).font(.system(size: 12))
-                if editing {
-                    TextField("group name", text: $editText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 11, weight: .bold))
-                        .onSubmit {
-                            let name = editText.trimmingCharacters(in: .whitespaces)
-                            if !name.isEmpty, name != label { onRename?(name) }
-                            editing = false
-                        }
-                        .onExitCommand { editing = false }
-                } else {
-                    Text(label)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .onTapGesture(count: 2) {
-                            if onRename != nil { editText = label; editing = true }
-                        }
-                }
-                Spacer()
+        HStack(spacing: 7) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 10)
+            Text(name == "__ungrouped__" ? "🌊" : "📁").font(.system(size: 12))
+            Text(name == "__ungrouped__" ? "미배정" : name)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+            Spacer()
+            if hasAttention {
+                Circle().fill(Color(nsColor: .systemOrange)).frame(width: 7, height: 7)
             }
-            .padding(.horizontal, 11).padding(.top, 9)
-            .contextMenu {
-                if onRename != nil {
-                    Button("Rename group") { editText = label; editing = true }
-                }
-                if onDissolve != nil {
-                    Button("Dissolve group") { onDissolve?() }
-                }
-            }
-            content
-                .padding(.horizontal, 5).padding(.bottom, 7)
+            Text("\(count)")
+                .font(.system(size: 10, weight: .semibold))
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(Capsule().fill(Color.primary.opacity(0.09)))
+                .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 10).padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 13)
-                .fill(Color.primary.opacity(highlight ? 0.11 : 0.05))
+            RoundedRectangle(cornerRadius: 9)
+                .fill(isSelected ? Color.accentColor.opacity(0.22)
+                    : highlight ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 13)
+            RoundedRectangle(cornerRadius: 9)
                 .strokeBorder(highlight ? Color.accentColor.opacity(0.7) : Color.clear, lineWidth: 1.5)
         )
-        .animation(.easeOut(duration: 0.15), value: highlight)
+        .contentShape(RoundedRectangle(cornerRadius: 9))
+        .onTapGesture(perform: toggle)
     }
 }
 
@@ -265,8 +272,12 @@ struct PanelView: View {
     @State private var query = ""
     @State private var newGroupName = ""
     @State private var addingGroup = false
+    @State private var renaming: String? = nil
+    @State private var renamingSession: Session? = nil
+    @State private var renameText = ""
     @State private var dropTarget: String? = nil
     @State private var pendingGroups: [String] = []
+    @State private var expanded: Set<String> = []
     @State private var selected = 0
     @State private var scrollTarget: String? = nil
     @FocusState private var searchFocused: Bool
@@ -281,39 +292,119 @@ struct PanelView: View {
         }
     }
 
+    var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var attention: [Session] {
+        filtered.filter { $0.status == "waiting" || $0.status == "running" }
+            .sorted { a, b in
+                if a.status != b.status { return a.status == "waiting" }
+                return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+            }
+    }
+
     var groups: [String] {
-        let derived = Set(filtered.compactMap { $0.group })
-        return Array(derived.union(query.isEmpty ? Set(pendingGroups) : [])).sorted()
+        let derived = Set(model.sessions.compactMap { $0.group })
+        return Array(derived.union(Set(pendingGroups))).sorted()
     }
 
-    // ScrollView has no intrinsic height inside a borderless panel — estimate
-    // from row/card counts so the list is actually visible
-    var listHeight: CGFloat {
-        let rows = CGFloat(filtered.count) * 47
-        let cards = CGFloat(groups.count + 1) * 44
-        return min(max(rows + cards, 120), 460)
+    func restMembers(_ g: String?) -> [Session] {
+        filtered.filter { $0.group == g && $0.status != "waiting" && $0.status != "running" }
     }
 
-    // flat display order for arrow-key navigation: group cards then ungrouped
-    var orderedSessions: [Session] {
-        var out: [Session] = []
-        for g in groups { out += filtered.filter { $0.group == g } }
-        let ungrouped = filtered.filter { $0.group == nil }
-        for st in ["waiting", "running", "done", "gone"] {
-            out += ungrouped.filter { $0.status == st }
+    // the navigable list, in display order
+    var rows: [PanelRow] {
+        if searching {
+            var out: [PanelRow] = []
+            for st in ["waiting", "running", "done", "gone"] {
+                out += filtered.filter { $0.status == st }.map { .session($0, indented: false) }
+            }
+            return out
+        }
+        var out: [PanelRow] = attention.map { .session($0, indented: false) }
+        for g in groups {
+            out.append(.header(g))
+            if expanded.contains(g) {
+                out += restMembers(g).map { .session($0, indented: true) }
+            }
+        }
+        if !restMembers(nil).isEmpty {
+            out.append(.header("__ungrouped__"))
+            if expanded.contains("__ungrouped__") {
+                out += restMembers(nil).map { .session($0, indented: true) }
+            }
         }
         return out
     }
 
-    func isSelected(_ s: Session) -> Bool {
-        orderedSessions[safe: selected]?.session_id == s.session_id
+    var listHeight: CGFloat {
+        let h = rows.reduce(CGFloat(0)) { acc, r in
+            switch r {
+            case .header: return acc + 34
+            case .session: return acc + 47
+            }
+        }
+        return min(max(h + 16, 100), 460)
     }
 
+    func isSelected(_ r: PanelRow) -> Bool { rows[safe: selected]?.id == r.id }
+
     func move(_ delta: Int) {
-        let count = orderedSessions.count
-        guard count > 0 else { return }
-        selected = min(max(selected + delta, 0), count - 1)
-        scrollTarget = orderedSessions[safe: selected]?.session_id
+        guard !rows.isEmpty else { return }
+        selected = min(max(selected + delta, 0), rows.count - 1)
+        scrollTarget = rows[safe: selected]?.id
+    }
+
+    func toggleExpand(_ g: String) {
+        if expanded.contains(g) { expanded.remove(g) } else { expanded.insert(g) }
+    }
+
+    // → expands / ← collapses when a group header is selected (query empty)
+    func handleLR(_ dir: Int) -> Bool {
+        guard !searching, case .header(let g)? = rows[safe: selected] else { return false }
+        if dir > 0 { expanded.insert(g) } else { expanded.remove(g) }
+        return true
+    }
+
+    func activateSelected() {
+        switch rows[safe: selected] ?? rows.first {
+        case .session(let s, _): model.jump(s)
+        case .header(let g): toggleExpand(g)
+        case nil: break
+        }
+    }
+
+    func headerRow(_ g: String) -> some View {
+        let members = filtered.filter { $0.group == (g == "__ungrouped__" ? nil : g) }
+        let hasAttention = members.contains { $0.status == "waiting" }
+        return GroupHeaderRow(
+            name: g,
+            count: members.count,
+            hasAttention: hasAttention,
+            expanded: expanded.contains(g),
+            isSelected: isSelected(.header(g)),
+            highlight: dropTarget == g
+        ) { toggleExpand(g) }
+        .contextMenu {
+            if g != "__ungrouped__" {
+                Button("Rename group") { renaming = g; renameText = g }
+                Button("Dissolve group") {
+                    model.dissolveGroup(g)
+                    pendingGroups.removeAll { $0 == g }
+                }
+            }
+        }
+        .dropDestination(for: String.self) { items, _ in
+            if let sid = items.first {
+                model.assign(sid, to: g == "__ungrouped__" ? nil : g)
+                pendingGroups.removeAll { $0 == g }
+                expanded.insert(g)
+            }
+            dropTarget = nil
+            return true
+        } isTargeted: { over in
+            dropTarget = over ? g : (dropTarget == g ? nil : dropTarget)
+        }
+        .id("hdr-\(g)")
     }
 
     var body: some View {
@@ -325,19 +416,8 @@ struct PanelView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
                     .focused($searchFocused)
-                    .onSubmit {
-                        if let s = orderedSessions[safe: selected] ?? orderedSessions.first {
-                            model.jump(s)
-                        }
-                    }
+                    .onSubmit { activateSelected() }
                     .onExitCommand { appDelegate?.hidePanel() }
-                    .onMoveCommand { dir in
-                        switch dir {
-                        case .down: move(1)
-                        case .up: move(-1)
-                        default: break
-                        }
-                    }
                     .onChange(of: query) { _ in selected = 0 }
                 Text("🐾").font(.system(size: 16))
             }
@@ -346,69 +426,81 @@ struct PanelView: View {
             Divider().padding(.horizontal, 10)
 
             ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 9) {
-                    ForEach(groups, id: \.self) { g in
-                        GroupCard(label: g, emoji: "📁", highlight: dropTarget == g,
-                                  onRename: { model.renameGroup(g, to: $0) },
-                                  onDissolve: { model.dissolveGroup(g); pendingGroups.removeAll { $0 == g } }) {
-                            VStack(spacing: 1) {
-                                let members = filtered.filter { $0.group == g }
-                                if members.isEmpty {
-                                    Text("drag a session here 🫳")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.secondary)
-                                        .padding(.vertical, 8)
-                                }
-                                ForEach(members) { s in
-                                    SessionRow(s: s, model: model, isSelected: isSelected(s))
-                                        .id(s.session_id)
-                                }
-                            }
-                        }
-                        .dropDestination(for: String.self) { items, _ in
-                            if let sid = items.first {
-                                model.assign(sid, to: g)
-                                pendingGroups.removeAll { $0 == g }
-                            }
-                            dropTarget = nil
-                            return true
-                        } isTargeted: { over in
-                            dropTarget = over ? g : (dropTarget == g ? nil : dropTarget)
-                        }
-                    }
-
-                    GroupCard(label: "Sessions", emoji: "🌊", highlight: dropTarget == "__ungrouped__") {
-                        VStack(spacing: 1) {
-                            let ungrouped = filtered.filter { $0.group == nil }
-                            if ungrouped.isEmpty {
-                                Text(query.isEmpty ? "all grouped ✨" : "no match 🔍")
-                                    .font(.system(size: 11))
+                ScrollView {
+                    VStack(spacing: 2) {
+                        if !searching && !attention.isEmpty {
+                            HStack(spacing: 5) {
+                                Text("🔥 ATTENTION")
+                                    .font(.system(size: 10, weight: .bold))
                                     .foregroundStyle(.secondary)
-                                    .padding(.vertical, 8)
+                                Spacer()
                             }
-                            ForEach(["waiting", "running", "done", "gone"], id: \.self) { st in
-                                ForEach(ungrouped.filter { $0.status == st }) { s in
-                                    SessionRow(s: s, model: model, isSelected: isSelected(s))
-                                        .id(s.session_id)
-                                }
+                            .padding(.horizontal, 12).padding(.top, 2)
+                        }
+                        ForEach(rows) { r in
+                            switch r {
+                            case .header(let g):
+                                headerRow(g)
+                                    .padding(.top, 5)
+                            case .session(let s, let indented):
+                                SessionRow(s: s, model: model, isSelected: isSelected(r),
+                                           onRename: { sess in
+                                               renamingSession = sess
+                                               renameText = sess.title ?? ""
+                                           })
+                                    .padding(.leading, indented ? 16 : 0)
+                                    .id(r.id)
                             }
                         }
+                        if rows.isEmpty {
+                            Text(searching ? "no match 🔍" : "no sessions 💤")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 20)
+                        }
                     }
-                    .dropDestination(for: String.self) { items, _ in
-                        if let sid = items.first { model.assign(sid, to: nil) }
-                        dropTarget = nil
-                        return true
-                    } isTargeted: { over in
-                        dropTarget = over ? "__ungrouped__" : (dropTarget == "__ungrouped__" ? nil : dropTarget)
-                    }
+                    .padding(.horizontal, 12)
                 }
-                .padding(.horizontal, 12)
+                .frame(height: listHeight)
+                .onChange(of: scrollTarget) { t in
+                    if let t { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) } }
+                }
             }
-            .frame(height: listHeight)
-            .onChange(of: scrollTarget) { t in
-                if let t { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) } }
+
+            if let sess = renamingSession {
+                HStack(spacing: 8) {
+                    Text("Rename session →").font(.system(size: 11)).foregroundStyle(.secondary)
+                    TextField("session name (empty = auto)", text: $renameText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .frame(width: 200)
+                        .onSubmit {
+                            model.renameSession(sess.session_id,
+                                                to: renameText.trimmingCharacters(in: .whitespaces))
+                            renamingSession = nil
+                        }
+                    Button("✕") { renamingSession = nil }.buttonStyle(.plain).font(.system(size: 10))
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
             }
+
+            if let g = renaming {
+                HStack(spacing: 8) {
+                    Text("Rename \(g) →").font(.system(size: 11)).foregroundStyle(.secondary)
+                    TextField("new name", text: $renameText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .frame(width: 150)
+                        .onSubmit {
+                            let name = renameText.trimmingCharacters(in: .whitespaces)
+                            if !name.isEmpty, name != g { model.renameGroup(g, to: name) }
+                            renaming = nil
+                        }
+                    Button("✕") { renaming = nil }.buttonStyle(.plain).font(.system(size: 10))
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
             }
 
             HStack(spacing: 8) {
@@ -421,6 +513,7 @@ struct PanelView: View {
                             let name = newGroupName.trimmingCharacters(in: .whitespaces)
                             if !name.isEmpty, !groups.contains(name) {
                                 pendingGroups.append(name)
+                                expanded.insert(name)
                             }
                             newGroupName = ""
                             addingGroup = false
@@ -437,7 +530,7 @@ struct PanelView: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     Spacer()
-                    Text("↩ jump · esc close · drag to group")
+                    Text("↩ open · →← fold · drag to group")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
@@ -469,9 +562,8 @@ struct PanelView: View {
             searchFocused = true
         }
         .onAppear {
-            // the field editor eats arrow keys before onMoveCommand fires, so
-            // a local event monitor routes them here instead
             model.moveSelection = { move($0) }
+            model.arrowLR = { handleLR($0) }
         }
     }
 }
@@ -526,6 +618,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             switch event.keyCode {
             case 125: self.model.moveSelection?(1); return nil // down
             case 126: self.model.moveSelection?(-1); return nil // up
+            case 123: return self.model.arrowLR?(-1) == true ? nil : event // left
+            case 124: return self.model.arrowLR?(1) == true ? nil : event // right
             default: return event
             }
         }
