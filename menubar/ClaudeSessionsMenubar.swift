@@ -41,6 +41,7 @@ final class Model: ObservableObject {
     @Published var focusTick = 0
     var moveSelection: ((Int) -> Void)?
     var arrowLR: ((Int) -> Bool)?
+    var hotkeyNumber: ((Int) -> Void)?
     var timer: Timer?
 
     func start() {
@@ -408,10 +409,19 @@ struct GroupHeaderRow: View {
     let expanded: Bool
     let isSelected: Bool
     let highlight: Bool
+    var hotkeyNumber: Int? = nil
     let toggle: () -> Void
 
     var body: some View {
         HStack(spacing: 7) {
+            if let n = hotkeyNumber {
+                Text("\(n)")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .frame(width: 14, height: 14)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+                    .foregroundStyle(.secondary)
+                    .help("⌃⌥\(n)")
+            }
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.secondary)
@@ -474,18 +484,54 @@ struct PanelView: View {
 
     static let attentionOrder = ["waiting": 0, "input": 1, "finished": 2, "running": 3]
 
-    // ⌃⌥N badge numbering — must mirror 'cst jump-index' canonical order
-    var hotkeyIndex: [String: Int] {
-        let pr = ["waiting": 0, "input": 1, "finished": 2, "running": 3, "done": 4, "gone": 5]
-        let ordered = model.sessions.sorted { a, b in
-            let pa = pr[a.status] ?? 9
-            let pb = pr[b.status] ?? 9
-            if pa != pb { return pa < pb }
-            return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+    // ⌃⌥N targets follow the visible structure: attention sessions and
+    // expanded members get numbers; a collapsed group gets one number itself
+    enum HotkeyTarget {
+        case session(Session)
+        case group(String)
+    }
+
+    var hotkeyTargets: [HotkeyTarget] {
+        var out: [HotkeyTarget] = []
+        for r in rows {
+            switch r {
+            case .session(let s, _): out.append(.session(s))
+            case .header(let g):
+                if !searching && !expanded.contains(g) { out.append(.group(g)) }
+            }
         }
+        return Array(out.prefix(9))
+    }
+
+    var sessionNumbers: [String: Int] {
         var m: [String: Int] = [:]
-        for (i, s) in ordered.prefix(9).enumerated() { m[s.session_id] = i + 1 }
+        for (i, t) in hotkeyTargets.enumerated() {
+            if case .session(let s) = t { m[s.session_id] = i + 1 }
+        }
         return m
+    }
+
+    var groupNumbers: [String: Int] {
+        var m: [String: Int] = [:]
+        for (i, t) in hotkeyTargets.enumerated() {
+            if case .group(let g) = t { m[g] = i + 1 }
+        }
+        return m
+    }
+
+    func handleHotkey(_ n: Int) {
+        guard let target = hotkeyTargets[safe: n - 1] else { return }
+        switch target {
+        case .session(let s):
+            model.jump(s)
+        case .group(let g):
+            expanded.insert(g)
+            appDelegate?.showPanel()
+            if let idx = rows.firstIndex(where: { $0.id == "hdr-\(g)" }) {
+                selected = idx
+                scrollTarget = "hdr-\(g)"
+            }
+        }
     }
 
     var attention: [Session] {
@@ -578,7 +624,8 @@ struct PanelView: View {
             hasAttention: hasAttention,
             expanded: expanded.contains(g),
             isSelected: isSelected(.header(g)),
-            highlight: dropTarget == g
+            highlight: dropTarget == g,
+            hotkeyNumber: groupNumbers[g]
         ) { toggleExpand(g) }
         .contextMenu {
             if g != "__ungrouped__" {
@@ -654,7 +701,7 @@ struct PanelView: View {
                                     .padding(.top, 5)
                             case .session(let s, let indented):
                                 SessionRow(s: s, model: model, isSelected: isSelected(r),
-                                           hotkeyNumber: hotkeyIndex[s.session_id],
+                                           hotkeyNumber: sessionNumbers[s.session_id],
                                            onRename: { sess in
                                                renamingSession = sess
                                                renameText = sess.title ?? ""
@@ -779,6 +826,7 @@ struct PanelView: View {
         .onAppear {
             model.moveSelection = { move($0) }
             model.arrowLR = { handleLR($0) }
+            model.hotkeyNumber = { handleHotkey($0) }
         }
     }
 }
@@ -922,8 +970,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var digitHotKeyRefs: [EventHotKeyRef?] = []
 
     func jumpIndex(_ n: Int) {
-        hidePanel()
-        DispatchQueue.global().async { runCST(["jump-index", "\(n)"]) }
+        if let handler = model.hotkeyNumber {
+            handler(n)
+        } else {
+            DispatchQueue.global().async { runCST(["jump-index", "\(n)"]) }
+        }
     }
 
     func jumpAttention() {
