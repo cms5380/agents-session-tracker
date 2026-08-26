@@ -277,6 +277,14 @@ struct PanelView: View {
         return Array(derived.union(query.isEmpty ? Set(pendingGroups) : [])).sorted()
     }
 
+    // ScrollView has no intrinsic height inside a borderless panel — estimate
+    // from row/card counts so the list is actually visible
+    var listHeight: CGFloat {
+        let rows = CGFloat(filtered.count) * 47
+        let cards = CGFloat(groups.count + 1) * 44
+        return min(max(rows + cards, 120), 460)
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
@@ -353,7 +361,7 @@ struct PanelView: View {
                 }
                 .padding(.horizontal, 12)
             }
-            .frame(maxHeight: 440)
+            .frame(height: listHeight)
 
             HStack(spacing: 8) {
                 if addingGroup {
