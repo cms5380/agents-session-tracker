@@ -280,8 +280,44 @@ cmd_clean() {
   done
 }
 
+# merged view for UIs: tracked sessions + daemon session list, with dead
+# sessions demoted to "gone" and untracked daemon sessions synthesized
+cmd_sessions_json() {
+  local now sessions agents_json extra
+  now=$(date +%s)
+  sessions=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s --argjson now "$now" '
+    [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
+    | sort_by(-.updated_at)')
+  agents_json=$(claude agents --json 2>/dev/null || echo '[]')
+
+  sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
+    local sid pid bg
+    sid=$(jq -r '.session_id' <<<"$s")
+    pid=$(jq -r '.pid // empty' <<<"$s")
+    bg=$(jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | length' <<<"$agents_json")
+    if [ "$bg" = "0" ] && [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      jq -c '.status = "gone"' <<<"$s"
+    else
+      printf '%s\n' "$s"
+    fi
+  done | jq -s '.')
+
+  extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" '
+    [.[] | select([.sessionId] | inside($tracked) | not) | {
+      session_id: .sessionId,
+      status: (if .status == "busy" then "running" else "done" end),
+      cwd: .cwd,
+      title: (if (.name // "") != "" then .name else null end),
+      updated_at: 0,
+      bg: true,
+      kind: .kind
+    }]' <<<"$agents_json")
+  jq --argjson extra "$extra" '. + $extra' <<<"$sessions"
+}
+
 case "${1:-list}" in
   list) cmd_list ;;
+  sessions-json) cmd_sessions_json ;;
   jump) [ $# -ge 2 ] || { echo "usage: cst jump <session-id>" >&2; exit 1; }; cmd_jump "$2" ;;
   copy-resume) [ $# -ge 2 ] || { echo "usage: cst copy-resume <session-id>" >&2; exit 1; }; cmd_copy_resume "$2" ;;
   agents-tab) [ $# -ge 2 ] || { echo "usage: cst agents-tab <cwd>" >&2; exit 1; }; open_agents_tab "$2" ;;
