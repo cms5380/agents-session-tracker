@@ -975,7 +975,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case 126: self.model.moveSelection?(-1); return nil // up
             case 123: return self.model.arrowLR?(-1) == true ? nil : event // left
             case 124: return self.model.arrowLR?(1) == true ? nil : event // right
-            default: return event
+            default:
+                // ⌥1..9 while the panel is open — jump to the badged target
+                if event.modifierFlags.contains(.option) {
+                    let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5,
+                                                 22: 6, 26: 7, 28: 8, 25: 9]
+                    if let n = digits[event.keyCode] {
+                        self.model.hotkeyNumber?(n)
+                        return nil
+                    }
+                }
+                return event
             }
         }
     }
@@ -1048,16 +1058,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(cmdKey | optionKey), attentionID,
                             GetEventDispatcherTarget(), 0, &attentionHotKeyRef)
 
-        // ⌥1..9 — jump to the Nth numbered target (matches badges)
-        let digitCodes: [Int] = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
-                                 kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
-        for (i, code) in digitCodes.enumerated() {
-            var ref: EventHotKeyRef?
-            let id = EventHotKeyID(signature: OSType(0x43535453), id: UInt32(10 + i))
-            RegisterEventHotKey(UInt32(code), UInt32(optionKey), id,
-                                GetEventDispatcherTarget(), 0, &ref)
-            digitHotKeyRefs.append(ref)
-        }
+        // number jumps are panel-local (handled by the key monitor while the
+        // panel is key) so they never shadow typing in other apps
     }
 
     var attentionHotKeyRef: EventHotKeyRef?
