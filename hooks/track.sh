@@ -28,7 +28,10 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
 fi
 
 case "$event" in
-  SessionStart|UserPromptSubmit|PreToolUse) status="running" ;;
+  # a freshly opened/resumed session sits idle at the prompt — only an actual
+  # prompt submission marks it running
+  SessionStart) status="done" ;;
+  UserPromptSubmit|PreToolUse) status="running" ;;
   Notification)
     # only actionable asks raise NEEDS INPUT: permission prompts. The 60s-idle
     # ping means the turn is over; other notifications (completion notices,
