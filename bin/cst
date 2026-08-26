@@ -11,6 +11,20 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.json"
 NAMES_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/names.json"
+AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-cache.json"
+
+# The menubar app refreshes sessions-json every 5s, which keeps this cache
+# warm — jumps then skip the ~0.6s claude CLI startup entirely.
+fetch_agents() {
+  if [ -f "$AGENTS_CACHE" ]; then
+    local age=$(( $(date +%s) - $(stat -f %m "$AGENTS_CACHE" 2>/dev/null || echo 0) ))
+    if [ "$age" -lt 10 ]; then cat "$AGENTS_CACHE"; return 0; fi
+  fi
+  local out
+  out=$(claude agents --json 2>/dev/null || echo '[]')
+  printf '%s' "$out" >"$AGENTS_CACHE.tmp" 2>/dev/null && mv "$AGENTS_CACHE.tmp" "$AGENTS_CACHE" 2>/dev/null
+  printf '%s' "$out"
+}
 mkdir -p "$STATE_DIR"
 
 status_icon() {
@@ -127,7 +141,7 @@ read_pid_env() { # $1=pid → sets R_* from that process's environment
 # exact resolution: the daemon knows each session's client pid
 resolve_by_session() { # $1=session id
   local pid
-  pid=$(claude agents --json 2>/dev/null \
+  pid=$(fetch_agents \
     | jq -r --arg sid "$1" '[.[] | select(.sessionId == $sid and .kind == "interactive")]
                             | (first // {}).pid // empty')
   [ -n "$pid" ] || return 1
@@ -248,7 +262,7 @@ APPLESCRIPT
 # else open a new tab attaching directly by id
 jump_bg() { # $1=session id
   local name
-  name=$(claude agents --json 2>/dev/null \
+  name=$(fetch_agents \
     | jq -r --arg sid "$1" '[.[] | select(.sessionId == $sid)] | (first // {}).name // empty')
   if [ -n "$name" ] && jump_iterm_by_title "$name" >/dev/null 2>&1; then return 0; fi
   open_tab_with "claude attach $1"
@@ -256,7 +270,7 @@ jump_bg() { # $1=session id
 
 bg_agent_status() { # $1=session id → busy|idle|empty (background kind only —
                     # interactive sessions live in a terminal we can focus)
-  claude agents --json 2>/dev/null \
+  fetch_agents \
     | jq -r --arg sid "$1" '[.[] | select(.sessionId == $sid and .kind == "background")]
                             | (first // {}).status // empty'
 }
@@ -300,9 +314,9 @@ cmd_jump() {
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
 
-  # one daemon lookup, reused for every remaining strategy
+  # one daemon lookup (cache-first), reused for every remaining strategy
   local agents entry kind daemon_pid agent_name
-  agents=$(claude agents --json 2>/dev/null || echo '[]')
+  agents=$(fetch_agents)
   entry=$(jq -c --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | first // {}' <<<"$agents")
   kind=$(jq -r '.kind // empty' <<<"$entry")
   daemon_pid=$(jq -r '.pid // empty' <<<"$entry")
@@ -374,6 +388,8 @@ cmd_sessions_json() {
     [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
     | sort_by(-.updated_at)')
   agents_json=$(claude agents --json 2>/dev/null || echo '[]')
+  # this is the cache producer for fetch_agents (runs every 5s via the app)
+  printf '%s' "$agents_json" >"$AGENTS_CACHE.tmp" 2>/dev/null && mv "$AGENTS_CACHE.tmp" "$AGENTS_CACHE" 2>/dev/null || true
 
   sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
     local sid pid bg pcmd
