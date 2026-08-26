@@ -173,21 +173,72 @@ func mascotNSImage(pixel: CGFloat) -> NSImage {
     return img
 }
 
+// 8x8 dot glyphs for session status, same pixel flavor as the mascot
+let glyphBell: [String] = [
+    "...oo...",
+    "..oooo..",
+    ".oooooo.",
+    ".oooooo.",
+    ".oooooo.",
+    "oooooooo",
+    "...oo...",
+    "........",
+]
+let glyphBolt: [String] = [
+    "....ooo.",
+    "...ooo..",
+    "..ooo...",
+    ".ooooooo",
+    "ooooooo.",
+    "...ooo..",
+    "..ooo...",
+    ".ooo....",
+]
+let glyphZ: [String] = [
+    ".oooooo.",
+    ".....oo.",
+    "....oo..",
+    "...oo...",
+    "..oo....",
+    ".oo.....",
+    ".oooooo.",
+    "........",
+]
+
+struct PixelGlyph: View {
+    let map: [String]
+    let color: Color
+    var pixel: CGFloat = 2
+    var body: some View {
+        Canvas { ctx, _ in
+            for (y, row) in map.enumerated() {
+                for (x, ch) in row.enumerated() where ch == "o" {
+                    ctx.fill(Path(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                                         width: pixel, height: pixel)),
+                             with: .color(color))
+                }
+            }
+        }
+        .frame(width: pixel * 8, height: pixel * 8)
+    }
+}
+
+@ViewBuilder
+func statusGlyph(_ status: String) -> some View {
+    switch status {
+    case "waiting": PixelGlyph(map: glyphBell, color: Color(nsColor: .systemOrange))
+    case "running": PixelGlyph(map: glyphBolt, color: Color(nsColor: .systemGreen))
+    case "gone": PixelGlyph(map: glyphZ, color: Color(nsColor: .systemGray).opacity(0.45))
+    default: PixelGlyph(map: glyphZ, color: Color(nsColor: .systemGray))
+    }
+}
+
 func statusColor(_ status: String) -> Color {
     switch status {
     case "waiting": return Color(nsColor: .systemOrange)
     case "running": return Color(nsColor: .systemGreen)
     case "gone": return Color(nsColor: .systemGray).opacity(0.5)
     default: return Color(nsColor: .systemGray)
-    }
-}
-
-func statusEmoji(_ status: String) -> String {
-    switch status {
-    case "waiting": return "🐝"
-    case "running": return "🏃"
-    case "gone": return "💤"
-    default: return "☕️"
     }
 }
 
@@ -227,7 +278,7 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            Text(statusEmoji(s.status)).font(.system(size: 14))
+            statusGlyph(s.status)
             VStack(alignment: .leading, spacing: 1) {
                 Text(name)
                     .font(.system(size: 13, weight: .medium, design: .rounded))
