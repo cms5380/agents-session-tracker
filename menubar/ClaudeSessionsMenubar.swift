@@ -1081,17 +1081,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // always the mascot; status rides in the text next to it
         button.image = mascotNSImage(pixel: 1.6)
         let count = { (st: String) in sessions.filter { $0.status == st }.count }
-        if count("waiting") > 0 {
-            button.title = " !\(count("waiting"))"
-        } else if count("input") > 0 {
-            button.title = " ?\(count("input"))"
-        } else if count("finished") > 0 {
-            button.title = " ✓\(count("finished"))"
-        } else if count("running") > 0 {
-            button.title = " \(count("running"))"
-        } else {
-            button.title = ""
-        }
+        let n = count("waiting") + count("input") + count("finished") + count("running")
+        button.title = n > 0 ? " \(n)" : ""
         button.imagePosition = .imageLeading
     }
 }
