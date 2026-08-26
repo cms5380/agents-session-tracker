@@ -38,11 +38,11 @@ case "$event" in
     # forwarded task events) keep the current status.
     case "$message" in
       *permission*|*Permission*) status="waiting" ;;
-      *"waiting for your input"*) status="done" ;;
+      *"waiting for your input"*) status="" ;;
       *) status="" ;;
     esac
     ;;
-  Stop) status="done" ;;
+  Stop) status="finished" ;;
   SessionEnd) status="ended" ;;
   *) status="running" ;;
 esac

@@ -167,7 +167,7 @@ func mascotNSImage(pixel: CGFloat) -> NSImage {
 // frames (row 0 = effect/headroom row, rows 1-10 = body).
 // chars: o=body  != orange alert  z=gray z  -=closed eye
 
-func mascotBody(eyes: String, legs: String) -> [String] {
+func mascotBody(eyes: String, legs: String, armsUp: Bool = false) -> [String] {
     // eyes: "open" | "sleepy" | "closed", legs: "a" | "b" | "tuck"
     let eyeRowOpen = "..oo.oooooo.oo.."
     let eyeRowSolid = "..oooooooooooo.."
@@ -183,6 +183,20 @@ func mascotBody(eyes: String, legs: String) -> [String] {
     case "b": legRow = "..o...o..o...o.."
     case "tuck": legRow = "....o.o..o.o...."
     default: legRow = "...o.o....o.o..."
+    }
+    if armsUp {
+        return [
+            "oooooooooooooooo",
+            "oooooooooooooooo",
+            e1,
+            e2,
+            "..oooooooooooo..",
+            "..oooooooooooo..",
+            "..oooooooooooo..",
+            "..oooooooooooo..",
+            legRow,
+            legRow,
+        ]
     }
     return [
         "..oooooooooooo..",
@@ -212,6 +226,12 @@ func mascotFrames(_ status: String) -> (frames: [[String]], interval: Double, ti
         let f1 = [alert] + mascotBody(eyes: "open", legs: "a")
         let f2 = [empty] + mascotBody(eyes: "open", legs: "tuck")
         return ([f1, f2], 0.4, claudeOrange)
+    case "finished":
+        // arms-up cheer with green sparks — result ready for review
+        let sparks = ".g............g."
+        let f1 = [sparks] + mascotBody(eyes: "open", legs: "tuck", armsUp: true)
+        let f2 = [empty] + mascotBody(eyes: "open", legs: "a")
+        return ([f1, f2], 0.45, claudeOrange)
     case "gone":
         let f = [empty] + mascotBody(eyes: "closed", legs: "tuck")
         return ([f], 1, claudeOrange.opacity(0.3))
@@ -241,6 +261,7 @@ struct StatusMascot: View {
                                           width: pixel, height: pixel)
                         switch ch {
                         case "o": ctx.fill(Path(rect), with: .color(spec.tint))
+                        case "g": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGreen)))
                         case "!": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemOrange)))
                         case "z": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGray)))
                         case "-": ctx.fill(Path(rect), with: .color(Color(red: 0.45, green: 0.2, blue: 0.13)))
@@ -263,6 +284,7 @@ func statusColor(_ status: String) -> Color {
     switch status {
     case "waiting": return Color(nsColor: .systemOrange)
     case "running": return Color(nsColor: .systemGreen)
+    case "finished": return Color(nsColor: .systemTeal)
     case "gone": return Color(nsColor: .systemGray).opacity(0.5)
     default: return Color(nsColor: .systemGray)
     }
@@ -433,10 +455,14 @@ struct PanelView: View {
 
     var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
+    static let attentionOrder = ["waiting": 0, "finished": 1, "running": 2]
+
     var attention: [Session] {
-        filtered.filter { $0.status == "waiting" || $0.status == "running" }
+        filtered.filter { Self.attentionOrder[$0.status] != nil }
             .sorted { a, b in
-                if a.status != b.status { return a.status == "waiting" }
+                let pa = Self.attentionOrder[a.status] ?? 9
+                let pb = Self.attentionOrder[b.status] ?? 9
+                if pa != pb { return pa < pb }
                 return (a.updated_at ?? 0) > (b.updated_at ?? 0)
             }
     }
@@ -447,14 +473,14 @@ struct PanelView: View {
     }
 
     func restMembers(_ g: String?) -> [Session] {
-        filtered.filter { $0.group == g && $0.status != "waiting" && $0.status != "running" }
+        filtered.filter { $0.group == g && Self.attentionOrder[$0.status] == nil }
     }
 
     // the navigable list, in display order
     var rows: [PanelRow] {
         if searching {
             var out: [PanelRow] = []
-            for st in ["waiting", "running", "done", "gone"] {
+            for st in ["waiting", "finished", "running", "done", "gone"] {
                 out += filtered.filter { $0.status == st }.map { .session($0, indented: false) }
             }
             return out
@@ -514,7 +540,7 @@ struct PanelView: View {
 
     func headerRow(_ g: String) -> some View {
         let members = filtered.filter { $0.group == (g == "__ungrouped__" ? nil : g) }
-        let hasAttention = members.contains { $0.status == "waiting" }
+        let hasAttention = members.contains { $0.status == "waiting" || $0.status == "finished" }
         return GroupHeaderRow(
             name: g,
             count: members.count,
@@ -840,6 +866,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             button.image = NSImage(systemSymbolName: "bell.badge.fill", accessibilityDescription: nil)?
                 .withSymbolConfiguration(.init(paletteColors: [.systemOrange, .labelColor]))
             button.title = " \(waiting)"
+        } else if sessions.contains(where: { $0.status == "finished" }) {
+            let n = sessions.filter { $0.status == "finished" }.count
+            button.image = mascotNSImage(pixel: 1.6)
+            button.title = " ✓\(n)"
         } else if running > 0 {
             button.image = mascotNSImage(pixel: 1.6)
             button.title = " \(running)"

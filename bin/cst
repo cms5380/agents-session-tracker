@@ -274,6 +274,11 @@ cmd_jump() {
       echo "unknown session: $sid" >&2; exit 1
     fi
   fi
+  # jumping to a finished session acknowledges the result
+  if [ "$(jq -r '.status' "$file")" = "finished" ]; then
+    jq '.status = "done"' "$file" >"$file.tmp" && mv "$file.tmp" "$file"
+  fi
+
   local cmux_ws iterm_id tmux_pane tty term_program app pid cwd
   cmux_ws=$(jq -r '.terminal.cmux_workspace_id // empty' "$file")
   iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$file")
@@ -397,9 +402,11 @@ cmd_sessions_json() {
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
       # daemon status corrects stale hook state (permission waits stay waiting)
-      | if $a.kind == "background" and $a.status == "busy" and .status != "waiting" then .status = "running"
+      | if $a.kind == "background" and $a.status == "busy" and (.status | IN("waiting", "finished") | not) then .status = "running"
         elif $a.kind == "background" and $a.status == "idle" and .status == "running" then .status = "done"
-        else . end)
+        else . end
+      # unacknowledged results decay to idle after 30 minutes
+      | if .status == "finished" and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
     | . + $extra
     | map(. + {group: ($groups[.session_id] // null),
                title: ($names[.session_id] // .title)})' <<<"$sessions"
