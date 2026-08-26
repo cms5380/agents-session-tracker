@@ -274,10 +274,11 @@ cmd_jump() {
       echo "unknown session: $sid" >&2; exit 1
     fi
   fi
-  # jumping to a finished session acknowledges the result
-  if [ "$(jq -r '.status' "$file")" = "finished" ]; then
-    jq '.status = "done"' "$file" >"$file.tmp" && mv "$file.tmp" "$file"
-  fi
+  # jumping to a finished/input-waiting session acknowledges it
+  case "$(jq -r '.status' "$file")" in
+    finished|input)
+      jq '.status = "done"' "$file" >"$file.tmp" && mv "$file.tmp" "$file" ;;
+  esac
 
   local cmux_ws iterm_id tmux_pane tty term_program app pid cwd
   cmux_ws=$(jq -r '.terminal.cmux_workspace_id // empty' "$file")
@@ -410,11 +411,11 @@ cmd_sessions_json() {
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
       # daemon status corrects stale hook state (permission waits stay waiting)
-      | if $a.kind == "background" and $a.status == "busy" and (.status | IN("waiting", "finished") | not) then .status = "running"
+      | if $a.kind == "background" and $a.status == "busy" and (.status | IN("waiting", "finished", "input") | not) then .status = "running"
         elif $a.kind == "background" and $a.status == "idle" and .status == "running" then .status = "done"
         else . end
-      # unacknowledged results decay to idle after 30 minutes
-      | if .status == "finished" and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
+      # unacknowledged results / input waits decay to idle after 30 minutes
+      | if (.status | IN("finished", "input")) and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
     | . + $extra
     | map(. + {group: ($groups[.session_id] // null),
                title: ($names[.session_id] // .title)})' <<<"$sessions"
@@ -464,12 +465,25 @@ case "${1:-list}" in
     jq --arg g "$2" 'with_entries(select(.value != $g))' \
       <<<"$existing" >"$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
     ;;
+  jump-index)
+    # cst jump-index <n> — open the Nth session in canonical order
+    # (waiting > finished > running > idle > gone, most recent first)
+    [ $# -ge 2 ] || { echo "usage: cst jump-index <n>" >&2; exit 1; }
+    sid=$(cmd_sessions_json | jq -r --argjson i "$(($2 - 1))" '
+      def pr: if .status == "waiting" then 0 elif .status == "input" then 1
+              elif .status == "finished" then 2 elif .status == "running" then 3
+              elif .status == "done" then 4 else 5 end;
+      sort_by([pr, -(.updated_at // 0)]) | (.[$i] // {}).session_id // empty')
+    [ -n "$sid" ] || exit 0
+    cmd_jump "$sid"
+    ;;
   attention)
     # jump straight to the top-priority attention session
     # (waiting > finished > running, most recent first)
     sid=$(cmd_sessions_json | jq -r '
-      map(select(.status | IN("waiting", "finished", "running")))
-      | sort_by((if .status == "waiting" then 0 elif .status == "finished" then 1 else 2 end),
+      map(select(.status | IN("waiting", "input", "finished", "running")))
+      | sort_by((if .status == "waiting" then 0 elif .status == "input" then 1
+                 elif .status == "finished" then 2 else 3 end),
                 -(.updated_at // 0))
       | (first // {}).session_id // empty')
     if [ -z "$sid" ]; then

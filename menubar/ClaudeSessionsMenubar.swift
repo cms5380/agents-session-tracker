@@ -226,6 +226,12 @@ func mascotFrames(_ status: String) -> (frames: [[String]], interval: Double, ti
         let f1 = [alert] + mascotBody(eyes: "open", legs: "a")
         let f2 = [empty] + mascotBody(eyes: "open", legs: "tuck")
         return ([f1, f2], 0.4, claudeOrange)
+    case "input":
+        // blue ?? blink — Claude replied and awaits your answer
+        let q = ".......??......."
+        let f1 = [q] + mascotBody(eyes: "open", legs: "a")
+        let f2 = [empty] + mascotBody(eyes: "open", legs: "a")
+        return ([f1, f2], 0.6, claudeOrange)
     case "finished":
         // arms-up cheer with green sparks — result ready for review
         let sparks = ".g............g."
@@ -262,6 +268,7 @@ struct StatusMascot: View {
                         switch ch {
                         case "o": ctx.fill(Path(rect), with: .color(spec.tint))
                         case "g": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGreen)))
+                        case "?": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemBlue)))
                         case "!": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemOrange)))
                         case "z": ctx.fill(Path(rect), with: .color(Color(nsColor: .systemGray)))
                         case "-": ctx.fill(Path(rect), with: .color(Color(red: 0.45, green: 0.2, blue: 0.13)))
@@ -283,6 +290,7 @@ func statusGlyph(_ status: String) -> some View {
 func statusColor(_ status: String) -> Color {
     switch status {
     case "waiting": return Color(nsColor: .systemOrange)
+    case "input": return Color(nsColor: .systemBlue)
     case "running": return Color(nsColor: .systemGreen)
     case "finished": return Color(nsColor: .systemTeal)
     case "gone": return Color(nsColor: .systemGray).opacity(0.5)
@@ -317,6 +325,7 @@ struct SessionRow: View {
     let s: Session
     let model: Model
     var isSelected: Bool = false
+    var hotkeyNumber: Int? = nil
     var onRename: ((Session) -> Void)? = nil
     @State private var hovering = false
 
@@ -326,6 +335,14 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 9) {
+            if let n = hotkeyNumber {
+                Text("\(n)")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .frame(width: 14, height: 14)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+                    .foregroundStyle(.secondary)
+                    .help("⌃⌥\(n)")
+            }
             statusGlyph(s.status)
             VStack(alignment: .leading, spacing: 1) {
                 Text(name)
@@ -455,7 +472,21 @@ struct PanelView: View {
 
     var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
-    static let attentionOrder = ["waiting": 0, "finished": 1, "running": 2]
+    static let attentionOrder = ["waiting": 0, "input": 1, "finished": 2, "running": 3]
+
+    // ⌃⌥N badge numbering — must mirror 'cst jump-index' canonical order
+    var hotkeyIndex: [String: Int] {
+        let pr = ["waiting": 0, "input": 1, "finished": 2, "running": 3, "done": 4, "gone": 5]
+        let ordered = model.sessions.sorted { a, b in
+            let pa = pr[a.status] ?? 9
+            let pb = pr[b.status] ?? 9
+            if pa != pb { return pa < pb }
+            return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+        }
+        var m: [String: Int] = [:]
+        for (i, s) in ordered.prefix(9).enumerated() { m[s.session_id] = i + 1 }
+        return m
+    }
 
     var attention: [Session] {
         filtered.filter { Self.attentionOrder[$0.status] != nil }
@@ -480,7 +511,7 @@ struct PanelView: View {
     var rows: [PanelRow] {
         if searching {
             var out: [PanelRow] = []
-            for st in ["waiting", "finished", "running", "done", "gone"] {
+            for st in ["waiting", "input", "finished", "running", "done", "gone"] {
                 out += filtered.filter { $0.status == st }.map { .session($0, indented: false) }
             }
             return out
@@ -540,7 +571,7 @@ struct PanelView: View {
 
     func headerRow(_ g: String) -> some View {
         let members = filtered.filter { $0.group == (g == "__ungrouped__" ? nil : g) }
-        let hasAttention = members.contains { $0.status == "waiting" || $0.status == "finished" }
+        let hasAttention = members.contains { ["waiting", "input", "finished"].contains($0.status) }
         return GroupHeaderRow(
             name: g,
             count: members.count,
@@ -623,6 +654,7 @@ struct PanelView: View {
                                     .padding(.top, 5)
                             case .session(let s, let indented):
                                 SessionRow(s: s, model: model, isSelected: isSelected(r),
+                                           hotkeyNumber: hotkeyIndex[s.session_id],
                                            onRename: { sess in
                                                renamingSession = sess
                                                renameText = sess.title ?? ""
@@ -856,6 +888,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.async {
                 if hkID.id == 2 {
                     appDelegate?.jumpAttention()
+                } else if hkID.id >= 10 {
+                    appDelegate?.jumpIndex(Int(hkID.id) - 9)
                 } else {
                     appDelegate?.togglePanel()
                 }
@@ -871,9 +905,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let attentionID = EventHotKeyID(signature: OSType(0x43535453), id: 2)
         RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(controlKey | optionKey), attentionID,
                             GetApplicationEventTarget(), 0, &attentionHotKeyRef)
+
+        // ⌃⌥1..9 — jump to the Nth session (canonical order, matches badges)
+        let digitCodes: [Int] = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
+                                 kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
+        for (i, code) in digitCodes.enumerated() {
+            var ref: EventHotKeyRef?
+            let id = EventHotKeyID(signature: OSType(0x43535453), id: UInt32(10 + i))
+            RegisterEventHotKey(UInt32(code), UInt32(controlKey | optionKey), id,
+                                GetApplicationEventTarget(), 0, &ref)
+            digitHotKeyRefs.append(ref)
+        }
     }
 
     var attentionHotKeyRef: EventHotKeyRef?
+    var digitHotKeyRefs: [EventHotKeyRef?] = []
+
+    func jumpIndex(_ n: Int) {
+        hidePanel()
+        DispatchQueue.global().async { runCST(["jump-index", "\(n)"]) }
+    }
 
     func jumpAttention() {
         hidePanel()
@@ -888,6 +939,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             button.image = NSImage(systemSymbolName: "bell.badge.fill", accessibilityDescription: nil)?
                 .withSymbolConfiguration(.init(paletteColors: [.systemOrange, .labelColor]))
             button.title = " \(waiting)"
+        } else if sessions.contains(where: { $0.status == "input" }) {
+            let n = sessions.filter { $0.status == "input" }.count
+            button.image = mascotNSImage(pixel: 1.6)
+            button.title = " ?\(n)"
         } else if sessions.contains(where: { $0.status == "finished" }) {
             let n = sessions.filter { $0.status == "finished" }.count
             button.image = mascotNSImage(pixel: 1.6)
