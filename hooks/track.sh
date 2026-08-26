@@ -51,6 +51,14 @@ esac
 claude_tty=$(ps -o tty= -p "$PPID" 2>/dev/null | tr -d ' ' || true)
 [ "$claude_tty" = "??" ] && claude_tty=""
 
+# classify the owning process so phantom sessions (spawned by agents-view
+# TUIs / the spare pool) can be told apart from real clients after death
+owner_cmd=$(ps -o command= -p "$PPID" 2>/dev/null || true)
+case "$owner_cmd" in
+  *bg-spare*|*bg-pty-host*|*"claude agents"*) owner="pool" ;;
+  *) owner="client" ;;
+esac
+
 # VSCode-spawned sessions have no terminal env but can be jumped to via the app
 app=""
 if [ "${TERM_PROGRAM:-}" = "vscode" ] || [ -n "${VSCODE_GIT_ASKPASS_MAIN:-}" ] || [ "${__CFBundleIdentifier:-}" = "com.microsoft.VSCode" ]; then
@@ -77,12 +85,14 @@ jq -n \
   --arg tty "$claude_tty" \
   --arg app "$app" \
   --arg pid "$PPID" \
+  --arg owner "$owner" \
   --arg title "$title" \
   --arg transcript "$transcript" \
   '$prev * {
     session_id: $session_id,
     last_event: $event,
     pid: ($pid | tonumber),
+    owner: $owner,
     updated_at: ($updated_at | tonumber)
   }
   | .status = (if $status == "" then (.status // "running") else $status end)
