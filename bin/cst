@@ -5,6 +5,9 @@
 #   cst clean [hours]     drop ended sessions and sessions idle > N hours (default 24)
 set -euo pipefail
 
+# SwiftBar/launchd run with a minimal PATH — make sure claude & friends resolve
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 mkdir -p "$STATE_DIR"
 
@@ -104,6 +107,38 @@ APPLESCRIPT
 # Hooks may run under the Claude Code daemon (no terminal env), so recorded
 # handles can be empty. Resolve at jump time: find the live claude client
 # process for this session's cwd and read terminal identity from its env.
+read_pid_env() { # $1=pid → sets R_* from that process's environment
+  R_ITERM=""; R_CMUX=""; R_TMUX=""; R_TERM=""; R_TTY=""
+  local envs
+  envs=$(ps eww -o command= -p "$1" 2>/dev/null | tr ' ' '\n')
+  [ -n "$envs" ] || return 1
+  R_ITERM=$(grep -m1 '^ITERM_SESSION_ID=' <<<"$envs" | cut -d= -f2- || true)
+  R_CMUX=$(grep -m1 '^CMUX_WORKSPACE_ID=' <<<"$envs" | cut -d= -f2- || true)
+  R_TMUX=$(grep -m1 '^TMUX_PANE=' <<<"$envs" | cut -d= -f2- || true)
+  R_TERM=$(grep -m1 '^TERM_PROGRAM=' <<<"$envs" | cut -d= -f2- || true)
+  R_TTY=$(ps -o tty= -p "$1" 2>/dev/null | tr -d ' ')
+  [ "$R_TTY" = "??" ] && R_TTY=""
+  [ -n "$R_ITERM$R_CMUX$R_TMUX$R_TTY" ]
+}
+
+# exact resolution: the daemon knows each session's client pid
+resolve_by_session() { # $1=session id
+  local pid
+  pid=$(claude agents --json 2>/dev/null \
+    | jq -r --arg sid "$1" '[.[] | select(.sessionId == $sid and .kind == "interactive")]
+                            | (first // {}).pid // empty')
+  [ -n "$pid" ] || return 1
+  read_pid_env "$pid"
+}
+
+jump_resolved() {
+  if [ -n "$R_CMUX" ] && jump_cmux "$R_CMUX"; then return 0; fi
+  if [ -n "$R_ITERM" ] && jump_iterm "$R_ITERM" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$R_TMUX" ] && jump_tmux "$R_TMUX" "$R_TERM"; then return 0; fi
+  if [ -n "$R_TTY" ] && [ "$R_TERM" = "Apple_Terminal" ] && jump_terminal_app "$R_TTY" >/dev/null 2>&1; then return 0; fi
+  return 1
+}
+
 resolve_live() { # $1=session cwd → sets R_ITERM/R_CMUX/R_TMUX/R_TERM/R_TTY
   R_ITERM=""; R_CMUX=""; R_TMUX=""; R_TERM=""; R_TTY=""
   local want="$1" pid cmd pcwd envs
@@ -190,18 +225,17 @@ cmd_jump() {
   if [ "$app" = "vscode" ]; then
     open -a "Visual Studio Code" "$cwd" 2>/dev/null && exit 0
   fi
+
+  # exact: the daemon knows the interactive client pid for this session
+  if resolve_by_session "$sid" && jump_resolved; then exit 0; fi
+
   if [ -n "$cmux_ws" ] && jump_cmux "$cmux_ws"; then exit 0; fi
   if [ -n "$iterm_id" ] && jump_iterm "$iterm_id" >/dev/null 2>&1; then exit 0; fi
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
 
-  # recorded handles missing/stale — resolve from the live client process
-  if resolve_live "$cwd"; then
-    if [ -n "$R_CMUX" ] && jump_cmux "$R_CMUX"; then exit 0; fi
-    if [ -n "$R_ITERM" ] && jump_iterm "$R_ITERM" >/dev/null 2>&1; then exit 0; fi
-    if [ -n "$R_TMUX" ] && jump_tmux "$R_TMUX" "$R_TERM"; then exit 0; fi
-    if [ -n "$R_TTY" ] && [ "$R_TERM" = "Apple_Terminal" ] && jump_terminal_app "$R_TTY" >/dev/null 2>&1; then exit 0; fi
-  fi
+  # recorded handles missing/stale — resolve from a live client process by cwd
+  if resolve_live "$cwd" && jump_resolved; then exit 0; fi
 
   # no existing terminal to focus. live background agent → attach picker
   if [ -n "$(bg_agent_status "$sid")" ]; then
@@ -251,18 +285,13 @@ case "${1:-list}" in
   jump) [ $# -ge 2 ] || { echo "usage: cst jump <session-id>" >&2; exit 1; }; cmd_jump "$2" ;;
   copy-resume) [ $# -ge 2 ] || { echo "usage: cst copy-resume <session-id>" >&2; exit 1; }; cmd_copy_resume "$2" ;;
   agents-tab) [ $# -ge 2 ] || { echo "usage: cst agents-tab <cwd>" >&2; exit 1; }; open_agents_tab "$2" ;;
-  focus)
-    # focus the terminal hosting the claude client running in <cwd>
-    [ $# -ge 2 ] || { echo "usage: cst focus <cwd>" >&2; exit 1; }
-    if resolve_live "$2"; then
-      { [ -n "$R_CMUX" ] && jump_cmux "$R_CMUX"; } ||
-      { [ -n "$R_ITERM" ] && jump_iterm "$R_ITERM" >/dev/null 2>&1; } ||
-      { [ -n "$R_TMUX" ] && jump_tmux "$R_TMUX" "$R_TERM"; } ||
-      { [ -n "$R_TTY" ] && [ "$R_TERM" = "Apple_Terminal" ] && jump_terminal_app "$R_TTY" >/dev/null 2>&1; } ||
-      open_agents_tab "$2" >/dev/null 2>&1
-    else
-      open_agents_tab "$2" >/dev/null 2>&1
-    fi
+  focus-agent)
+    # focus the terminal of an untracked interactive session: exact pid from
+    # the daemon, cwd scan as fallback ($3=cwd)
+    [ $# -ge 2 ] || { echo "usage: cst focus-agent <session-id> [cwd]" >&2; exit 1; }
+    if resolve_by_session "$2" && jump_resolved; then exit 0; fi
+    if [ -n "${3:-}" ] && resolve_live "$3" && jump_resolved; then exit 0; fi
+    [ -n "${3:-}" ] && open_agents_tab "$3" >/dev/null 2>&1
     ;;
   clean) cmd_clean "${2:-}" ;;
   *) echo "usage: cst [list|jump <id>|copy-resume <id>|clean [hours]]" >&2; exit 1 ;;

@@ -7,6 +7,9 @@
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 set -uo pipefail
 
+# SwiftBar runs with a minimal PATH — make sure claude & jq resolve
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 # deployed runtime first; repo checkout fallback (symlinked plugin can't rely on $0)
 CST="$HOME/.claude/session-tracker/cst"
@@ -90,7 +93,7 @@ render_group() { # $1=status filter, $2=header, $3=dot color, $4=click action
     [ -n "$msg" ] && tip="$msg — $tip"
     if [ "$(jq -r '.bg // false' <<<"$s")" = "true" ]; then
       if [ "$(jq -r '.kind // ""' <<<"$s")" = "interactive" ]; then
-        echo "$name  ·  term | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=focus param2=\"$cwd\" terminal=false refresh=false"
+        echo "$name  ·  term | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=focus-agent param2=$sid param3=\"$cwd\" terminal=false refresh=false"
       else
         echo "$name  ·  bg | sfimage=circle.dotted sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=agents-tab param2=\"$cwd\" terminal=false refresh=false"
       fi
