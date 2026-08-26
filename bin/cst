@@ -215,13 +215,38 @@ focus_hub() {
 # kept for compatibility; the hub replaces per-directory pickers
 open_agents_tab() { focus_hub; }
 
-# jump to a background session: focus a tab already attached to it, else open
-# a new tab attaching directly by id
+jump_iterm_by_title() { # $1=title fragment — attach tabs are titled with the agent name
+  osascript - "$1" <<'APPLESCRIPT'
+on run argv
+  set needle to item 1 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if (name of s) contains needle then
+            select s
+            select t
+            set index of w to 1
+            activate
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  error "not found"
+end run
+APPLESCRIPT
+}
+
+# jump to a background session: focus a tab already attached to it (attached
+# clients all show as 'claude agents', so match by tab title = agent name),
+# else open a new tab attaching directly by id
 jump_bg() { # $1=session id
-  local pid
-  for pid in $(pgrep -f "claude attach $1" 2>/dev/null); do
-    if read_pid_env "$pid" && jump_resolved; then return 0; fi
-  done
+  local name
+  name=$(claude agents --json 2>/dev/null \
+    | jq -r --arg sid "$1" '[.[] | select(.sessionId == $sid)] | (first // {}).name // empty')
+  if [ -n "$name" ] && jump_iterm_by_title "$name" >/dev/null 2>&1; then return 0; fi
   open_tab_with "claude attach $1"
 }
 
