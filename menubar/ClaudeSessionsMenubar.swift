@@ -1022,7 +1022,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
+        InstallEventHandler(GetEventDispatcherTarget(), { _, event, _ -> OSStatus in
             var hkID = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject),
                               EventParamType(typeEventHotKeyID), nil,
@@ -1041,12 +1041,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x43535453), id: 1) // 'CSTS'
         RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID,
-                            GetApplicationEventTarget(), 0, &hotKeyRef)
+                            GetEventDispatcherTarget(), 0, &hotKeyRef)
 
         // ⌘⌥A — jump straight to the top attention session
         let attentionID = EventHotKeyID(signature: OSType(0x43535453), id: 2)
         RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(cmdKey | optionKey), attentionID,
-                            GetApplicationEventTarget(), 0, &attentionHotKeyRef)
+                            GetEventDispatcherTarget(), 0, &attentionHotKeyRef)
 
         // ⌥1..9 — jump to the Nth numbered target (matches badges)
         let digitCodes: [Int] = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
@@ -1055,7 +1055,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             var ref: EventHotKeyRef?
             let id = EventHotKeyID(signature: OSType(0x43535453), id: UInt32(10 + i))
             RegisterEventHotKey(UInt32(code), UInt32(optionKey), id,
-                                GetApplicationEventTarget(), 0, &ref)
+                                GetEventDispatcherTarget(), 0, &ref)
             digitHotKeyRefs.append(ref)
         }
     }
