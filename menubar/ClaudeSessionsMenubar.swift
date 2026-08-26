@@ -369,7 +369,7 @@ struct SessionRow: View {
                     .frame(width: 14, height: 14)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
-                    .help("⌘⌥\(n)")
+                    .help("⌥\(n)")
             }
             statusGlyph(s.status, animate: animate)
             VStack(alignment: .leading, spacing: 1) {
@@ -488,7 +488,7 @@ struct GroupHeaderRow: View {
                     .frame(width: 14, height: 14)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
-                    .help("⌘⌥\(n)")
+                    .help("⌥\(n)")
             }
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 9, weight: .bold))
@@ -1048,13 +1048,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(cmdKey | optionKey), attentionID,
                             GetApplicationEventTarget(), 0, &attentionHotKeyRef)
 
-        // ⌘⌥1..9 — jump to the Nth numbered target (matches badges)
+        // ⌥1..9 — jump to the Nth numbered target (matches badges)
         let digitCodes: [Int] = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
                                  kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
         for (i, code) in digitCodes.enumerated() {
             var ref: EventHotKeyRef?
             let id = EventHotKeyID(signature: OSType(0x43535453), id: UInt32(10 + i))
-            RegisterEventHotKey(UInt32(code), UInt32(cmdKey | optionKey), id,
+            RegisterEventHotKey(UInt32(code), UInt32(optionKey), id,
                                 GetApplicationEventTarget(), 0, &ref)
             digitHotKeyRefs.append(ref)
         }
