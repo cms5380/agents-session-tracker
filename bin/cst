@@ -9,6 +9,7 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
+GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.json"
 mkdir -p "$STATE_DIR"
 
 status_icon() {
@@ -381,8 +382,11 @@ cmd_sessions_json() {
     }]' <<<"$agents_json")
 
   # annotate tracked rows with the daemon's kind + name so UIs can label
-  # daemon-hosted sessions correctly
-  jq --argjson extra "$extra" --argjson agents "$agents_json" '
+  # daemon-hosted sessions correctly; attach user-defined group names
+  local groups_json
+  groups_json=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
+  jq --argjson groups "$groups_json" '.' <<<'{}' >/dev/null 2>&1 || groups_json='{}'
+  jq --argjson extra "$extra" --argjson agents "$agents_json" --argjson groups "$groups_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
@@ -390,7 +394,8 @@ cmd_sessions_json() {
       | if $a.kind == "background" and $a.status == "busy" and .status != "waiting" then .status = "running"
         elif $a.kind == "background" and $a.status == "idle" and .status == "running" then .status = "done"
         else . end)
-    | . + $extra' <<<"$sessions"
+    | . + $extra
+    | map(. + {group: ($groups[.session_id] // null)})' <<<"$sessions"
 }
 
 case "${1:-list}" in
@@ -398,6 +403,18 @@ case "${1:-list}" in
   sessions-json) cmd_sessions_json ;;
   jump) [ $# -ge 2 ] || { echo "usage: cst jump <session-id>" >&2; exit 1; }; cmd_jump "$2" ;;
   copy-resume) [ $# -ge 2 ] || { echo "usage: cst copy-resume <session-id>" >&2; exit 1; }; cmd_copy_resume "$2" ;;
+  group)
+    # cst group <session-id> <group-name>   ("-" removes the assignment)
+    [ $# -ge 3 ] || { echo "usage: cst group <session-id> <name|->" >&2; exit 1; }
+    existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
+    if [ "$3" = "-" ]; then
+      jq --arg sid "$2" 'del(.[$sid])' <<<"$existing" >"$GROUPS_FILE.tmp"
+    else
+      jq --arg sid "$2" --arg g "$3" '.[$sid] = $g' <<<"$existing" >"$GROUPS_FILE.tmp"
+    fi
+    mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+    ;;
   hub) focus_hub ;;
   agents-tab) focus_hub ;;
   focus-agent)

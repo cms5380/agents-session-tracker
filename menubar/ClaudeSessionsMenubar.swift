@@ -12,6 +12,7 @@ struct Session: Decodable {
     let updated_at: Double?
     let bg: Bool?
     let kind: String?
+    let group: String?
 }
 
 let cstPath = ("~/.claude/session-tracker/cst" as NSString).expandingTildeInPath
@@ -89,25 +90,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.imagePosition = .imageLeading
     }
 
+    func statusColor(_ status: String) -> NSColor {
+        switch status {
+        case "waiting": return .systemOrange
+        case "running": return .systemGreen
+        default: return .systemGray
+        }
+    }
+
+    func addHeader(_ menu: NSMenu, _ title: String) {
+        let h = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        h.isEnabled = false
+        h.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        menu.addItem(h)
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let groups: [(String, String, NSColor)] = [
+
+        // user-defined groups first (sessions inside keep their status dot)
+        let grouped = Dictionary(grouping: sessions.filter { $0.group != nil }, by: { $0.group! })
+        for name in grouped.keys.sorted() {
+            addHeader(menu, "▾ \(name)")
+            let order = ["waiting", "running", "done", "gone"]
+            for s in grouped[name]!.sorted(by: {
+                (order.firstIndex(of: $0.status) ?? 9) < (order.firstIndex(of: $1.status) ?? 9)
+            }) {
+                addRow(menu, s, statusColor(s.status))
+            }
+        }
+
+        let ungrouped = sessions.filter { $0.group == nil }
+        let statusGroups: [(String, String, NSColor)] = [
             ("waiting", "NEEDS INPUT", .systemOrange),
             ("running", "RUNNING", .systemGreen),
             ("done", "IDLE", .systemGray),
             ("gone", "ENDED — click to reopen", .systemGray),
         ]
-        var empty = true
-        for (status, header, color) in groups {
-            let rows = sessions.filter { $0.status == status }
+        var empty = grouped.isEmpty
+        for (status, header, color) in statusGroups {
+            let rows = ungrouped.filter { $0.status == status }
             if rows.isEmpty { continue }
             empty = false
-            let h = NSMenuItem(title: header, action: nil, keyEquivalent: "")
-            h.isEnabled = false
-            h.attributedTitle = NSAttributedString(string: header, attributes: [
-                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor,
-            ])
-            menu.addItem(h)
+            addHeader(menu, header)
             for s in rows { addRow(menu, s, color) }
         }
         if empty {
@@ -115,6 +142,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             it.isEnabled = false
             menu.addItem(it)
         }
+
+        // assignment UI: Manage groups ▸ <session> ▸ <group choices>
+        menu.addItem(.separator())
+        let manage = NSMenuItem(title: "Manage groups", action: nil, keyEquivalent: "")
+        manage.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+        let manageMenu = NSMenu()
+        let allGroups = Set(sessions.compactMap { $0.group }).sorted()
+        for s in sessions {
+            var label = s.title ?? ((s.cwd ?? "?") as NSString).lastPathComponent
+            if label.count > 36 { label = String(label.prefix(36)) + "…" }
+            let sItem = NSMenuItem(title: label, action: nil, keyEquivalent: "")
+            let sMenu = NSMenu()
+            for g in allGroups {
+                let gi = NSMenuItem(title: g, action: #selector(assignGroup(_:)), keyEquivalent: "")
+                gi.target = self
+                gi.representedObject = ["sid": s.session_id, "group": g]
+                gi.state = (s.group == g) ? .on : .off
+                sMenu.addItem(gi)
+            }
+            if !allGroups.isEmpty { sMenu.addItem(.separator()) }
+            let newG = NSMenuItem(title: "New group…", action: #selector(newGroup(_:)), keyEquivalent: "")
+            newG.target = self
+            newG.representedObject = ["sid": s.session_id]
+            sMenu.addItem(newG)
+            if s.group != nil {
+                let rm = NSMenuItem(title: "Remove from group", action: #selector(assignGroup(_:)), keyEquivalent: "")
+                rm.target = self
+                rm.representedObject = ["sid": s.session_id, "group": "-"]
+                sMenu.addItem(rm)
+            }
+            sItem.submenu = sMenu
+            manageMenu.addItem(sItem)
+        }
+        manage.submenu = manageMenu
+        menu.addItem(manage)
         menu.addItem(.separator())
         let hub = NSMenuItem(title: "Open agents hub", action: #selector(openHub), keyEquivalent: "")
         hub.target = self
@@ -180,6 +242,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func copyResume(_ sender: NSMenuItem) {
         guard let s = sender.representedObject as? Session else { return }
         DispatchQueue.global().async { runCST(["copy-resume", s.session_id]) }
+    }
+
+    @objc func assignGroup(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: String],
+              let sid = info["sid"], let group = info["group"] else { return }
+        DispatchQueue.global().async {
+            runCST(["group", sid, group])
+            self.refresh()
+        }
+    }
+
+    @objc func newGroup(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: String],
+              let sid = info["sid"] else { return }
+        let alert = NSAlert()
+        alert.messageText = "New group"
+        alert.informativeText = "Group name for this session:"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty {
+                DispatchQueue.global().async {
+                    runCST(["group", sid, name])
+                    self.refresh()
+                }
+            }
+        }
     }
 
     @objc func openHub() {
