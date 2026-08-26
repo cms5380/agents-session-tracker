@@ -522,10 +522,13 @@ case "${1:-list}" in
     # cst run-command <name> — execute a user command from commands.json.
     # Command strings starting with '@' run silently in the background
     # (with a completion notification); otherwise they open in a new tab.
-    [ $# -ge 2 ] || { echo "usage: cst run-command <name>" >&2; exit 1; }
+    [ $# -ge 2 ] || { echo "usage: cst run-command <name> [arg]" >&2; exit 1; }
     CMDS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/commands.json"
     cmd=$(jq -r --arg n "$2" '.[$n] // empty' "$CMDS_FILE" 2>/dev/null || true)
     [ -n "$cmd" ] || { echo "unknown command: $2" >&2; exit 1; }
+    # keyword commands take an argument via the {query} placeholder
+    arg="${3:-}"
+    cmd="${cmd//\{query\}/$arg}"
     if [ "${cmd#@}" != "$cmd" ]; then
       (
         if bash -lc "${cmd#@}" >/dev/null 2>&1; then

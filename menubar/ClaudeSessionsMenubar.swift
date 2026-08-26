@@ -223,9 +223,9 @@ final class Model: ObservableObject {
         return map
     }
 
-    func runCommand(_ name: String) {
+    func runCommand(_ name: String, arg: String = "") {
         appDelegate?.hidePanel()
-        DispatchQueue.global().async { runCST(["run-command", name]) }
+        DispatchQueue.global().async { runCST(["run-command", name, arg]) }
     }
 
     // recent project directories, most recently active first
@@ -729,6 +729,10 @@ struct PanelView: View {
     }
 
     func runPanelCommand(_ id: String) {
+        if id == "kw" {
+            if let kw = keywordMatch { model.runCommand(kw.name, arg: kw.arg) }
+            return
+        }
         if id == "hub" { model.hub() }
         else if id == "clean" { model.clean(); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
@@ -821,9 +825,29 @@ struct PanelView: View {
         filtered.filter { $0.group == g && Self.attentionOrder[$0.status] == nil && !$0.pinned }
     }
 
+    // Raycast keyword: first word matches a commands.json name → run with
+    // the rest of the query as {query}
+    var keywordMatch: (name: String, arg: String, preview: String)? {
+        guard commandQuery == nil, searching else { return nil }
+        let parts = query.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let first = parts.first, !first.isEmpty else { return nil }
+        let name = String(first)
+        guard let cmd = model.customCommands[name] else { return nil }
+        let arg = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespaces) : ""
+        let silent = cmd.hasPrefix("@")
+        let preview = String(cmd.dropFirst(silent ? 1 : 0))
+            .replacingOccurrences(of: "{query}", with: arg.isEmpty ? "…" : arg)
+        return (name, arg, preview)
+    }
+
     // the navigable list, in display order
     var rows: [PanelRow] {
         if commandQuery != nil { return commandRows }
+        if let kw = keywordMatch {
+            var out: [PanelRow] = [.command("kw", "\(kw.name) \(kw.arg)", String(kw.preview.prefix(50)))]
+            out += filtered.map { .session($0, indented: false) }
+            return out
+        }
         if searching {
             var out: [PanelRow] = []
             for st in ["waiting", "input", "finished", "running", "done", "gone"] {
