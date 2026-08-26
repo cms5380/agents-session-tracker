@@ -848,14 +848,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ -> OSStatus in
-            DispatchQueue.main.async { appDelegate?.togglePanel() }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
+            var hkID = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                              EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &hkID)
+            DispatchQueue.main.async {
+                if hkID.id == 2 {
+                    appDelegate?.jumpAttention()
+                } else {
+                    appDelegate?.togglePanel()
+                }
+            }
             return noErr
         }, 1, &eventType, nil, nil)
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x43535453), id: 1) // 'CSTS'
         RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID,
                             GetApplicationEventTarget(), 0, &hotKeyRef)
+
+        // ⌃⌥A — jump straight to the top attention session
+        let attentionID = EventHotKeyID(signature: OSType(0x43535453), id: 2)
+        RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(controlKey | optionKey), attentionID,
+                            GetApplicationEventTarget(), 0, &attentionHotKeyRef)
+    }
+
+    var attentionHotKeyRef: EventHotKeyRef?
+
+    func jumpAttention() {
+        hidePanel()
+        DispatchQueue.global().async { runCST(["attention"]) }
     }
 
     func updateTitle(sessions: [Session]) {

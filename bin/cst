@@ -366,8 +366,13 @@ cmd_sessions_json() {
       # daemon-listed → real session
       printf '%s\n' "$s"
     elif [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-      # dead pool-owned sessions were never real terminals — drop, don't revive
-      if [ "$(jq -r '.owner // "client"' <<<"$s")" = "client" ]; then
+      # dead pool-owned sessions were never real terminals — drop, don't
+      # revive. Legacy records (no owner recorded) count as real only if
+      # they at least earned a title.
+      local owner title
+      owner=$(jq -r '.owner // ""' <<<"$s")
+      title=$(jq -r '.title // ""' <<<"$s")
+      if [ "$owner" = "client" ] || { [ -z "$owner" ] && [ -n "$title" ]; }; then
         jq -c '.status = "gone"' <<<"$s"
       fi
     else
@@ -458,6 +463,20 @@ case "${1:-list}" in
     jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
     jq --arg g "$2" 'with_entries(select(.value != $g))' \
       <<<"$existing" >"$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+    ;;
+  attention)
+    # jump straight to the top-priority attention session
+    # (waiting > finished > running, most recent first)
+    sid=$(cmd_sessions_json | jq -r '
+      map(select(.status | IN("waiting", "finished", "running")))
+      | sort_by((if .status == "waiting" then 0 elif .status == "finished" then 1 else 2 end),
+                -(.updated_at // 0))
+      | (first // {}).session_id // empty')
+    if [ -z "$sid" ]; then
+      osascript -e 'display notification "지금 주의 필요한 세션 없음" with title "Claude Sessions"' 2>/dev/null || true
+      exit 0
+    fi
+    cmd_jump "$sid"
     ;;
   hub) focus_hub ;;
   agents-tab) focus_hub ;;
