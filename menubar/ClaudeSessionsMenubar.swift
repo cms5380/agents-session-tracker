@@ -111,6 +111,68 @@ final class Model: ObservableObject {
     }
 }
 
+// Anthropic terracotta
+let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
+let claudeOrangeNS = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
+
+// dot-style mascot, Claude Code splash flavor
+// o=body e=eye m=mouth .=empty
+let mascotMap: [String] = [
+    "..oooooo..",
+    ".oooooooo.",
+    "oooooooooo",
+    "ooeeooeeoo",
+    "ooeeooeeoo",
+    "oooooooooo",
+    "oo.mmmm.oo",
+    "oooooooooo",
+    ".oooooooo.",
+    ".oo....oo.",
+]
+
+struct PixelMascot: View {
+    var pixel: CGFloat = 3
+    var body: some View {
+        Canvas { ctx, _ in
+            for (y, row) in mascotMap.enumerated() {
+                for (x, ch) in row.enumerated() {
+                    let rect = CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                                      width: pixel, height: pixel)
+                    switch ch {
+                    case "o": ctx.fill(Path(rect), with: .color(claudeOrange))
+                    case "e": ctx.fill(Path(rect), with: .color(.white))
+                    case "m": ctx.fill(Path(rect), with: .color(Color(red: 0.45, green: 0.2, blue: 0.13)))
+                    default: break
+                    }
+                }
+            }
+        }
+        .frame(width: pixel * 10, height: pixel * 10)
+    }
+}
+
+func mascotNSImage(pixel: CGFloat) -> NSImage {
+    let size = NSSize(width: pixel * 10, height: pixel * 10)
+    let img = NSImage(size: size)
+    img.lockFocus()
+    for (y, row) in mascotMap.enumerated() {
+        for (x, ch) in row.enumerated() {
+            let rect = NSRect(x: CGFloat(x) * pixel,
+                              y: size.height - CGFloat(y + 1) * pixel,
+                              width: pixel, height: pixel)
+            switch ch {
+            case "o": claudeOrangeNS.setFill()
+            case "e": NSColor.white.setFill()
+            case "m": NSColor(red: 0.45, green: 0.2, blue: 0.13, alpha: 1).setFill()
+            default: continue
+            }
+            rect.fill()
+        }
+    }
+    img.unlockFocus()
+    return img
+}
+
 func statusColor(_ status: String) -> Color {
     switch status {
     case "waiting": return Color(nsColor: .systemOrange)
@@ -168,7 +230,7 @@ struct SessionRow: View {
             Text(statusEmoji(s.status)).font(.system(size: 14))
             VStack(alignment: .leading, spacing: 1) {
                 Text(name)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
                     .lineLimit(1)
                 Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                     .font(.system(size: 10))
@@ -192,7 +254,7 @@ struct SessionRow: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 9)
-                .fill(isSelected ? Color.accentColor.opacity(0.22)
+                .fill(isSelected ? claudeOrange.opacity(0.25)
                     : hovering ? Color.primary.opacity(0.08) : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
@@ -240,7 +302,7 @@ struct GroupHeaderRow: View {
                 .frame(width: 10)
             Text(name == "__ungrouped__" ? "🌊" : "📁").font(.system(size: 12))
             Text(name == "__ungrouped__" ? "미배정" : name)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .lineLimit(1)
             Spacer()
             if hasAttention {
@@ -255,12 +317,12 @@ struct GroupHeaderRow: View {
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 9)
-                .fill(isSelected ? Color.accentColor.opacity(0.22)
-                    : highlight ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
+                .fill(isSelected ? claudeOrange.opacity(0.25)
+                    : highlight ? claudeOrange.opacity(0.14) : Color.primary.opacity(0.04))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 9)
-                .strokeBorder(highlight ? Color.accentColor.opacity(0.7) : Color.clear, lineWidth: 1.5)
+                .strokeBorder(highlight ? claudeOrange.opacity(0.7) : Color.clear, lineWidth: 1.5)
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
         .onTapGesture(perform: toggle)
@@ -409,17 +471,30 @@ struct PanelView: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                PixelMascot(pixel: 2.6)
                 TextField("Search sessions…", text: $query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 16))
+                    .font(.system(size: 16, design: .rounded))
                     .focused($searchFocused)
                     .onSubmit { activateSelected() }
                     .onExitCommand { appDelegate?.hidePanel() }
                     .onChange(of: query) { _ in selected = 0 }
-                Text("🐾").font(.system(size: 16))
+                let running = model.sessions.filter { $0.status == "running" }.count
+                let waiting = model.sessions.filter { $0.status == "waiting" }.count
+                if waiting > 0 {
+                    Text("\(waiting) waiting")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(Color(nsColor: .systemOrange).opacity(0.2)))
+                        .foregroundStyle(Color(nsColor: .systemOrange))
+                } else if running > 0 {
+                    Text("\(running) running")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(Color(nsColor: .systemGreen).opacity(0.16)))
+                        .foregroundStyle(Color(nsColor: .systemGreen))
+                }
             }
             .padding(.horizontal, 16).padding(.top, 14)
 
@@ -430,9 +505,10 @@ struct PanelView: View {
                     VStack(spacing: 2) {
                         if !searching && !attention.isEmpty {
                             HStack(spacing: 5) {
-                                Text("🔥 ATTENTION")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(.secondary)
+                                Text("ATTENTION")
+                                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                    .foregroundStyle(claudeOrange)
+                                    .tracking(1.2)
                                 Spacer()
                             }
                             .padding(.horizontal, 12).padding(.top, 2)
@@ -453,10 +529,14 @@ struct PanelView: View {
                             }
                         }
                         if rows.isEmpty {
-                            Text(searching ? "no match 🔍" : "no sessions 💤")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .padding(.vertical, 20)
+                            VStack(spacing: 8) {
+                                PixelMascot(pixel: 4).opacity(0.55)
+                                Text(searching ? "no match" : "no sessions — go start one!")
+                                    .font(.system(size: 12, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 24)
+                            .frame(maxWidth: .infinity)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -684,10 +764,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 .withSymbolConfiguration(.init(paletteColors: [.systemOrange, .labelColor]))
             button.title = " \(waiting)"
         } else if running > 0 {
-            button.image = NSImage(systemSymbolName: "pawprint.fill", accessibilityDescription: nil)
+            button.image = mascotNSImage(pixel: 1.7)
             button.title = " \(running)"
         } else {
-            button.image = NSImage(systemSymbolName: "pawprint", accessibilityDescription: nil)
+            button.image = mascotNSImage(pixel: 1.7)
             button.title = ""
         }
         button.imagePosition = .imageLeading
