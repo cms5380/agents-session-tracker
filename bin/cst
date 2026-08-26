@@ -526,9 +526,23 @@ case "${1:-list}" in
     CMDS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/commands.json"
     cmd=$(jq -r --arg n "$2" '.[$n] // empty' "$CMDS_FILE" 2>/dev/null || true)
     [ -n "$cmd" ] || { echo "unknown command: $2" >&2; exit 1; }
-    # keyword commands take an argument via the {query} placeholder
+    # keyword commands take an argument via the {query} placeholder; an
+    # optional 4th arg fills {prompt} (shell-quoted), e.g. an initial
+    # prompt for a freshly started claude session
     arg="${3:-}"
+    prompt="${4:-}"
     cmd="${cmd//\{query\}/$arg}"
+    case "$cmd" in
+      *"{prompt}"*)
+        if [ -n "$prompt" ]; then
+          q=$(printf '%q' "$prompt")
+          cmd="${cmd//\{prompt\}/$q}"
+        else
+          cmd="${cmd// \{prompt\}/}"
+          cmd="${cmd//\{prompt\}/}"
+        fi
+        ;;
+    esac
     if [ "${cmd#@}" != "$cmd" ]; then
       (
         if bash -lc "${cmd#@}" >/dev/null 2>&1; then

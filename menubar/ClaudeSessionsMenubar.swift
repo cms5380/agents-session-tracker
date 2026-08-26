@@ -223,9 +223,9 @@ final class Model: ObservableObject {
         return map
     }
 
-    func runCommand(_ name: String, arg: String = "") {
+    func runCommand(_ name: String, arg: String = "", prompt: String = "") {
         appDelegate?.hidePanel()
-        DispatchQueue.global().async { runCST(["run-command", name, arg]) }
+        DispatchQueue.global().async { runCST(["run-command", name, arg, prompt]) }
     }
 
     // recent project directories, most recently active first
@@ -728,14 +728,28 @@ struct PanelView: View {
         return filtered.map { .command($0.0, $0.1, $0.2) }
     }
 
+    // "c biddersvc 광고 로직 봐줘" → folder token + trailing initial prompt
+    func splitKeywordArg(_ arg: String) -> (String, String) {
+        let parts = arg.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        let first = parts.first.map(String.init) ?? ""
+        let rest = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespaces) : ""
+        return (first, rest)
+    }
+
     func runPanelCommand(_ id: String) {
         if id == "kw" {
-            if let kw = keywordMatch { model.runCommand(kw.name, arg: kw.arg) }
+            if let kw = keywordMatch {
+                let (folderToken, promptRest) = splitKeywordArg(kw.arg)
+                model.runCommand(kw.name, arg: folderToken, prompt: promptRest)
+            }
             return
         }
         if id.hasPrefix("kwc|") {
             let parts = id.split(separator: "|", maxSplits: 2).map(String.init)
-            if parts.count == 3 { model.runCommand(parts[1], arg: parts[2]) }
+            if parts.count == 3 {
+                let promptRest = keywordMatch.map { splitKeywordArg($0.arg).1 } ?? ""
+                model.runCommand(parts[1], arg: parts[2], prompt: promptRest)
+            }
             return
         }
         if id == "hub" { model.hub() }
@@ -875,12 +889,16 @@ struct PanelView: View {
         if commandQuery != nil { return commandRows }
         if let kw = keywordMatch {
             var out: [PanelRow] = []
-            let comps = keywordCompletions(template: kw.template, arg: kw.arg)
+            let (folderToken, promptRest) = splitKeywordArg(kw.arg)
+            let comps = keywordCompletions(template: kw.template, arg: folderToken)
             if comps.isEmpty {
                 out.append(.command("kw", "\(kw.name) \(kw.arg)", String(kw.preview.prefix(50))))
             } else {
                 for (folder, path) in comps {
-                    out.append(.command("kwc|\(kw.name)|\(folder)", "\(kw.name) \(folder)",
+                    let title = promptRest.isEmpty
+                        ? "\(kw.name) \(folder)"
+                        : "\(kw.name) \(folder) — \"\(promptRest.prefix(24))\""
+                    out.append(.command("kwc|\(kw.name)|\(folder)", title,
                                path.replacingOccurrences(of: NSHomeDirectory(), with: "~")))
                 }
             }
@@ -1320,6 +1338,28 @@ struct PanelView: View {
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
             model.messageSelected = {
+                // keyword mode: Tab completes the folder name into the field
+                // so a prompt can be typed after it
+                if let kw = keywordMatch {
+                    var folder: String? = nil
+                    if case .command(let id, _, _)? = rows[safe: selected], id.hasPrefix("kwc|") {
+                        let parts = id.split(separator: "|", maxSplits: 2).map(String.init)
+                        if parts.count == 3 { folder = parts[2] }
+                    }
+                    if folder == nil {
+                        for r in rows {
+                            if case .command(let id, _, _) = r, id.hasPrefix("kwc|") {
+                                let parts = id.split(separator: "|", maxSplits: 2).map(String.init)
+                                if parts.count == 3 { folder = parts[2]; break }
+                            }
+                        }
+                    }
+                    if let folder {
+                        query = "\(kw.name) \(folder) "
+                        selected = 0
+                    }
+                    return
+                }
                 if case .session(let s, _)? = rows[safe: selected], s.status != "archived" {
                     messagingSession = s
                     messageText = ""
