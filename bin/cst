@@ -55,14 +55,15 @@ jump_iterm() { # $1=ITERM_SESSION_ID (w0t2p0:UUID)
 on run argv
   set target to item 1 of argv
   tell application "iTerm2"
-    activate
     repeat with w in windows
       repeat with t in tabs of w
         repeat with s in sessions of t
           if id of s is target then
             select s
             select t
+            select w
             set index of w to 1
+            activate
             return "ok"
           end if
         end repeat
@@ -228,6 +229,7 @@ on run argv
           if (name of s) contains needle then
             select s
             select t
+            select w
             set index of w to 1
             activate
             return "ok"
