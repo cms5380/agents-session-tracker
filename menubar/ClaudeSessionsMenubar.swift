@@ -209,6 +209,24 @@ final class Model: ObservableObject {
         appDelegate?.hidePanel()
         DispatchQueue.global().async { runCST(["hub"]) }
     }
+
+    func newSession(in dir: String) {
+        appDelegate?.hidePanel()
+        DispatchQueue.global().async { runCST(["new-session", dir]) }
+    }
+
+    // recent project directories, most recently active first
+    var recentDirs: [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for s in sessions.sorted(by: { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }) {
+            if let c = s.cwd, !c.isEmpty, !seen.contains(c) {
+                seen.insert(c)
+                out.append(c)
+            }
+        }
+        return Array(out.prefix(8))
+    }
 }
 
 // Anthropic terracotta
@@ -1101,6 +1119,21 @@ struct PanelView: View {
                         .buttonStyle(.plain).font(.system(size: 10))
                     Spacer()
                 } else {
+                    Menu {
+                        ForEach(model.recentDirs, id: \.self) { dir in
+                            Button(dir.replacingOccurrences(of: NSHomeDirectory(), with: "~")) {
+                                model.newSession(in: dir)
+                            }
+                        }
+                        Divider()
+                        Button("~ (home)") { model.newSession(in: NSHomeDirectory()) }
+                    } label: {
+                        Label("New session", systemImage: "plus.circle")
+                            .font(.system(size: 11))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .foregroundStyle(.secondary)
                     Button {
                         addingGroup = true
                     } label: {

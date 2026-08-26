@@ -518,6 +518,11 @@ case "${1:-list}" in
     ) >/dev/null 2>&1 &
     disown 2>/dev/null || true
     ;;
+  new-session)
+    # cst new-session <dir> — open a new claude session in a fresh tab
+    [ $# -ge 2 ] || { echo "usage: cst new-session <dir>" >&2; exit 1; }
+    open_tab_with "cd $(printf '%q' "$2") && claude"
+    ;;
   resume-tab)
     # cst resume-tab <session-id> <cwd> — reopen an archived session in a tab
     [ $# -ge 3 ] || { echo "usage: cst resume-tab <session-id> <cwd>" >&2; exit 1; }
