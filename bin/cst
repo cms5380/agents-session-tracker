@@ -518,6 +518,27 @@ case "${1:-list}" in
     ) >/dev/null 2>&1 &
     disown 2>/dev/null || true
     ;;
+  run-command)
+    # cst run-command <name> — execute a user command from commands.json.
+    # Command strings starting with '@' run silently in the background
+    # (with a completion notification); otherwise they open in a new tab.
+    [ $# -ge 2 ] || { echo "usage: cst run-command <name>" >&2; exit 1; }
+    CMDS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/commands.json"
+    cmd=$(jq -r --arg n "$2" '.[$n] // empty' "$CMDS_FILE" 2>/dev/null || true)
+    [ -n "$cmd" ] || { echo "unknown command: $2" >&2; exit 1; }
+    if [ "${cmd#@}" != "$cmd" ]; then
+      (
+        if bash -lc "${cmd#@}" >/dev/null 2>&1; then
+          osascript -e "display notification \"완료\" with title \"> $2\"" 2>/dev/null
+        else
+          osascript -e "display notification \"실패\" with title \"> $2\"" 2>/dev/null
+        fi
+      ) >/dev/null 2>&1 &
+      disown 2>/dev/null || true
+    else
+      open_tab_with "$cmd"
+    fi
+    ;;
   new-session)
     # cst new-session <dir> — open a new claude session in a fresh tab
     [ $# -ge 2 ] || { echo "usage: cst new-session <dir>" >&2; exit 1; }

@@ -215,6 +215,19 @@ final class Model: ObservableObject {
         DispatchQueue.global().async { runCST(["new-session", dir]) }
     }
 
+    // user commands from commands.json (name → shell; '@' prefix = silent)
+    var customCommands: [String: String] {
+        let path = ("~/.local/state/claude-session-tracker/commands.json" as NSString).expandingTildeInPath
+        guard let data = FileManager.default.contents(atPath: path),
+              let map = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return map
+    }
+
+    func runCommand(_ name: String) {
+        appDelegate?.hidePanel()
+        DispatchQueue.global().async { runCST(["run-command", name]) }
+    }
+
     // recent project directories, most recently active first
     var recentDirs: [String] {
         var seen = Set<String>()
@@ -545,12 +558,14 @@ enum PanelRow: Identifiable, Equatable {
     case label(String)      // section label (PINNED / ATTENTION)
     case header(String)     // group name, or "__ungrouped__"
     case session(Session, indented: Bool)
+    case command(String, String, String) // id, title, subtitle
 
     var id: String {
         switch self {
         case .label(let s): return "lbl-\(s)"
         case .header(let g): return "hdr-\(g)"
         case .session(let s, _): return s.session_id
+        case .command(let id, _, _): return "cmd-\(id)"
         }
     }
 }
@@ -685,6 +700,42 @@ struct PanelView: View {
 
     var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
+    // Raycast-style command mode: query starting with ">"
+    var commandQuery: String? {
+        guard query.hasPrefix(">") else { return nil }
+        return String(query.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    var commandRows: [PanelRow] {
+        guard let q = commandQuery else { return [] }
+        var cmds: [(String, String, String)] = [
+            ("hub", "Agents Hub", "에이전트 대시보드 탭 열기"),
+            ("clean", "Clean Stale Sessions", "오래된 세션 정리"),
+            ("quit", "Quit Claude Sessions", "앱 종료"),
+        ]
+        for dir in model.recentDirs {
+            let name = (dir as NSString).lastPathComponent
+            cmds.append(("new:\(dir)", "New Session: \(name)",
+                         dir.replacingOccurrences(of: NSHomeDirectory(), with: "~")))
+        }
+        for (name, cmd) in model.customCommands.sorted(by: { $0.key < $1.key }) {
+            let silent = cmd.hasPrefix("@")
+            cmds.append(("custom:\(name)", name,
+                         (silent ? "⚙︎ " : "⌘ ") + String(cmd.dropFirst(silent ? 1 : 0)).prefix(40)))
+        }
+        let filtered = q.isEmpty ? cmds
+            : cmds.filter { $0.1.lowercased().contains(q) || $0.2.lowercased().contains(q) }
+        return filtered.map { .command($0.0, $0.1, $0.2) }
+    }
+
+    func runPanelCommand(_ id: String) {
+        if id == "hub" { model.hub() }
+        else if id == "clean" { model.clean(); query = "" }
+        else if id == "quit" { NSApp.terminate(nil) }
+        else if id.hasPrefix("new:") { model.newSession(in: String(id.dropFirst(4))) }
+        else if id.hasPrefix("custom:") { model.runCommand(String(id.dropFirst(7))) }
+    }
+
     static let attentionOrder = ["waiting": 0, "input": 1, "finished": 2, "running": 3]
 
     // ⌘⌥N targets follow the visible structure: attention sessions and
@@ -698,7 +749,7 @@ struct PanelView: View {
         var out: [HotkeyTarget] = []
         for r in rows {
             switch r {
-            case .label: break
+            case .label, .command: break
             case .session(let s, _): out.append(.session(s))
             case .header(let g):
                 if !searching && !expanded.contains(g) { out.append(.group(g)) }
@@ -772,6 +823,7 @@ struct PanelView: View {
 
     // the navigable list, in display order
     var rows: [PanelRow] {
+        if commandQuery != nil { return commandRows }
         if searching {
             var out: [PanelRow] = []
             for st in ["waiting", "input", "finished", "running", "done", "gone"] {
@@ -815,6 +867,7 @@ struct PanelView: View {
             case .label: return acc + 24
             case .header: return acc + 34
             case .session: return acc + 47
+            case .command: return acc + 42
             }
         }
         return min(max(h + 16 + (draggingGroup != nil ? 34 : 0), 100), 460)
@@ -851,6 +904,7 @@ struct PanelView: View {
         switch rows[safe: selected] ?? rows.first {
         case .session(let s, _): model.jump(s)
         case .header(let g): toggleExpand(g)
+        case .command(let id, _, _): runPanelCommand(id)
         case .label, nil: break
         }
     }
@@ -920,7 +974,7 @@ struct PanelView: View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
                 PixelMascot(pixel: 2.2)
-                TextField("Search sessions…", text: $query)
+                TextField("Search…  (> for commands)", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
                     .focused($searchFocused)
@@ -964,6 +1018,29 @@ struct PanelView: View {
                                     Spacer()
                                 }
                                 .padding(.horizontal, 12).padding(.top, 4)
+                            case .command(let id, let title, let sub):
+                                HStack(spacing: 9) {
+                                    Text(">")
+                                        .font(.system(size: 13, weight: .heavy, design: .monospaced))
+                                        .foregroundStyle(claudeOrange)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(title)
+                                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                                        Text(sub)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 9)
+                                        .fill(isSelected(r) ? claudeOrange.opacity(0.25) : Color.clear)
+                                )
+                                .contentShape(RoundedRectangle(cornerRadius: 9))
+                                .onTapGesture { runPanelCommand(id) }
+                                .id(r.id)
                             case .header(let g):
                                 headerRow(g)
                                     .padding(.top, 5)
