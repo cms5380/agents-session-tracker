@@ -82,7 +82,7 @@ else
   render_group waiting "NEEDS INPUT" "$C_WAIT"
   render_group running "RUNNING"     "$C_RUN"
   render_group done    "IDLE"        "$C_DONE"
-  render_group gone    "GONE — click to copy resume" "$C_DONE" copy-resume
+  render_group gone    "ENDED — click to reopen" "$C_DONE" jump
 fi
 
 echo "---"

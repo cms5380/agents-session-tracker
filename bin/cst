@@ -127,6 +127,34 @@ resolve_live() { # $1=session cwd → sets R_ITERM/R_CMUX/R_TMUX/R_TERM/R_TTY
   return 1
 }
 
+# open a new terminal tab resuming the session — for sessions with no live
+# terminal (background jobs, dead sessions, desktop app)
+open_resume_tab() { # $1=cwd, $2=session id
+  local cmd
+  cmd="cd $(printf '%q' "$1") && claude --resume $2"
+  if [ -d "/Applications/iTerm.app" ]; then
+    osascript - "$cmd" <<'APPLESCRIPT'
+on run argv
+  set cmd to item 1 of argv
+  tell application "iTerm2"
+    activate
+    if (count of windows) = 0 then
+      set w to (create window with default profile)
+      tell current session of w to write text cmd
+    else
+      tell current window
+        set t to (create tab with default profile)
+        tell current session of t to write text cmd
+      end tell
+    end if
+  end tell
+end run
+APPLESCRIPT
+  else
+    osascript -e "tell application \"Terminal\"" -e "activate" -e "do script \"$cmd\"" -e "end tell"
+  fi
+}
+
 cmd_jump() {
   local sid="$1" file
   file="$STATE_DIR/$sid.json"
@@ -145,11 +173,9 @@ cmd_jump() {
   pid=$(jq -r '.pid // empty' "$file")
   cwd=$(jq -r '.cwd // empty' "$file")
 
-  # dead session — its terminal handles are stale, go straight to resume handoff
+  # dead session — its terminal handles are stale, reopen in a new tab
   if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-    printf 'cd %s && claude --resume %s' "$cwd" "$sid" | pbcopy 2>/dev/null || true
-    osascript -e "display notification \"resume 명령 복사됨 — 터미널에 붙여넣으세요\" with title \"종료된 세션\" subtitle \"${cwd/#$HOME/~}\"" 2>/dev/null || true
-    exit 0
+    open_resume_tab "$cwd" "$sid" >/dev/null 2>&1 && exit 0
   fi
 
   if [ "$app" = "vscode" ]; then
@@ -168,7 +194,10 @@ cmd_jump() {
     if [ -n "$R_TTY" ] && [ "$R_TERM" = "Apple_Terminal" ] && jump_terminal_app "$R_TTY" >/dev/null 2>&1; then exit 0; fi
   fi
 
-  # fallback: no live handle (headless/desktop session) — hand over a resume command instead
+  # fallback: no live terminal (background job / desktop session) — open a new
+  # tab resuming the session there
+  if open_resume_tab "$cwd" "$sid" >/dev/null 2>&1; then exit 0; fi
+
   printf 'cd %s && claude --resume %s' "$cwd" "$sid" | pbcopy 2>/dev/null || true
   osascript -e "display notification \"resume 명령 복사됨 — 터미널에 붙여넣으세요\" with title \"터미널 핸들 없는 세션\" subtitle \"${cwd/#$HOME/~}\"" 2>/dev/null || true
   echo "no jump handle for $sid — resume command copied: cd $cwd && claude --resume $sid" >&2
