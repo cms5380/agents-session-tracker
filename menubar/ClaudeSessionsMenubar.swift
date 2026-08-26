@@ -165,7 +165,7 @@ func mascotNSImage(pixel: CGFloat) -> NSImage {
     let size = NSSize(width: pixel * 16, height: pixel * 10)
     let img = NSImage(size: size)
     img.lockFocus()
-    claudeOrangeNS.setFill()
+    NSColor.black.setFill() // template image — the menubar tints it like every other icon
     for (y, row) in mascotMap.enumerated() {
         for (x, ch) in row.enumerated() where ch == "o" {
             NSRect(x: CGFloat(x) * pixel,
@@ -174,6 +174,7 @@ func mascotNSImage(pixel: CGFloat) -> NSImage {
         }
     }
     img.unlockFocus()
+    img.isTemplate = true
     return img
 }
 
@@ -1080,8 +1081,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let running = sessions.filter { $0.status == "running" }.count
         guard let button = statusItem.button else { return }
         if waiting > 0 {
-            button.image = NSImage(systemSymbolName: "bell.badge.fill", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(paletteColors: [.systemOrange, .labelColor]))
+            button.image = NSImage(systemSymbolName: "bell.badge.fill", accessibilityDescription: nil)
             button.title = " \(waiting)"
         } else if sessions.contains(where: { $0.status == "input" }) {
             let n = sessions.filter { $0.status == "input" }.count
