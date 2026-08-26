@@ -59,17 +59,19 @@ render_group() { # $1=status filter, $2=header, $3=dot color, $4=click action
   [ -n "$rows" ] || return 0
   echo "$2 | size=11 color=$C_DIM"
   while IFS= read -r s; do
-    local sid name cwd updated msg age tip
+    local sid name title cwd updated msg age tip
     sid=$(jq -r '.session_id' <<<"$s")
     cwd=$(jq -r '.cwd // "?"' <<<"$s")
+    title=$(jq -r '.title // ""' <<<"$s")
     updated=$(jq -r '.updated_at // 0' <<<"$s")
     msg=$(jq -r '.message // ""' <<<"$s")
-    name="${cwd##*/}"
+    name="${title:-${cwd##*/}}"
+    name="${name:0:44}"
     age=$(age_of "$updated")
     tip="${cwd/#$HOME/~}"
     [ -n "$msg" ] && tip="$msg — $tip"
     echo "$name  ·  $age | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=$action param2=$sid terminal=false refresh=false"
-    echo "Copy resume command | alternate=true sfimage=doc.on.doc bash=$CST param1=copy-resume param2=$sid terminal=false refresh=false"
+    echo "${cwd/#$HOME/~}  ·  ⌥=copy resume | alternate=true sfimage=doc.on.doc bash=$CST param1=copy-resume param2=$sid terminal=false refresh=false"
   done <<<"$rows"
 }
 

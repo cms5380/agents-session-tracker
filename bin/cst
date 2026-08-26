@@ -101,6 +101,32 @@ end run
 APPLESCRIPT
 }
 
+# Hooks may run under the Claude Code daemon (no terminal env), so recorded
+# handles can be empty. Resolve at jump time: find the live claude client
+# process for this session's cwd and read terminal identity from its env.
+resolve_live() { # $1=session cwd → sets R_ITERM/R_CMUX/R_TMUX/R_TERM/R_TTY
+  R_ITERM=""; R_CMUX=""; R_TMUX=""; R_TERM=""; R_TTY=""
+  local want="$1" pid cmd pcwd envs
+  [ -n "$want" ] || return 1
+  for pid in $(pgrep -x claude 2>/dev/null; pgrep -f '/claude$' 2>/dev/null | sort -u); do
+    cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
+    case "$cmd" in
+      *bg-pty-host*|*bg-spare*|*--output-format*) continue ;;
+    esac
+    pcwd=$(lsof -p "$pid" -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | tail -1)
+    [ "$pcwd" = "$want" ] || continue
+    envs=$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n')
+    R_ITERM=$(grep -m1 '^ITERM_SESSION_ID=' <<<"$envs" | cut -d= -f2- || true)
+    R_CMUX=$(grep -m1 '^CMUX_WORKSPACE_ID=' <<<"$envs" | cut -d= -f2- || true)
+    R_TMUX=$(grep -m1 '^TMUX_PANE=' <<<"$envs" | cut -d= -f2- || true)
+    R_TERM=$(grep -m1 '^TERM_PROGRAM=' <<<"$envs" | cut -d= -f2- || true)
+    R_TTY=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ "$R_TTY" = "??" ] && R_TTY=""
+    [ -n "$R_ITERM$R_CMUX$R_TMUX$R_TTY" ] && return 0
+  done
+  return 1
+}
+
 cmd_jump() {
   local sid="$1" file
   file="$STATE_DIR/$sid.json"
@@ -133,6 +159,14 @@ cmd_jump() {
   if [ -n "$iterm_id" ] && jump_iterm "$iterm_id" >/dev/null 2>&1; then exit 0; fi
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
+
+  # recorded handles missing/stale — resolve from the live client process
+  if resolve_live "$cwd"; then
+    if [ -n "$R_CMUX" ] && jump_cmux "$R_CMUX"; then exit 0; fi
+    if [ -n "$R_ITERM" ] && jump_iterm "$R_ITERM" >/dev/null 2>&1; then exit 0; fi
+    if [ -n "$R_TMUX" ] && jump_tmux "$R_TMUX" "$R_TERM"; then exit 0; fi
+    if [ -n "$R_TTY" ] && [ "$R_TERM" = "Apple_Terminal" ] && jump_terminal_app "$R_TTY" >/dev/null 2>&1; then exit 0; fi
+  fi
 
   # fallback: no live handle (headless/desktop session) — hand over a resume command instead
   printf 'cd %s && claude --resume %s' "$cwd" "$sid" | pbcopy 2>/dev/null || true

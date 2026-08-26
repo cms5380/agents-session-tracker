@@ -13,6 +13,19 @@ session_id=$(jq -r '.session_id // empty' <<<"$input")
 event=$(jq -r '.hook_event_name // empty' <<<"$input")
 cwd=$(jq -r '.cwd // empty' <<<"$input")
 message=$(jq -r '.message // empty' <<<"$input")
+transcript=$(jq -r '.transcript_path // empty' <<<"$input")
+
+# human-readable session title: latest summary, else first user prompt
+title=""
+if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+  title=$( (grep '"type":"summary"' "$transcript" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
+  if [ -z "$title" ]; then
+    title=$( (head -n 80 "$transcript" 2>/dev/null \
+      | jq -r 'select(.type=="user") | .message.content
+               | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
+      | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-80) || true)
+  fi
+fi
 
 case "$event" in
   SessionStart|UserPromptSubmit|PreToolUse) status="running" ;;
@@ -52,6 +65,8 @@ jq -n \
   --arg tty "$claude_tty" \
   --arg app "$app" \
   --arg pid "$PPID" \
+  --arg title "$title" \
+  --arg transcript "$transcript" \
   '$prev * {
     session_id: $session_id,
     status: $status,
@@ -59,8 +74,11 @@ jq -n \
     pid: ($pid | tonumber),
     updated_at: ($updated_at | tonumber)
   }
+  | .started_at = (.started_at // ($updated_at | tonumber))
   | if $cwd != "" then .cwd = $cwd else . end
   | if $message != "" then .message = $message else . end
+  | if $title != "" then .title = $title else . end
+  | if $transcript != "" then .transcript_path = $transcript else . end
   | .terminal = ((.terminal // {}) * ({
       term_program: $term_program,
       iterm_session_id: $iterm_session_id,
