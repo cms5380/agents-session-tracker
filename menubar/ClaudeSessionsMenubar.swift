@@ -506,7 +506,7 @@ struct SessionRow: View {
                     .frame(width: 14, height: 14)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
-                    .help("⌥\(n)")
+                    .help("⌘\(n)")
             }
             statusGlyph(s.status, animate: animate)
             VStack(alignment: .leading, spacing: 1) {
@@ -647,7 +647,7 @@ struct GroupHeaderRow: View {
                     .frame(width: 14, height: 14)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
                     .foregroundStyle(.secondary)
-                    .help("⌥\(n)")
+                    .help("⌘\(n)")
             }
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 9, weight: .bold))
@@ -1436,8 +1436,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             case 124: return self.model.arrowLR?(1) == true ? nil : event // right
             case 48: self.model.messageSelected?(); return nil // tab → quick prompt
             default:
-                // ⌥1..9 while the panel is open — jump to the badged target
-                if event.modifierFlags.contains(.option) {
+                // ⌘1..9 while the panel is open — jump to the badged target
+                if event.modifierFlags.contains(.command) {
                     let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5,
                                                  22: 6, 26: 7, 28: 8, 25: 9]
                     if let n = digits[event.keyCode] {

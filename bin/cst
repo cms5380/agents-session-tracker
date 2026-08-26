@@ -28,6 +28,14 @@ fetch_agents() {
 }
 mkdir -p "$STATE_DIR"
 
+# byte-clean shell quoting — /bin/bash 3.2's printf %q mangles multibyte
+# UTF-8 (mixed raw/octal output), which broke AppleScript argv (-1700)
+shquote() {
+  local s="$1"
+  s="${s//\'/\'\\\'\'}"
+  printf "'%s'" "$s"
+}
+
 status_icon() {
   case "$1" in
     running) echo "🟢" ;;
@@ -214,7 +222,7 @@ APPLESCRIPT
 }
 
 open_resume_tab() { # $1=cwd, $2=session id
-  open_tab_with "cd $(printf '%q' "$1") && claude --resume $2"
+  open_tab_with "cd $(shquote "$1") && claude --resume $2"
 }
 
 # The hub: one persistent terminal tab running the 'claude agents' dashboard.
@@ -535,7 +543,7 @@ case "${1:-list}" in
     case "$cmd" in
       *"{prompt}"*)
         if [ -n "$prompt" ]; then
-          q=$(printf '%q' "$prompt")
+          q=$(shquote "$prompt")
           cmd="${cmd//\{prompt\}/$q}"
         else
           cmd="${cmd// \{prompt\}/}"
@@ -559,7 +567,7 @@ case "${1:-list}" in
   new-session)
     # cst new-session <dir> — open a new claude session in a fresh tab
     [ $# -ge 2 ] || { echo "usage: cst new-session <dir>" >&2; exit 1; }
-    open_tab_with "cd $(printf '%q' "$2") && claude"
+    open_tab_with "cd $(shquote "$2") && claude"
     ;;
   resume-tab)
     # cst resume-tab <session-id> <cwd> — reopen an archived session in a tab

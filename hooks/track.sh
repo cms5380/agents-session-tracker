@@ -99,7 +99,7 @@ jq -n \
   | .started_at = (.started_at // ($updated_at | tonumber))
   | if $cwd != "" then .cwd = $cwd else . end
   | if $message != "" then .message = $message else . end
-  | if $title != "" then .title = $title else . end
+  | if $title != "" and ((.title // "") == "") then .title = $title else . end
   | if $transcript != "" then .transcript_path = $transcript else . end
   | .terminal = ((.terminal // {}) * ({
       term_program: $term_program,
