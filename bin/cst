@@ -12,6 +12,7 @@ STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.json"
 NAMES_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/names.json"
 AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-cache.json"
+PINS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/pins.json"
 
 # The menubar app refreshes sessions-json every 5s, which keeps this cache
 # warm — jumps then skip the ~0.6s claude CLI startup entirely.
@@ -433,13 +434,16 @@ cmd_sessions_json() {
 
   # annotate tracked rows with the daemon's kind + name so UIs can label
   # daemon-hosted sessions correctly; attach user-defined group names
-  local groups_json names_json
+  local groups_json names_json pins_json
   groups_json=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
   jq -e . >/dev/null 2>&1 <<<"$groups_json" || groups_json='{}'
   names_json=$(cat "$NAMES_FILE" 2>/dev/null || echo '{}')
   jq -e . >/dev/null 2>&1 <<<"$names_json" || names_json='{}'
+  pins_json=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pins_json" || pins_json='[]'
   jq --argjson extra "$extra" --argjson agents "$agents_json" \
-     --argjson groups "$groups_json" --argjson names "$names_json" '
+     --argjson groups "$groups_json" --argjson names "$names_json" \
+     --argjson pins "$pins_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
@@ -451,7 +455,8 @@ cmd_sessions_json() {
       | if (.status | IN("finished", "input")) and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
     | . + $extra
     | map(. + {group: ($groups[.session_id] // null),
-               title: ($names[.session_id] // .title)})' <<<"$sessions"
+               title: ($names[.session_id] // .title),
+               pin_order: (.session_id as $s | ($pins | index($s)))})' <<<"$sessions"
 }
 
 case "${1:-list}" in
@@ -470,6 +475,15 @@ case "${1:-list}" in
       jq --arg sid "$2" --arg g "$3" '.[$sid] = $g' <<<"$existing" >"$GROUPS_FILE.tmp"
     fi
     mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+    ;;
+  pin)
+    # cst pin <session-id> — toggle pin-to-top (pins.json keeps pin order)
+    [ $# -ge 2 ] || { echo "usage: cst pin <session-id>" >&2; exit 1; }
+    existing=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
+    jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
+    jq --arg sid "$2" \
+      'if index($sid) then map(select(. != $sid)) else . + [$sid] end' \
+      <<<"$existing" >"$PINS_FILE.tmp" && mv "$PINS_FILE.tmp" "$PINS_FILE"
     ;;
   title)
     # cst title <session-id> <custom-name>   ("-" reverts to the auto title)

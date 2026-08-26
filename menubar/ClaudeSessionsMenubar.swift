@@ -14,7 +14,9 @@ struct Session: Decodable, Identifiable, Equatable {
     let bg: Bool?
     let kind: String?
     let group: String?
+    let pin_order: Int?
     var id: String { session_id }
+    var pinned: Bool { pin_order != nil }
 }
 
 let cstPath = ("~/.claude/session-tracker/cst" as NSString).expandingTildeInPath
@@ -79,6 +81,13 @@ final class Model: ObservableObject {
     func assign(_ sid: String, to group: String?) {
         DispatchQueue.global().async {
             runCST(["group", sid, group ?? "-"])
+            self.refresh()
+        }
+    }
+
+    func togglePin(_ sid: String) {
+        DispatchQueue.global().async {
+            runCST(["pin", sid])
             self.refresh()
         }
     }
@@ -372,6 +381,11 @@ struct SessionRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+            if s.pinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(claudeOrange.opacity(0.7))
+            }
             if !ageString(s.updated_at).isEmpty {
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
@@ -397,6 +411,7 @@ struct SessionRow: View {
         .draggable(s.session_id)
         .contextMenu {
             Button("Jump") { model.jump(s) }
+            Button(s.pinned ? "Unpin" : "Pin to top") { model.togglePin(s.session_id) }
             Button("Rename session") { onRename?(s) }
             Button("Copy resume command") { model.copyResume(s) }
             if s.group != nil {
@@ -408,11 +423,13 @@ struct SessionRow: View {
 }
 
 enum PanelRow: Identifiable, Equatable {
+    case label(String)      // section label (PINNED / ATTENTION)
     case header(String)     // group name, or "__ungrouped__"
     case session(Session, indented: Bool)
 
     var id: String {
         switch self {
+        case .label(let s): return "lbl-\(s)"
         case .header(let g): return "hdr-\(g)"
         case .session(let s, _): return s.session_id
         }
@@ -547,6 +564,7 @@ struct PanelView: View {
         var out: [HotkeyTarget] = []
         for r in rows {
             switch r {
+            case .label: break
             case .session(let s, _): out.append(.session(s))
             case .header(let g):
                 if !searching && !expanded.contains(g) { out.append(.group(g)) }
@@ -586,8 +604,12 @@ struct PanelView: View {
         }
     }
 
+    var pinnedSessions: [Session] {
+        filtered.filter { $0.pinned }.sorted { ($0.pin_order ?? 0) < ($1.pin_order ?? 0) }
+    }
+
     var attention: [Session] {
-        filtered.filter { Self.attentionOrder[$0.status] != nil }
+        filtered.filter { Self.attentionOrder[$0.status] != nil && !$0.pinned }
             .sorted { a, b in
                 let pa = Self.attentionOrder[a.status] ?? 9
                 let pb = Self.attentionOrder[b.status] ?? 9
@@ -602,7 +624,7 @@ struct PanelView: View {
     }
 
     func restMembers(_ g: String?) -> [Session] {
-        filtered.filter { $0.group == g && Self.attentionOrder[$0.status] == nil }
+        filtered.filter { $0.group == g && Self.attentionOrder[$0.status] == nil && !$0.pinned }
     }
 
     // the navigable list, in display order
@@ -614,7 +636,15 @@ struct PanelView: View {
             }
             return out
         }
-        var out: [PanelRow] = attention.map { .session($0, indented: false) }
+        var out: [PanelRow] = []
+        if !pinnedSessions.isEmpty {
+            out.append(.label("PINNED"))
+            out += pinnedSessions.map { .session($0, indented: false) }
+        }
+        if !attention.isEmpty {
+            out.append(.label("ATTENTION"))
+            out += attention.map { .session($0, indented: false) }
+        }
         for g in groups {
             out.append(.header(g))
             if expanded.contains(g) {
@@ -633,6 +663,7 @@ struct PanelView: View {
     var listHeight: CGFloat {
         let h = rows.reduce(CGFloat(0)) { acc, r in
             switch r {
+            case .label: return acc + 24
             case .header: return acc + 34
             case .session: return acc + 47
             }
@@ -644,7 +675,15 @@ struct PanelView: View {
 
     func move(_ delta: Int) {
         guard !rows.isEmpty else { return }
-        selected = min(max(selected + delta, 0), rows.count - 1)
+        var i = min(max(selected + delta, 0), rows.count - 1)
+        // section labels are not selectable — keep stepping past them
+        while case .label = rows[i] {
+            let next = i + (delta >= 0 ? 1 : -1)
+            if next < 0 || next >= rows.count { break }
+            i = next
+        }
+        if case .label = rows[i] { return }
+        selected = i
         scrollTarget = rows[safe: selected]?.id
     }
 
@@ -663,7 +702,7 @@ struct PanelView: View {
         switch rows[safe: selected] ?? rows.first {
         case .session(let s, _): model.jump(s)
         case .header(let g): toggleExpand(g)
-        case nil: break
+        case .label, nil: break
         }
     }
 
@@ -736,18 +775,17 @@ struct PanelView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 2) {
-                        if !searching && !attention.isEmpty {
-                            HStack(spacing: 5) {
-                                Text("ATTENTION")
-                                    .font(.system(size: 10, weight: .heavy, design: .rounded))
-                                    .foregroundStyle(claudeOrange)
-                                    .tracking(1.2)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 12).padding(.top, 2)
-                        }
                         ForEach(rows) { r in
                             switch r {
+                            case .label(let l):
+                                HStack(spacing: 5) {
+                                    Text(l)
+                                        .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                        .foregroundStyle(l == "ATTENTION" ? claudeOrange : Color.secondary)
+                                        .tracking(1.2)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12).padding(.top, 4)
                             case .header(let g):
                                 headerRow(g)
                                     .padding(.top, 5)
