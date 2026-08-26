@@ -1320,10 +1320,6 @@ struct PanelView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
-                Button { model.hub() } label: {
-                    Image(systemName: "rectangle.on.rectangle")
-                }
-                .buttonStyle(.plain).help("Open agents hub")
                 Button { model.clean() } label: {
                     Image(systemName: "sparkles")
                 }
