@@ -46,7 +46,8 @@ extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" '
     cwd: .cwd,
     title: (if (.name // "") != "" then .name else null end),
     updated_at: 0,
-    bg: true
+    bg: true,
+    kind: .kind
   }]' <<<"$agents_json")
 sessions=$(jq --argjson extra "$extra" '. + $extra' <<<"$sessions")
 
@@ -88,7 +89,11 @@ render_group() { # $1=status filter, $2=header, $3=dot color, $4=click action
     tip="${cwd/#$HOME/~}"
     [ -n "$msg" ] && tip="$msg — $tip"
     if [ "$(jq -r '.bg // false' <<<"$s")" = "true" ]; then
-      echo "$name  ·  bg | sfimage=circle.dotted sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=agents-tab param2=\"$cwd\" terminal=false refresh=false"
+      if [ "$(jq -r '.kind // ""' <<<"$s")" = "interactive" ]; then
+        echo "$name  ·  term | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=focus param2=\"$cwd\" terminal=false refresh=false"
+      else
+        echo "$name  ·  bg | sfimage=circle.dotted sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=agents-tab param2=\"$cwd\" terminal=false refresh=false"
+      fi
     else
       age=$(age_of "$updated")
       echo "$name  ·  $age | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=$action param2=$sid terminal=false refresh=false"
