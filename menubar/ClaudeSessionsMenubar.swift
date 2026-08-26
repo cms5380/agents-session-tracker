@@ -491,9 +491,14 @@ struct SessionRow: View {
     var isSelected: Bool = false
     var hotkeyNumber: Int? = nil
     var animate: Bool = true
+    var isRenaming: Bool = false
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
+    var renameCommit: ((String) -> Void)? = nil
+    var renameCancel: (() -> Void)? = nil
     @State private var hovering = false
+    @State private var renameDraft = ""
+    @FocusState private var renameFocused: Bool
 
     var name: String {
         s.title ?? ((s.cwd ?? "?") as NSString).lastPathComponent
@@ -511,9 +516,22 @@ struct SessionRow: View {
             }
             statusGlyph(s.status, animate: animate)
             VStack(alignment: .leading, spacing: 1) {
-                Text(name)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .lineLimit(1)
+                if isRenaming {
+                    TextField("session name (empty = auto)", text: $renameDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .focused($renameFocused)
+                        .onAppear {
+                            renameDraft = s.title ?? ""
+                            renameFocused = true
+                        }
+                        .onSubmit { renameCommit?(renameDraft.trimmingCharacters(in: .whitespaces)) }
+                        .onExitCommand { renameCancel?() }
+                } else {
+                    Text(name)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .lineLimit(1)
+                }
                 Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -1146,14 +1164,19 @@ struct PanelView: View {
                                 let base = SessionRow(s: s, model: model, isSelected: isSelected(r),
                                                       hotkeyNumber: sessionNumbers[s.session_id],
                                                       animate: model.panelVisible,
+                                                      isRenaming: renamingSession?.session_id == s.session_id,
                                                       onRename: { sess in
                                                           renamingSession = sess
-                                                          renameText = sess.title ?? ""
                                                       },
                                                       onMessage: { sess in
                                                           messagingSession = sess
                                                           messageText = ""
-                                                      })
+                                                      },
+                                                      renameCommit: { newName in
+                                                          model.renameSession(s.session_id, to: newName)
+                                                          renamingSession = nil
+                                                      },
+                                                      renameCancel: { renamingSession = nil })
                                     .padding(.leading, indented ? 16 : 0)
                                     .id(r.id)
                                 if s.pinned && !searching {
@@ -1235,24 +1258,6 @@ struct PanelView: View {
                             messageText = ""
                         }
                     Button("✕") { messagingSession = nil }.buttonStyle(.plain).font(.system(size: 10))
-                }
-                .padding(.horizontal, 14)
-            }
-
-            if let sess = renamingSession {
-                HStack(spacing: 8) {
-                    Text("Rename session →").font(.system(size: 11)).foregroundStyle(.secondary)
-                    TextField("session name (empty = auto)", text: $renameText)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11))
-                        .frame(width: 200)
-                        .onSubmit {
-                            model.renameSession(sess.session_id,
-                                                to: renameText.trimmingCharacters(in: .whitespaces))
-                            renamingSession = nil
-                        }
-                    Button("✕") { renamingSession = nil }.buttonStyle(.plain).font(.system(size: 10))
-                    Spacer()
                 }
                 .padding(.horizontal, 14)
             }
@@ -1356,7 +1361,7 @@ struct PanelView: View {
                 }
                 switch action {
                 case "pin": model.togglePin(s.session_id)
-                case "rename": renamingSession = s; renameText = s.title ?? ""
+                case "rename": renamingSession = s
                 case "copyresume": model.copyResume(s)
                 case "ungroup":
                     guard s.group != nil else { return false }
@@ -1366,6 +1371,7 @@ struct PanelView: View {
                 return true
             }
             model.messageSelected = {
+                if renamingSession != nil { return }
                 // keyword mode: Tab completes the folder name into the field
                 // so a prompt can be typed after it
                 if let kw = keywordMatch {
