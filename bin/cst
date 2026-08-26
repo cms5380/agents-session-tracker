@@ -109,14 +109,26 @@ cmd_jump() {
     file=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
     [ -n "$file" ] || { echo "unknown session: $sid" >&2; exit 1; }
   fi
-  local cmux_ws iterm_id tmux_pane tty term_program cwd
+  local cmux_ws iterm_id tmux_pane tty term_program app pid cwd
   cmux_ws=$(jq -r '.terminal.cmux_workspace_id // empty' "$file")
   iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$file")
   tmux_pane=$(jq -r '.terminal.tmux_pane // empty' "$file")
   tty=$(jq -r '.terminal.tty // empty' "$file")
   term_program=$(jq -r '.terminal.term_program // empty' "$file")
+  app=$(jq -r '.terminal.app // empty' "$file")
+  pid=$(jq -r '.pid // empty' "$file")
   cwd=$(jq -r '.cwd // empty' "$file")
 
+  # dead session — its terminal handles are stale, go straight to resume handoff
+  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+    printf 'cd %s && claude --resume %s' "$cwd" "$sid" | pbcopy 2>/dev/null || true
+    osascript -e "display notification \"resume 명령 복사됨 — 터미널에 붙여넣으세요\" with title \"종료된 세션\" subtitle \"${cwd/#$HOME/~}\"" 2>/dev/null || true
+    exit 0
+  fi
+
+  if [ "$app" = "vscode" ]; then
+    open -a "Visual Studio Code" "$cwd" 2>/dev/null && exit 0
+  fi
   if [ -n "$cmux_ws" ] && jump_cmux "$cmux_ws"; then exit 0; fi
   if [ -n "$iterm_id" ] && jump_iterm "$iterm_id" >/dev/null 2>&1; then exit 0; fi
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi

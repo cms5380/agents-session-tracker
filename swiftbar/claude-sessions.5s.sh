@@ -22,6 +22,16 @@ sessions=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s --argjson now "$now" '
   [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
   | sort_by(-.updated_at)')
 
+# sessions whose claude process died (no SessionEnd) are stale — demote to "gone"
+sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
+  pid=$(jq -r '.pid // empty' <<<"$s")
+  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+    jq -c '.status = "gone"' <<<"$s"
+  else
+    printf '%s\n' "$s"
+  fi
+done | jq -s '.')
+
 waiting=$(jq 'map(select(.status == "waiting")) | length' <<<"$sessions")
 running=$(jq 'map(select(.status == "running")) | length' <<<"$sessions")
 
@@ -43,8 +53,8 @@ age_of() {
   fi
 }
 
-render_group() { # $1=status filter, $2=header, $3=dot color
-  local rows
+render_group() { # $1=status filter, $2=header, $3=dot color, $4=click action
+  local rows action="${4:-jump}"
   rows=$(jq -c --arg st "$1" '.[] | select(.status == $st)' <<<"$sessions")
   [ -n "$rows" ] || return 0
   echo "$2 | size=11 color=$C_DIM"
@@ -58,7 +68,7 @@ render_group() { # $1=status filter, $2=header, $3=dot color
     age=$(age_of "$updated")
     tip="${cwd/#$HOME/~}"
     [ -n "$msg" ] && tip="$msg — $tip"
-    echo "$name  ·  $age | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=jump param2=$sid terminal=false refresh=false"
+    echo "$name  ·  $age | sfimage=circle.fill sfcolor=$3 tooltip=\"$tip\" bash=$CST param1=$action param2=$sid terminal=false refresh=false"
     echo "Copy resume command | alternate=true sfimage=doc.on.doc bash=$CST param1=copy-resume param2=$sid terminal=false refresh=false"
   done <<<"$rows"
 }
@@ -70,6 +80,7 @@ else
   render_group waiting "NEEDS INPUT" "$C_WAIT"
   render_group running "RUNNING"     "$C_RUN"
   render_group done    "IDLE"        "$C_DONE"
+  render_group gone    "GONE — click to copy resume" "$C_DONE" copy-resume
 fi
 
 echo "---"

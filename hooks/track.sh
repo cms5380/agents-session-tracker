@@ -26,6 +26,12 @@ esac
 claude_tty=$(ps -o tty= -p "$PPID" 2>/dev/null | tr -d ' ' || true)
 [ "$claude_tty" = "??" ] && claude_tty=""
 
+# VSCode-spawned sessions have no terminal env but can be jumped to via the app
+app=""
+if [ "${TERM_PROGRAM:-}" = "vscode" ] || [ -n "${VSCODE_GIT_ASKPASS_MAIN:-}" ] || [ "${__CFBundleIdentifier:-}" = "com.microsoft.VSCode" ]; then
+  app="vscode"
+fi
+
 file="$STATE_DIR/$session_id.json"
 existing="{}"
 [ -f "$file" ] && existing=$(cat "$file")
@@ -44,10 +50,13 @@ jq -n \
   --arg cmux_surface_id "${CMUX_SURFACE_ID:-}" \
   --arg tmux_pane "${TMUX_PANE:-}" \
   --arg tty "$claude_tty" \
+  --arg app "$app" \
+  --arg pid "$PPID" \
   '$prev * {
     session_id: $session_id,
     status: $status,
     last_event: $event,
+    pid: ($pid | tonumber),
     updated_at: ($updated_at | tonumber)
   }
   | if $cwd != "" then .cwd = $cwd else . end
@@ -58,7 +67,8 @@ jq -n \
       cmux_workspace_id: $cmux_workspace_id,
       cmux_surface_id: $cmux_surface_id,
       tmux_pane: $tmux_pane,
-      tty: $tty
+      tty: $tty,
+      app: $app
     } | with_entries(select(.value != ""))))
   ' >"$file.tmp" && mv "$file.tmp" "$file"
 
