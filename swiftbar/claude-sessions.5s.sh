@@ -6,7 +6,9 @@
 set -uo pipefail
 
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
-CST="$(cd "$(dirname "$0")/.." && pwd)/bin/cst"
+# deployed runtime first; repo checkout fallback (symlinked plugin can't rely on $0)
+CST="$HOME/.claude/session-tracker/cst"
+[ -x "$CST" ] || CST="$(cd "$(dirname "$0")/.." && pwd)/bin/cst"
 
 running=0 waiting=0 done_=0
 rows=""
