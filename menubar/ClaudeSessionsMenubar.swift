@@ -39,6 +39,7 @@ func runCST(_ args: [String], capture: Bool = false) -> String {
 final class Model: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var focusTick = 0
+    var moveSelection: ((Int) -> Void)?
     var timer: Timer?
 
     func start() {
@@ -467,6 +468,11 @@ struct PanelView: View {
             selected = 0
             searchFocused = true
         }
+        .onAppear {
+            // the field editor eats arrow keys before onMoveCommand fires, so
+            // a local event monitor routes them here instead
+            model.moveSelection = { move($0) }
+        }
     }
 }
 
@@ -512,7 +518,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateTitle(sessions: [])
         model.start()
         registerHotkey()
+
+        // arrow keys never reach SwiftUI while the search field editor has
+        // focus — intercept them at the event level while the panel is key
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.panel.isKeyWindow else { return event }
+            switch event.keyCode {
+            case 125: self.model.moveSelection?(1); return nil // down
+            case 126: self.model.moveSelection?(-1); return nil // up
+            default: return event
+            }
+        }
     }
+
+    var keyMonitor: Any?
 
     @objc func togglePanel() {
         if panel.isVisible { hidePanel() } else { showPanel() }
