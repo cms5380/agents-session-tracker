@@ -799,7 +799,7 @@ struct PanelView: View {
             case .session: return acc + 47
             }
         }
-        return min(max(h + 16, 100), 460)
+        return min(max(h + 16 + (draggingGroup != nil ? 34 : 0), 100), 460)
     }
 
     func isSelected(_ r: PanelRow) -> Bool { rows[safe: selected]?.id == r.id }
@@ -974,6 +974,38 @@ struct PanelView: View {
                                 } else {
                                     base
                                 }
+                            }
+                        }
+                        if draggingGroup != nil {
+                            // end-of-list drop zone, visible only while
+                            // dragging a group card
+                            VStack(spacing: 3) {
+                                Rectangle()
+                                    .fill(dropTarget == "__end__" ? claudeOrange : Color.primary.opacity(0.12))
+                                    .frame(height: 2)
+                                    .cornerRadius(1)
+                                    .padding(.horizontal, 6)
+                                Text("맨 아래로")
+                                    .font(.system(size: 9, design: .rounded))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                            .onDrop(of: [.plainText, .utf8PlainText], isTargeted: Binding(
+                                get: { dropTarget == "__end__" },
+                                set: { over in dropTarget = over ? "__end__" : (dropTarget == "__end__" ? nil : dropTarget) }
+                            )) { providers in
+                                guard let p = providers.first else { return false }
+                                _ = p.loadObject(ofClass: NSString.self) { obj, _ in
+                                    guard let item = obj as? String, item.hasPrefix("group:") else { return }
+                                    DispatchQueue.main.async {
+                                        model.groupMove(String(item.dropFirst(6)), before: "end")
+                                        draggingGroup = nil
+                                        dropTarget = nil
+                                    }
+                                }
+                                return true
                             }
                         }
                         if rows.isEmpty {
