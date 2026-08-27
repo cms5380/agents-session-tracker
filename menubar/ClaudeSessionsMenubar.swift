@@ -820,6 +820,13 @@ struct PanelView: View {
             }
             return
         }
+        if id == "kwbase" {
+            // open at the template's base path; the whole typed arg is the prompt
+            if let kw = keywordMatch {
+                model.runCommand(kw.name, arg: "", prompt: kw.arg)
+            }
+            return
+        }
         if id.hasPrefix("kwc|") {
             let parts = id.split(separator: "|", maxSplits: 2).map(String.init)
             if parts.count == 3 {
@@ -973,9 +980,11 @@ struct PanelView: View {
             let comps = keywordCompletions(template: kw.template, arg: folderToken)
             if comps.isEmpty {
                 if let base = folderBase(template: kw.template) {
-                    // folder-style keyword with no match — don't offer a
-                    // broken cd command
-                    out.append(.label("일치하는 폴더 없음 — \(base)"))
+                    // no matching folder — open at the base path, with the
+                    // typed text as the initial prompt
+                    let sub = kw.arg.isEmpty ? "기본 경로에서 세션 시작"
+                        : "기본 경로에서 시작 — \"\(kw.arg.prefix(30))\""
+                    out.append(.command("kwbase", "\(kw.name) → \(base)", sub))
                 } else {
                     out.append(.command("kw", "\(kw.name) \(kw.arg)", String(kw.preview.prefix(50))))
                 }
