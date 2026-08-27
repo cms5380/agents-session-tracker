@@ -21,6 +21,7 @@ struct Session: Decodable, Identifiable, Equatable {
     let group_order: Int?
     let sort_order: Int?
     let agent: String?
+    let model: String?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
 }
@@ -612,6 +613,17 @@ func statusColor(_ status: String) -> Color {
     }
 }
 
+// "claude-opus-5" → "opus 5", "gpt-5.6-sol" → "gpt-5.6", "claude-haiku-4-5-…" → "haiku 4.5"
+func shortModel(_ model: String?) -> String {
+    guard var m = model, !m.isEmpty else { return "" }
+    if m.hasPrefix("claude-") { m = String(m.dropFirst(7)) }
+    let parts = m.split(separator: "-").map(String.init)
+    guard let name = parts.first else { return m }
+    let nums = parts.dropFirst().prefix(while: { $0.allSatisfy { $0.isNumber || $0 == "." } })
+    if name.hasPrefix("gpt") { return nums.isEmpty ? name : "\(name)-\(nums.first!)" }
+    return nums.isEmpty ? name : "\(name) \(nums.joined(separator: "."))"
+}
+
 func ageString(_ updated: Double?) -> String {
     guard let updated, updated > 0 else { return "" }
     let a = Date().timeIntervalSince1970 - updated
@@ -701,10 +713,19 @@ struct SessionRow: View {
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .lineLimit(1)
                 }
-                Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    if !shortModel(s.model).isEmpty {
+                        Text(shortModel(s.model))
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.07)))
+                    }
+                    Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
             if s.pinned {
@@ -942,7 +963,7 @@ struct PanelView: View {
                            title: s.title, message: s.message, updated_at: s.updated_at,
                            bg: s.bg, kind: s.kind, group: s.group, pin_order: s.pin_order,
                            group_color: s.group_color, group_order: s.group_order,
-                           sort_order: s.sort_order, agent: s.agent)
+                           sort_order: s.sort_order, agent: s.agent, model: s.model)
         }
     }
 

@@ -14,6 +14,7 @@ event=$(jq -r '.hook_event_name // empty' <<<"$input")
 cwd=$(jq -r '.cwd // empty' <<<"$input")
 message=$(jq -r '.message // empty' <<<"$input")
 transcript=$(jq -r '.transcript_path // empty' <<<"$input")
+model=$(jq -r '.model // empty' <<<"$input")
 
 # which agent produced this session — codex writes rollout files under
 # ~/.codex/sessions and speaks the same hook protocol
@@ -42,6 +43,14 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
       title=$( (grep '"type":"summary"' "$transcript" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
     fi
   fi
+fi
+
+# claude hooks don't carry the model — read it from the transcript's most
+# recent assistant message (cheap: tail keeps it current after /model swaps)
+if [ -z "$model" ] && [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+  model=$( (tail -n 40 "$transcript" 2>/dev/null \
+    | jq -r 'select(.type=="assistant") | .message.model // empty' 2>/dev/null \
+    | tail -n 1) || true)
 fi
 
 case "$event" in
@@ -124,6 +133,7 @@ jq -n \
   --arg title "$title" \
   --arg transcript "$transcript" \
   --arg agent "$agent" \
+  --arg model "$model" \
   '$prev * {
     session_id: $session_id,
     last_event: $event,
@@ -138,6 +148,7 @@ jq -n \
   | if $message != "" then .message = $message else . end
   | if $title != "" and ((.title // "") == "") then .title = $title else . end
   | if $transcript != "" then .transcript_path = $transcript else . end
+  | if $model != "" then .model = $model else . end
   | .terminal = ((.terminal // {}) * ({
       term_program: $term_program,
       iterm_session_id: $iterm_session_id,
