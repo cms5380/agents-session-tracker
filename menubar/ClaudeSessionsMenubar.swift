@@ -2111,10 +2111,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // 11 rows tall so swapping frames never shifts the icon's baseline
     lazy var menubarStaticImage: NSImage = {
         let empty = String(repeating: ".", count: 16)
-        return mascotNSImage(map: [empty] + mascotMap, pixel: 1.6)
+        return mascotNSImage(map: [empty] + mascotMap, pixel: 1.2)
     }()
     lazy var menubarRunFrames: [NSImage] =
-        mascotFrames("running").frames.map { mascotNSImage(map: $0, pixel: 1.6) }
+        mascotFrames("running").frames.map { mascotNSImage(map: $0, pixel: 1.2) }
     var menubarTimer: Timer?
     var menubarFrameIdx = 0
 
