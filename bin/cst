@@ -65,11 +65,15 @@ cmd_list() {
 }
 
 jump_cmux() { # $1=workspace uuid
-  command -v cmux >/dev/null || return 1
-  # focus verb per cmux workspace-action / rpc surface; try both forms
-  cmux workspace-action --action focus --workspace "$1" 2>/dev/null ||
-    cmux rpc workspace.focus "{\"workspace_id\":\"$1\"}" 2>/dev/null || return 1
-  open -a cmux 2>/dev/null || true
+  local bin
+  bin=$(command -v cmux 2>/dev/null || true)
+  [ -n "$bin" ] || bin="/Applications/cmux.app/Contents/Resources/bin/cmux"
+  [ -x "$bin" ] || return 1
+  # workspace focus needs cmux Settings → Automation enabled for external
+  # processes; if denied we still bring the app forward
+  "$bin" workspace-action --action focus --workspace "$1" >/dev/null 2>&1 ||
+    "$bin" rpc workspace.focus "{\"workspace_id\":\"$1\"}" >/dev/null 2>&1 || true
+  open -a cmux 2>/dev/null || return 1
 }
 
 jump_iterm() { # $1=ITERM_SESSION_ID (w0t2p0:UUID)
