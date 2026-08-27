@@ -362,17 +362,17 @@ struct PixelMascot: View {
     }
 }
 
-func mascotNSImage(pixel: CGFloat) -> NSImage {
-    let size = NSSize(width: pixel * 16, height: pixel * 10)
+func mascotNSImage(map: [String], pixel: CGFloat) -> NSImage {
+    let px = quantizedPixel(pixel, scale: 2)
+    let size = NSSize(width: px * 16, height: px * CGFloat(map.count))
     let img = NSImage(size: size)
     img.lockFocus()
     if let cg = NSGraphicsContext.current?.cgContext {
         cg.setShouldAntialias(false)
         // template image — the menubar tints it like every other icon
         cg.setFillColor(NSColor.black.cgColor)
-        let px = quantizedPixel(pixel, scale: 2)
-        for (y, row) in mascotMap.enumerated() {
-            for (x, ch) in row.enumerated() where ch == "o" {
+        for (y, row) in map.enumerated() {
+            for (x, ch) in row.enumerated() where ch != "." {
                 cg.fill(CGRect(x: CGFloat(x) * px,
                                y: size.height - CGFloat(y + 1) * px,
                                width: px, height: px))
@@ -2107,10 +2107,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         completionHandler([.banner])
     }
 
+    // menubar mascot frames: static idle pose + the running bounce, all
+    // 11 rows tall so swapping frames never shifts the icon's baseline
+    lazy var menubarStaticImage: NSImage = {
+        let empty = String(repeating: ".", count: 16)
+        return mascotNSImage(map: [empty] + mascotMap, pixel: 1.6)
+    }()
+    lazy var menubarRunFrames: [NSImage] =
+        mascotFrames("running").frames.map { mascotNSImage(map: $0, pixel: 1.6) }
+    var menubarTimer: Timer?
+    var menubarFrameIdx = 0
+
     func updateTitle(sessions: [Session]) {
         guard let button = statusItem.button else { return }
-        // always the mascot; status rides in the text next to it
-        button.image = mascotNSImage(pixel: 1.6)
+        // any session mid-turn → the menubar mascot bounces along
+        let running = sessions.contains { $0.status == "running" }
+        if running {
+            if menubarTimer == nil {
+                menubarTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+                    guard let self else { return }
+                    self.menubarFrameIdx = (self.menubarFrameIdx + 1) % self.menubarRunFrames.count
+                    self.statusItem.button?.image = self.menubarRunFrames[self.menubarFrameIdx]
+                }
+            }
+            button.image = menubarRunFrames[menubarFrameIdx]
+        } else {
+            menubarTimer?.invalidate()
+            menubarTimer = nil
+            button.image = menubarStaticImage
+        }
         // only sessions blocked on an approval (permission prompt)
         let n = sessions.filter { $0.status == "waiting" }.count
         button.title = n > 0 ? " \(n)" : ""
