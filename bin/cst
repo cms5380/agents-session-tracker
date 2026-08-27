@@ -837,66 +837,44 @@ case "${1:-list}" in
     ;;
   stop-session)
     # cst stop-session <session-id> — stop the session; it stays listed as 💤
-    # (resumable). Background: claude stop. Interactive: SIGTERM the client
-    # so the terminal returns to a shell and SessionEnd fires cleanly.
+    # (resumable). Fast: the record's own pid/handles avoid a daemon CLI
+    # round-trip, and AppleScript runs in the background.
     [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
-    if [ -n "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
-      # codex is unknown to the claude daemon — drive it from the record
+    cpid=""; rowner=""
+    if [ -n "$f" ]; then
       cpid=$(jq -r '.pid // empty' "$f")
+      rowner=$(jq -r '.owner // empty' "$f")
+    fi
+    if [ -n "$f" ] && [ "$rowner" = "client" ] && [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+      # client-owned live session (claude or codex) — record-driven
       rstatus=$(jq -r '.status // empty' "$f")
       iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$f")
-      if [ -z "$iterm_id" ] && [ -n "$cpid" ]; then
+      if [ -z "$iterm_id" ]; then
         iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
           | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
       fi
-      if [ "$rstatus" = "running" ]; then
-        [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" || true
+      if [ "$rstatus" = "running" ] || [ "$rstatus" = "waiting" ]; then
+        # running turn: inject Esc (stop-generation) — a SIGINT signal
+        # would make the agent exit to the shell
+        [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" >/dev/null 2>&1 &
         jq --arg it "$iterm_id" \
           '.status = "done" | if $it != "" then .terminal.iterm_session_id = $it else . end' \
           "$f" >"$f.tmp" && mv "$f.tmp" "$f"
       else
+        # idle at the prompt: first press just shelves it as 💤 — the
+        # process and tab stay untouched until a second press ends it
         jq --arg it "$iterm_id" \
           '.status = "gone" | .owner = "client"
            | if $it != "" then .terminal.iterm_session_id = $it else . end' \
           "$f" >"$f.tmp" && mv "$f.tmp" "$f"
       fi
-      rm -f "$AGENTS_CACHE"
-      exit 0
-    fi
-    entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
-    if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
-      cpid=$(jq -r '.pid // empty' <<<"$entry")
-      dstatus=$(jq -r '.status // empty' <<<"$entry")
-      if [ -n "$cpid" ]; then
-        iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
-          | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
-        f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
-        if [ "$dstatus" = "busy" ]; then
-          # running turn: inject Esc (stop-generation) — a SIGINT signal
-          # would make claude exit to the shell
-          [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" || true
-          if [ -n "$f" ]; then
-            jq --arg it "$iterm_id" \
-              '.status = "done" | if $it != "" then .terminal.iterm_session_id = $it else . end' \
-              "$f" >"$f.tmp" && mv "$f.tmp" "$f"
-          fi
-        else
-          # idle at the prompt: first press just shelves it as 💤 — the
-          # process and tab stay untouched until a second press ends it
-          if [ -n "$f" ]; then
-            jq --arg it "$iterm_id" \
-              '.status = "gone" | .owner = "client"
-               | if $it != "" then .terminal.iterm_session_id = $it else . end' \
-              "$f" >"$f.tmp" && mv "$f.tmp" "$f"
-          fi
-        fi
-      fi
     else
+      # daemon-hosted background agent (or a record without a live client)
+      entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
       # claude stop takes the short job id (first 8 chars of the session id)
-      claude stop "${2:0:8}" >/dev/null 2>&1 || true
+      claude stop "${2:0:8}" >/dev/null 2>&1 &
       attach_title=$(jq -r '.name // empty' <<<"$entry")
-      f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
       if [ -n "$f" ]; then
         jq --arg at "$attach_title" \
           '.status = "gone" | .owner = "client"
@@ -910,26 +888,29 @@ case "${1:-list}" in
     # cst end <session-id> — stop (if needed), drop from view, close its tab
     [ $# -ge 2 ] || { echo "usage: cst end <session-id>" >&2; exit 1; }
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
-    if [ -n "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
-      cpid=$(jq -r '.pid // empty' "$f")
-      [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
-      sleep 0.3
+    cpid=""
+    [ -n "$f" ] && cpid=$(jq -r '.pid // empty' "$f")
+    if [ -n "$cpid" ] && [ "$(jq -r '.owner // empty' "$f")" = "client" ] \
+       && kill -0 "$cpid" 2>/dev/null; then
+      kill -TERM "$cpid" 2>/dev/null || true
     else
       entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
-      if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
-        cpid=$(jq -r '.pid // empty' <<<"$entry")
-        [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
-        sleep 0.3
+      dpid=$(jq -r '.pid // empty' <<<"$entry")
+      if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ] && [ -n "$dpid" ]; then
+        kill -TERM "$dpid" 2>/dev/null || true
       else
-        claude stop "${2:0:8}" >/dev/null 2>&1 || true
+        claude stop "${2:0:8}" >/dev/null 2>&1 &
       fi
     fi
-    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     if [ -n "$f" ]; then
       it=$(jq -r '.terminal.iterm_session_id // empty' "$f")
       at=$(jq -r '.attach_title // empty' "$f")
-      [ -n "$it" ] && close_iterm_by_id "$it" || true
-      [ -n "$at" ] && close_iterm_by_title "$at" || true
+      # tab close is cosmetic — run it in the background, id handle first
+      if [ -n "$it" ]; then
+        close_iterm_by_id "$it" >/dev/null 2>&1 &
+      elif [ -n "$at" ]; then
+        close_iterm_by_title "$at" >/dev/null 2>&1 &
+      fi
       jq '.status = "ended"' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
     fi
     rm -f "$AGENTS_CACHE"
