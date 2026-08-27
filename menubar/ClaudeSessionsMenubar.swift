@@ -86,6 +86,7 @@ final class Model: ObservableObject {
 
     func refresh() {
         DispatchQueue.main.async { self.refreshing = true }
+        fetchUsage()
         DispatchQueue.global(qos: .utility).async {
             let out = runCST(["sessions-json"], capture: true)
             let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
@@ -271,6 +272,38 @@ final class Model: ObservableObject {
         didSet { UserDefaults.standard.set(mainAgent, forKey: "mainAgent") }
     }
     var otherAgent: String { mainAgent == "claude" ? "codex" : "claude" }
+
+    // quota snapshot for the footer — cst caches the heavy work for 5min
+    @Published var usageText = ""
+    func fetchUsage() {
+        DispatchQueue.global().async {
+            let out = runCST(["usage-json"], capture: true)
+            guard let data = out.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { return }
+            func fmtTok(_ n: Int) -> String {
+                n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000)
+                    : n >= 1_000 ? "\(n / 1_000)k" : "\(n)"
+            }
+            var parts: [String] = []
+            if let c = obj["claude"] as? [String: Any] {
+                let tok = (c["input"] as? Int ?? 0) + (c["output"] as? Int ?? 0)
+                if tok > 0 { parts.append("claude \(fmtTok(tok))/5h") }
+            }
+            if let x = obj["codex"] as? [String: Any],
+               let p = x["primary"] as? [String: Any],
+               let pct = p["used_percent"] as? Double {
+                var s = "codex \(Int(pct.rounded()))%"
+                if let reset = p["resets_at"] as? Double {
+                    let d = max(0, reset - Date().timeIntervalSince1970)
+                    s += d >= 86400 ? " ·↺\(Int(d / 86400))d" : " ·↺\(Int(d / 3600))h"
+                }
+                parts.append(s)
+            }
+            let text = parts.joined(separator: "  ")
+            DispatchQueue.main.async { self.usageText = text }
+        }
+    }
 
     func newSession(in dir: String, agent: String? = nil) {
         appDelegate?.hidePanel()
@@ -1896,9 +1929,12 @@ struct PanelView: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     Spacer()
-                    Text("↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
+                    Text(model.usageText.isEmpty
+                         ? "↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬"
+                         : "⚡ \(model.usageText)   ·   ⌘1-9 · ⌃X · Tab · /")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
+                        .help("claude: 최근 5시간 토큰(로컬 추정) · codex: 공식 주간 사용률")
                 }
                 if model.refreshing {
                     ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 16, height: 16)

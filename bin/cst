@@ -977,6 +977,41 @@ case "${1:-list}" in
     fi
     rm -f "$AGENTS_CACHE"
     ;;
+  usage-json)
+    # cst usage-json — quota snapshot for the panel footer.
+    #   codex: official rate_limits from the newest rollout event
+    #   claude: local estimate — tokens in the last 5h across transcripts
+    USAGE_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/usage-cache.json"
+    if [ -f "$USAGE_CACHE" ]; then
+      age=$(( $(date +%s) - $(stat -f %m "$USAGE_CACHE" 2>/dev/null || echo 0) ))
+      if [ "$age" -lt 300 ]; then cat "$USAGE_CACHE"; exit 0; fi
+    fi
+    codex_rl="null"
+    for t in $(ls -t "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -6); do
+      rl=$(tail -n 200 "$t" 2>/dev/null \
+        | jq -c 'select(.type=="event_msg") | .payload | select(.type=="token_count") | .rate_limits // empty' 2>/dev/null \
+        | tail -1 || true)
+      if [ -n "$rl" ]; then codex_rl="$rl"; break; fi
+    done
+    # transcript timestamps are UTC ISO strings
+    cutoff=$(date -u -v-5H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo "")
+    cin=0; cout=0
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      read -r i o <<<"$(tail -n 2000 "$t" 2>/dev/null \
+        | jq -rs --arg cut "$cutoff" '
+            [.[] | select(.type=="assistant" and (.timestamp // "") >= $cut)
+                 | .message.usage // {}]
+            | [( map(.input_tokens // 0) | add // 0),
+               ( map(.output_tokens // 0) | add // 0)] | @tsv' 2>/dev/null || echo "0	0")"
+      cin=$((cin + ${i:-0})); cout=$((cout + ${o:-0}))
+    done < <(find "$HOME/.claude/projects" -name '*.jsonl' -not -name 'agent-*' -mmin -300 2>/dev/null)
+    jq -n --argjson codex "$codex_rl" \
+          --argjson cin "$cin" --argjson cout "$cout" \
+      '{claude: {window_h: 5, input: $cin, output: $cout}, codex: $codex}' \
+      | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
+    cat "$USAGE_CACHE"
+    ;;
   skills-json)
     # list available skills / slash commands as [{name, description}]
     out='[]'
