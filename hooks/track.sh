@@ -49,7 +49,8 @@ fi
 # recent assistant message (cheap: tail keeps it current after /model swaps)
 if [ -z "$model" ] && [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
   model=$( (tail -n 40 "$transcript" 2>/dev/null \
-    | jq -r 'select(.type=="assistant") | .message.model // empty' 2>/dev/null \
+    | jq -r 'select(.type=="assistant") | .message.model // empty
+             | select(startswith("<") | not)' 2>/dev/null \
     | tail -n 1) || true)
 fi
 

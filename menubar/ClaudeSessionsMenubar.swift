@@ -649,7 +649,7 @@ func statusColor(_ status: String) -> Color {
 
 // "claude-opus-5" → "opus 5", "gpt-5.6-sol" → "gpt-5.6", "claude-haiku-4-5-…" → "haiku 4.5"
 func shortModel(_ model: String?) -> String {
-    guard var m = model, !m.isEmpty else { return "" }
+    guard var m = model, !m.isEmpty, !m.hasPrefix("<") else { return "" }
     if m.hasPrefix("claude-") { m = String(m.dropFirst(7)) }
     let parts = m.split(separator: "-").map(String.init)
     guard let name = parts.first else { return m }
@@ -1944,12 +1944,20 @@ struct PanelView: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     Spacer()
-                    Text(model.usageText.isEmpty
-                         ? "↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬"
-                         : "⚡ \(model.usageText)   ·   ⌘1-9 · ⌃X · Tab · /")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                        .help("claude: 최근 5시간 토큰(로컬 추정) · codex: 공식 주간 사용률")
+                    if model.usageText.isEmpty {
+                        Text("↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        HStack(spacing: 4) {
+                            Text("⚡").font(.system(size: 10))
+                                .foregroundStyle(claudeOrange)
+                            Text(model.usageText)
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        .help("claude: 최근 5시간 토큰(로컬 추정) · codex: 공식 주간 사용률\n↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
+                    }
                 }
                 if model.refreshing {
                     ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 16, height: 16)
