@@ -1075,21 +1075,28 @@ case "${1:-list}" in
     unset cl_tok
 
     cutoff=$(date -u -v-5H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo "")
-    cin=0; cout=0
+    rows=""
     while IFS= read -r t; do
       [ -n "$t" ] || continue
-      read -r i o <<<"$(tail -n 2000 "$t" 2>/dev/null \
-        | jq -rs --arg cut "$cutoff" '
-            [.[] | select(.type=="assistant" and (.timestamp // "") >= $cut)
-                 | .message.usage // {}]
-            | [( map(.input_tokens // 0) | add // 0),
-               ( map(.output_tokens // 0) | add // 0)] | @tsv' 2>/dev/null || echo "0	0")"
-      cin=$((cin + ${i:-0})); cout=$((cout + ${o:-0}))
+      part=$(tail -n 2000 "$t" 2>/dev/null \
+        | jq -r --arg cut "$cutoff" '
+            select(.type=="assistant" and (.timestamp // "") >= $cut)
+            | [(.message.model // "?"), (.message.usage.input_tokens // 0),
+               (.message.usage.output_tokens // 0)] | @tsv' 2>/dev/null || true)
+      [ -n "$part" ] && rows="$rows$part
+"
     done < <(find "$HOME/.claude/projects" -name '*.jsonl' -not -name 'agent-*' -mmin -300 2>/dev/null)
+    by_model=$(printf '%s' "$rows" | awk -F'\t' '
+      $1 != "" && $1 !~ /^</ { i[$1]+=$2; o[$1]+=$3 }
+      END { for (m in i) printf "{\"model\":\"%s\",\"input\":%d,\"output\":%d}\n", m, i[m], o[m] }' \
+      | jq -sc 'sort_by(-.output)' 2>/dev/null || echo '[]')
+    cin=$(jq '[.[].input] | add // 0' <<<"$by_model")
+    cout=$(jq '[.[].output] | add // 0' <<<"$by_model")
     jq -n --argjson codex "$codex_rl" \
           --argjson cin "$cin" --argjson cout "$cout" \
+          --argjson bym "$by_model" \
           --argjson clo "$claude_official" \
-      '{claude: {window_h: 5, input: $cin, output: $cout},
+      '{claude: {window_h: 5, input: $cin, output: $cout, by_model: $bym},
         claude_official: $clo, codex: $codex}' \
       | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
     cat "$USAGE_CACHE"

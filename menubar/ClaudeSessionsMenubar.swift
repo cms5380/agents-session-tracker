@@ -299,7 +299,13 @@ final class Model: ObservableObject {
         let pct: Double      // 0-100
         let reset: String    // "↺ 3h" / ""
     }
+    struct ModelUsage: Identifiable, Equatable {
+        let model: String
+        let tokens: Int
+        var id: String { model }
+    }
     @Published var gauges: [Gauge] = []
+    @Published var modelUsage: [ModelUsage] = []
     @Published var usageText = ""
 
     func fetchUsage() {
@@ -364,9 +370,19 @@ final class Model: ObservableObject {
                 }
                 if tok > 0 { parts.append("claude \(fmtTok(tok))/5h") }
             }
+            var models: [ModelUsage] = []
+            if let c = obj["claude"] as? [String: Any],
+               let bym = c["by_model"] as? [[String: Any]] {
+                models = bym.compactMap { m in
+                    guard let name = m["model"] as? String else { return nil }
+                    let tok = (m["input"] as? Int ?? 0) + (m["output"] as? Int ?? 0)
+                    return tok > 0 ? ModelUsage(model: name, tokens: tok) : nil
+                }
+            }
             let text = parts.joined(separator: "  ")
             DispatchQueue.main.async {
                 self.gauges = g
+                self.modelUsage = models
                 self.usageText = text
             }
         }
@@ -966,7 +982,13 @@ struct QuotaGauge: View {
 struct StatsCard: View {
     let stats: Model.Stats
     let gauges: [Model.Gauge]
+    let modelUsage: [Model.ModelUsage]
     let usageText: String
+
+    func fmtTok(_ n: Int) -> String {
+        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000)
+            : n >= 1_000 ? "\(n / 1_000)k" : "\(n)"
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
@@ -1005,6 +1027,32 @@ struct StatsCard: View {
                         .foregroundStyle(.secondary)
                         .tracking(1.2)
                     ForEach(gauges) { QuotaGauge(g: $0) }
+                }
+                if !modelUsage.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("모델별 · 최근 5시간")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .tracking(1.2)
+                        let maxTok = max(1, modelUsage.map { $0.tokens }.max() ?? 1)
+                        ForEach(modelUsage) { m in
+                            HStack(spacing: 8) {
+                                Text(shortModel(m.model))
+                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                    .frame(width: 66, alignment: .leading)
+                                GeometryReader { geo in
+                                    Capsule().fill(claudeOrange.opacity(0.75))
+                                        .frame(width: max(4, geo.size.width
+                                            * CGFloat(m.tokens) / CGFloat(maxTok)))
+                                }
+                                .frame(height: 6)
+                                Text(fmtTok(m.tokens))
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 44, alignment: .trailing)
+                            }
+                        }
+                    }
                 }
             } else if !usageText.isEmpty {
                 Text("⚡ \(usageText)")
@@ -1582,7 +1630,7 @@ struct PanelView: View {
             case .session: return acc + 47
             case .command: return acc + 42
             case .dropzone: return acc + 10
-            case .stats: return acc + 240
+            case .stats: return acc + 240 + CGFloat(model.modelUsage.count) * 16
             }
         }
         var extra: CGFloat = 0
@@ -1747,7 +1795,8 @@ struct PanelView: View {
             .id(r.id)
         case .stats:
             if let st = model.stats {
-                StatsCard(stats: st, gauges: model.gauges, usageText: model.usageText)
+                StatsCard(stats: st, gauges: model.gauges,
+                          modelUsage: model.modelUsage, usageText: model.usageText)
             } else {
                 ProgressView().controlSize(.small)
                     .frame(maxWidth: .infinity, minHeight: 120)
