@@ -56,6 +56,29 @@ cd claude-session-tracker
 | ⌘R | 새로고침 |
 | `>` / `/` | 커맨드 팔레트 / 스킬 팔레트 |
 
+## 커스텀 커맨드
+
+Raycast처럼 패널에서 이름을 타이핑하면 실행되는 사용자 명령. 두 가지 방법으로 만든다:
+
+- **패널에서**: `new` 타이핑 → "New Command" → 이름/명령 입력. 기존 커맨드는 ⌘↩로 편집.
+- **파일로**: `~/.local/state/claude-session-tracker/commands.json` 편집 (Claude에게 시켜도 됨 — 저장 즉시 반영):
+
+```json
+{
+  "g": "@open 'https://www.google.com/search?q={query}'",
+  "c": "cd ~/Documents/GitHub/{query} && claude {prompt}",
+  "github 열기": "@open ~/Documents/GitHub"
+}
+```
+
+| 문법 | 의미 |
+|---|---|
+| `{query}` | 이름 뒤 첫 인자로 치환 (`g 검색어`) |
+| `{prompt}` | 인자 뒤 나머지 문장 (`c 폴더명 프롬프트…`) |
+| `@` 접두사 | 새 탭 없이 백그라운드 실행 |
+| (접두사 없음) | 새 터미널 탭에서 실행 |
+| `cd <경로>/{query}` | 해당 경로 아래 폴더명 자동완성 + Tab 지원 |
+
 ## 구조
 
 ```

@@ -44,6 +44,19 @@ echo "building ClaudeSessions.app (first build takes ~30s)…"
 swiftc -O -o "$APP/Contents/MacOS/ClaudeSessions" "$REPO_DIR/menubar/ClaudeSessionsMenubar.swift"
 echo "built: $APP"
 
+# ── starter custom commands (kept if one already exists) ─────────
+CMDS="$HOME/.local/state/claude-session-tracker/commands.json"
+if [ ! -f "$CMDS" ]; then
+  mkdir -p "$(dirname "$CMDS")"
+  cat >"$CMDS" <<'JSON'
+{
+  "g": "@open 'https://www.google.com/search?q={query}'",
+  "c": "cd ~/Documents/GitHub/{query} && claude {prompt}"
+}
+JSON
+  echo "starter commands: $CMDS"
+fi
+
 # ── login autostart ──────────────────────────────────────────────
 LA="$HOME/Library/LaunchAgents/com.dean.claude-sessions.plist"
 mkdir -p "$(dirname "$LA")"
