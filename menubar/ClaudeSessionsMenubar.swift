@@ -275,6 +275,9 @@ final class Model: ObservableObject {
     }
     var otherAgent: String { mainAgent == "claude" ? "codex" : "claude" }
 
+    // which pixel character fronts the app (menubar + search field)
+    @Published var iconChoiceKey = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
+
     // fun usage stats (cst stats-json, cached 1h on disk)
     struct DailyStat: Decodable, Equatable { let date: String; let count: Int }
     struct Stats: Decodable, Equatable {
@@ -487,15 +490,94 @@ let appIconMap: [String] = [
     ".oooooooooooooo.",
 ]
 
+// ── selectable icon set (original pixel characters) ──────────────
+let catMap: [String] = [
+    "..oo........oo..",
+    "..ooo......ooo..",
+    "..oooooooooooo..",
+    ".oooooooooooooo.",
+    ".ooo.oooooo.ooo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    "..oooooooooooo..",
+    "...o.o....o.o...",
+]
+let ghostMap: [String] = [
+    "....oooooooo....",
+    "..oooooooooooo..",
+    ".oooooooooooooo.",
+    ".oo..oooooo..oo.",
+    ".oo..oooooo..oo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    ".oo..oo..oo..oo.",
+]
+let robotMap: [String] = [
+    ".......oo.......",
+    "....oooooooo....",
+    "...oooooooooo...",
+    "...o.oooooo.o...",
+    "...oooooooooo...",
+    "....oooooooo....",
+    "..oooooooooooo..",
+    "..oooooooooooo..",
+    "...oo......oo...",
+    "...oo......oo...",
+]
+let slimeMap: [String] = [
+    "................",
+    ".....oooooo.....",
+    "...oooooooooo...",
+    "..oooooooooooo..",
+    ".ooo.oooooo.ooo.",
+    ".oooooooooooooo.",
+    "oooooooooooooooo",
+    "oooooooooooooooo",
+    ".oooooooooooooo.",
+    "..oooooooooooo..",
+]
+let starMap: [String] = [
+    ".......oo.......",
+    ".......oo.......",
+    "......oooo......",
+    "oooooooooooooooo",
+    ".oooooooooooooo.",
+    "...oooooooooo...",
+    "....oooooooo....",
+    "...oooo..oooo...",
+    "..ooo......ooo..",
+    "..oo........oo..",
+]
+
+// icon registry: key → (map, panel tint). claude/codex use their mascots.
+let iconChoices: [(key: String, label: String, map: [String], tint: NSColor)] = [
+    ("generic", "터미널", appIconMap, NSColor.textColor.withAlphaComponent(0.75)),
+    ("claude", "Claude", mascotMap, claudeOrangeNS),
+    ("codex", "Codex", codexMap, NSColor(codexBlue)),
+    ("cat", "고양이", catMap, NSColor.systemBrown),
+    ("ghost", "고스트", ghostMap, NSColor.systemPurple),
+    ("robot", "로봇", robotMap, NSColor.systemGray),
+    ("slime", "슬라임", slimeMap, NSColor.systemGreen),
+    ("star", "별", starMap, NSColor.systemYellow),
+]
+func iconChoice(_ key: String) -> (key: String, label: String, map: [String], tint: NSColor) {
+    iconChoices.first { $0.key == key } ?? iconChoices[0]
+}
+
 struct PixelAppIcon: View {
+    var choice: String = "generic"
     var pixel: CGFloat = 3
     @Environment(\.displayScale) private var scale
     var body: some View {
         let px = quantizedPixel(pixel, scale: scale)
+        let c = iconChoice(choice)
         Canvas { ctx, _ in
             ctx.withCGContext { cg in
-                drawPixelMap(cg, map: appIconMap, pixel: px) {
-                    $0 == "o" ? NSColor.textColor.withAlphaComponent(0.75) : nil
+                drawPixelMap(cg, map: c.map, pixel: px) {
+                    $0 == "o" ? c.tint : ($0 == "w" ? .white : nil)
                 }
             }
         }
@@ -1998,7 +2080,7 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                PixelAppIcon(pixel: 2.2)
+                PixelAppIcon(choice: model.iconChoiceKey, pixel: 2.2)
                 TextField("Search…  (/ skills)", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
@@ -2640,12 +2722,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func buildMenubarImages() {
         let empty = String(repeating: ".", count: 16)
-        let body: [String]
-        switch menubarAgent {
-        case "claude": body = mascotMap
-        case "codex": body = codexMap
-        default: body = appIconMap
-        }
+        let body = iconChoice(menubarAgent).map
         menubarStaticImage = mascotNSImage(map: [empty] + body, pixel: 1.2)
         menubarStatusFrames = [:]
         for st in ["running", "waiting"] {
@@ -2653,7 +2730,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             switch menubarAgent {
             case "claude": frames = mascotFrames(st).frames
             case "codex": frames = codexFrames(st).frames
-            default: // generic: the terminal glyph bounces / raises !!
+            default: // any character: bounce while running, !! while waiting
                 if st == "running" {
                     frames = [[empty] + body, body + [empty]]
                 } else {
@@ -2664,31 +2741,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
-    @objc func chooseMenubarGeneric() { setMenubarAgent("generic") }
-    @objc func chooseMenubarClaude() { setMenubarAgent("claude") }
-    @objc func chooseMenubarCodex() { setMenubarAgent("codex") }
+    @objc func chooseMenubarIcon(_ sender: NSMenuItem) {
+        setMenubarAgent(sender.representedObject as? String ?? "generic")
+    }
     func setMenubarAgent(_ agent: String) {
         menubarAgent = agent
         UserDefaults.standard.set(agent, forKey: "menubarAgent")
         buildMenubarImages()
         menubarStatus = "__rebuild__" // force the timer + image to reset
         updateTitle(sessions: lastSessions)
+        model.iconChoiceKey = agent  // the search-field icon follows
     }
 
     func showMenubarMenu() {
         let menu = NSMenu()
-        let g = NSMenuItem(title: "메뉴바 아이콘: 기본", action: #selector(chooseMenubarGeneric), keyEquivalent: "")
-        g.target = self
-        g.state = (menubarAgent != "claude" && menubarAgent != "codex") ? .on : .off
-        let c = NSMenuItem(title: "메뉴바 아이콘: Claude", action: #selector(chooseMenubarClaude), keyEquivalent: "")
-        c.target = self
-        c.state = menubarAgent == "claude" ? .on : .off
-        let x = NSMenuItem(title: "메뉴바 아이콘: Codex", action: #selector(chooseMenubarCodex), keyEquivalent: "")
-        x.target = self
-        x.state = menubarAgent == "codex" ? .on : .off
-        menu.addItem(g)
-        menu.addItem(c)
-        menu.addItem(x)
+        for c in iconChoices {
+            let item = NSMenuItem(title: "아이콘: \(c.label)",
+                                  action: #selector(chooseMenubarIcon(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = c.key
+            item.state = menubarAgent == c.key ? .on : .off
+            menu.addItem(item)
+        }
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil // left-clicks keep toggling the panel
