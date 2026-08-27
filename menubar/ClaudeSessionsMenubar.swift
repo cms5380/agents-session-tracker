@@ -553,7 +553,9 @@ let starMap: [String] = [
 ]
 
 // icon registry: key → (map, panel tint). claude/codex use their mascots.
-let iconChoices: [(key: String, label: String, map: [String], tint: NSColor)] = [
+// computed, not stored: top-level globals init in source order, and this
+// references maps declared later in the file (codexMap segfaulted as let)
+var iconChoices: [(key: String, label: String, map: [String], tint: NSColor)] { [
     ("generic", "터미널", appIconMap, NSColor.textColor.withAlphaComponent(0.75)),
     ("claude", "Claude", mascotMap, claudeOrangeNS),
     ("codex", "Codex", codexMap, NSColor(codexBlue)),
@@ -562,7 +564,7 @@ let iconChoices: [(key: String, label: String, map: [String], tint: NSColor)] = 
     ("robot", "로봇", robotMap, NSColor.systemGray),
     ("slime", "슬라임", slimeMap, NSColor.systemGreen),
     ("star", "별", starMap, NSColor.systemYellow),
-]
+] }
 func iconChoice(_ key: String) -> (key: String, label: String, map: [String], tint: NSColor) {
     iconChoices.first { $0.key == key } ?? iconChoices[0]
 }
