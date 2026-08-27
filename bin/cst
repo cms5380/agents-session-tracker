@@ -506,6 +506,18 @@ cmd_sessions_json() {
     local sid pid bg pcmd
     sid=$(jq -r '.session_id' <<<"$s")
     pid=$(jq -r '.pid // empty' <<<"$s")
+    # codex has no daemon to correct a stale "running" (an Esc-interrupted
+    # turn fires no Stop hook) — a rollout file untouched for 5 minutes
+    # means the turn is over
+    if [ "$(jq -r '.agent // ""' <<<"$s")" = "codex" ] \
+       && [ "$(jq -r '.status' <<<"$s")" = "running" ]; then
+      local tpath tmtime
+      tpath=$(jq -r '.transcript_path // ""' <<<"$s")
+      if [ -n "$tpath" ] && [ -f "$tpath" ]; then
+        tmtime=$(stat -f %m "$tpath" 2>/dev/null || echo 0)
+        [ $((now - tmtime)) -gt 300 ] && s=$(jq -c '.status = "done"' <<<"$s")
+      fi
+    fi
     bg=$(jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | length' <<<"$agents_json")
     if [ "$bg" != "0" ]; then
       # daemon-listed → real session
