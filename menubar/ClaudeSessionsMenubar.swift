@@ -1916,8 +1916,17 @@ struct PanelView: View {
             dropTarget = nil
             renamingSession = nil
             messagingSession = nil
+            messageText = ""
             draggingSessionSid = nil
             sessionDropTarget = nil
+            // transient editors don't survive the panel losing focus
+            editingCommand = false
+            cmdDraftName = ""
+            cmdDraftBody = ""
+            renaming = nil
+            renameText = ""
+            addingGroup = false
+            newGroupName = ""
         }
         .onAppear {
             model.moveSelection = { move($0) }
