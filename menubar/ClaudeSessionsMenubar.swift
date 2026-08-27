@@ -511,6 +511,7 @@ struct SessionRow: View {
     var hotkeyNumber: Int? = nil
     var animate: Bool = true
     var isRenaming: Bool = false
+    var endArmed: Bool = false
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
     var renameCommit: ((String) -> Void)? = nil
@@ -569,7 +570,13 @@ struct SessionRow: View {
                     .font(.system(size: 8))
                     .foregroundStyle(claudeOrange.opacity(0.7))
             }
-            if !ageString(s.updated_at).isEmpty {
+            if endArmed {
+                Text("다시 ⌃X → 종료")
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(Capsule().fill(Color(nsColor: .systemRed).opacity(0.2)))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+            } else if !ageString(s.updated_at).isEmpty {
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
@@ -746,6 +753,7 @@ struct PanelView: View {
     @State private var messageText = ""
     @State private var dropTarget: String? = nil
     @State private var draggingGroup: String? = nil
+    @State private var endArmedSid: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
     @State private var selected = 0
@@ -1197,6 +1205,7 @@ struct PanelView: View {
                                                       hotkeyNumber: sessionNumbers[s.session_id],
                                                       animate: model.panelVisible,
                                                       isRenaming: renamingSession?.session_id == s.session_id,
+                                                      endArmed: endArmedSid == s.session_id,
                                                       onRename: { sess in
                                                           renamingSession = sess
                                                       },
@@ -1407,7 +1416,17 @@ struct PanelView: View {
                     model.assign(s.session_id, to: nil)
                 case "end":
                     guard s.kind == "background" else { return false }
-                    model.endSession(s.session_id)
+                    // two-stage: first Ctrl+X arms, second within 2.5s ends
+                    if endArmedSid == s.session_id {
+                        endArmedSid = nil
+                        model.endSession(s.session_id)
+                    } else {
+                        let sid = s.session_id
+                        endArmedSid = sid
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                            if endArmedSid == sid { endArmedSid = nil }
+                        }
+                    }
                 default: return false
                 }
                 return true
