@@ -865,6 +865,7 @@ struct PanelView: View {
     @State private var dropTarget: String? = nil
     @State private var draggingGroup: String? = nil
     @State private var stoppingSids: Set<String> = []
+    @State private var followSid: String? = nil
     @State private var lastSessionSid: String? = nil
     @State private var sessionDropTarget: String? = nil
     @State private var draggingSessionSid: String? = nil
@@ -1782,8 +1783,17 @@ struct PanelView: View {
             stoppingSids = stoppingSids.filter { sid in
                 model.sessions.first(where: { $0.session_id == sid })?.status == "running"
             }
-            // rows may have shrunk/moved (e.g. a stopped session relocated) —
-            // keep the scroll where it is, just keep the index in bounds
+            // follow a session whose row moved between sections (e.g. stopped)
+            if let sid = followSid {
+                if let s = model.sessions.first(where: { $0.session_id == sid }) {
+                    expanded.insert(s.group ?? "__ungrouped__")
+                    if let idx = rows.firstIndex(where: { $0.id == sid }) {
+                        selected = idx
+                        scrollTarget = sid
+                    }
+                }
+                followSid = nil
+            }
             if selected >= rows.count { selected = max(0, rows.count - 1) }
         }
         .onChange(of: model.focusTick) { _ in
@@ -1832,15 +1842,18 @@ struct PanelView: View {
                     } else if s.status == "gone" {
                         model.endSession(s.session_id)
                     } else if s.kind == "background" || s.kind == "interactive" {
-                        // the row relocates to its final section immediately;
-                        // the scroll/selection stays put so the list doesn't
-                        // jump out from under the user
+                        // the row relocates to its final section immediately —
+                        // selection and scroll follow it there
                         let sid = s.session_id
                         stoppingSids.insert(sid)
+                        followSid = sid
                         if !s.pinned { expanded.insert(s.group ?? "__ungrouped__") }
                         model.stopSession(sid)
                         DispatchQueue.main.async {
-                            if selected >= rows.count { selected = max(0, rows.count - 1) }
+                            if let idx = rows.firstIndex(where: { $0.id == sid }) {
+                                selected = idx
+                                scrollTarget = sid
+                            }
                         }
                         // safety net: never leave the indicator stuck
                         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
