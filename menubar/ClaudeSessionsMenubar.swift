@@ -1526,6 +1526,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             let y = vf.origin.y + vf.height * 0.72
             panel.setFrameTopLeftPoint(NSPoint(x: x, y: y))
         }
+        // Korean/CJK IME composition needs the app active — a nonactivating
+        // panel alone leaves the input method attached to the previous app
+        NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         model.panelVisible = true
         model.focusTick += 1
