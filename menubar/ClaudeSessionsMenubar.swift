@@ -1186,17 +1186,17 @@ struct PanelView: View {
 
     func move(_ delta: Int) {
         guard !rows.isEmpty else { return }
-        var i = min(max(selected + delta, 0), rows.count - 1)
-        // section labels are not selectable — keep stepping past them
-        while case .label = rows[i] {
-            let next = i + (delta >= 0 ? 1 : -1)
-            if next < 0 || next >= rows.count { break }
-            i = next
+        let n = rows.count
+        var i = selected
+        // wrap around at both ends, skipping section labels
+        for _ in 0..<n {
+            i = (i + delta % n + n) % n
+            if case .label = rows[i] { continue }
+            selected = i
+            scrollTarget = rows[safe: selected]?.id
+            if case .session(let s, _)? = rows[safe: selected] { lastSessionSid = s.session_id }
+            return
         }
-        if case .label = rows[i] { return }
-        selected = i
-        scrollTarget = rows[safe: selected]?.id
-        if case .session(let s, _)? = rows[safe: selected] { lastSessionSid = s.session_id }
     }
 
     func toggleExpand(_ g: String) {
