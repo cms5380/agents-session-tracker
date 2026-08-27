@@ -559,14 +559,22 @@ cmd_sessions_json() {
         lp=$(head -n 12 "$tpath0" 2>/dev/null \
           | jq -r 'select(.logicalParentUuid) | .logicalParentUuid' 2>/dev/null | head -1 || true)
         if [ -n "$lp" ]; then
+          # forks copy the parent's full history (and rewrite sessionId on
+          # every line), so the uuid appears in every sibling fork too — the
+          # true parent is the OLDEST session whose transcript contains it
+          local best_started=""
           for pf in "$STATE_DIR"/*.json; do
             [ -e "$pf" ] || continue
             psid=$(basename "$pf" .json)
             [ "$psid" = "$sid" ] && continue
             pt=$(jq -r '.transcript_path // ""' "$pf" 2>/dev/null)
             [ -n "$pt" ] && [ -f "$pt" ] || continue
-            if grep -m1 -q "\"uuid\":\"$lp\"" "$pt" 2>/dev/null; then
-              parent_sid="$psid"; break
+            grep -m1 -q "\"uuid\":\"$lp\"" "$pt" 2>/dev/null || continue
+            local pstarted
+            pstarted=$(jq -r '.started_at // 9999999999' "$pf" 2>/dev/null)
+            if [ -z "$best_started" ] || [ "$pstarted" -lt "$best_started" ] 2>/dev/null; then
+              best_started="$pstarted"
+              parent_sid="$psid"
             fi
           done
         fi
