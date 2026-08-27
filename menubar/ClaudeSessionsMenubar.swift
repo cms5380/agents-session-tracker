@@ -277,6 +277,17 @@ final class Model: ObservableObject {
         DispatchQueue.global().async { runCST(["new-session", dir, a]) }
     }
 
+    func saveCommand(name: String, command: String) {
+        let path = ("~/.local/state/claude-session-tracker/commands.json" as NSString).expandingTildeInPath
+        var map = customCommands
+        map[name] = command
+        if let data = try? JSONSerialization.data(withJSONObject: map,
+                                                  options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+        objectWillChange.send()
+    }
+
     // user commands from commands.json (name → shell; '@' prefix = silent)
     var customCommands: [String: String] {
         let path = ("~/.local/state/claude-session-tracker/commands.json" as NSString).expandingTildeInPath
@@ -869,6 +880,10 @@ struct PanelView: View {
     @State private var renamingSession: Session? = nil
     @State private var renameText = ""
     @State private var messagingSession: Session? = nil
+    @State private var editingCommand = false
+    @State private var cmdDraftName = ""
+    @State private var cmdDraftBody = ""
+    @FocusState private var cmdNameFocused: Bool
     @State private var messageText = ""
     @State private var dropTarget: String? = nil
     @State private var draggingGroup: String? = nil
@@ -947,6 +962,8 @@ struct PanelView: View {
             cmds.append(("custom:\(name)", name,
                          (silent ? "⚙︎ " : "⌘ ") + String(cmd.dropFirst(silent ? 1 : 0)).prefix(40)))
         }
+        cmds.append(("cmd-new", "New Command",
+                     "커스텀 커맨드 만들기 — {query}/{prompt} 치환, @=백그라운드"))
         return cmds.filter { $0.1.lowercased().contains(q) || $0.2.lowercased().contains(q) }
             .prefix(8).map { .command($0.0, $0.1, $0.2) }
     }
@@ -999,13 +1016,33 @@ struct PanelView: View {
         else if id == "clean" { model.clean(); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
         else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
+        else if id == "cmd-new" {
+            editingCommand = true
+            cmdDraftName = ""
+            cmdDraftBody = ""
+        }
+        else if id.hasPrefix("cmd-edit:") {
+            editingCommand = true
+            cmdDraftName = String(id.dropFirst(9))
+            cmdDraftBody = model.customCommands[cmdDraftName] ?? ""
+        }
         else if id.hasPrefix("new:") {
             // ⌘↩ (or ⌘click) starts the non-main agent
             let cmdClick = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
             model.newSession(in: String(id.dropFirst(4)),
                              agent: (alt || cmdClick) ? model.otherAgent : model.mainAgent)
         }
-        else if id.hasPrefix("custom:") { model.runCommand(String(id.dropFirst(7))) }
+        else if id.hasPrefix("custom:") {
+            // ⌘↩ / ⌘click on a custom command opens it in the editor
+            let name = String(id.dropFirst(7))
+            if alt || NSApp.currentEvent?.modifierFlags.contains(.command) == true {
+                editingCommand = true
+                cmdDraftName = name
+                cmdDraftBody = model.customCommands[name] ?? ""
+            } else {
+                model.runCommand(name)
+            }
+        }
     }
 
     static let attentionOrder = ["waiting": 0, "input": 1, "finished": 2, "running": 3]
@@ -1717,6 +1754,31 @@ struct PanelView: View {
                             messageText = ""
                         }
                     Button("✕") { messagingSession = nil }.buttonStyle(.plain).font(.system(size: 10))
+                }
+                .padding(.horizontal, 14)
+            }
+
+            if editingCommand {
+                HStack(spacing: 8) {
+                    TextField("이름", text: $cmdDraftName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .frame(width: 110)
+                        .focused($cmdNameFocused)
+                        .onAppear { cmdNameFocused = true }
+                    TextField("명령 ({query}/{prompt} 치환, @=백그라운드 실행)", text: $cmdDraftBody)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .onSubmit {
+                            let n = cmdDraftName.trimmingCharacters(in: .whitespaces)
+                            let c = cmdDraftBody.trimmingCharacters(in: .whitespaces)
+                            if !n.isEmpty, !c.isEmpty {
+                                model.saveCommand(name: n, command: c)
+                                editingCommand = false
+                                query = ""
+                            }
+                        }
+                    Button("✕") { editingCommand = false }.buttonStyle(.plain).font(.system(size: 10))
                 }
                 .padding(.horizontal, 14)
             }
