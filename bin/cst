@@ -240,6 +240,28 @@ focus_hub() {
 # kept for compatibility; the hub replaces per-directory pickers
 open_agents_tab() { focus_hub; }
 
+send_esc_iterm() { # $1=ITERM_SESSION_ID — inject an Esc keypress (interrupts
+                   # claude's current turn without touching the process)
+  local uuid="${1##*:}"
+  osascript - "$uuid" <<'APPLESCRIPT' >/dev/null 2>&1
+on run argv
+  set target to item 1 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if id of s is target then
+            tell s to write text (character id 27) newline NO
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+end run
+APPLESCRIPT
+}
+
 close_iterm_by_id() { # $1=ITERM_SESSION_ID (wXtYpZ:UUID) — close that tab
   local uuid="${1##*:}"
   osascript - "$uuid" <<'APPLESCRIPT' >/dev/null 2>&1
@@ -747,17 +769,20 @@ case "${1:-list}" in
     [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
     entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
     if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
-      # interrupt the running turn only (like Ctrl+C) — claude stays at the
-      # prompt; remember the tab for a later full 'end'
+      # interrupt the running turn only — claude treats Esc as
+      # stop-generation, so inject the keypress into its tab (a SIGINT
+      # signal would make claude exit to the shell)
       cpid=$(jq -r '.pid // empty' <<<"$entry")
       if [ -n "$cpid" ]; then
         iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
           | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
-        kill -INT "$cpid" 2>/dev/null || true
-        f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
-        if [ -n "$f" ] && [ -n "$iterm_id" ]; then
-          jq --arg it "$iterm_id" '.terminal.iterm_session_id = $it' \
-            "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+        if [ -n "$iterm_id" ]; then
+          send_esc_iterm "$iterm_id" || true
+          f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+          if [ -n "$f" ]; then
+            jq --arg it "$iterm_id" '.terminal.iterm_session_id = $it' \
+              "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+          fi
         fi
       fi
     else
