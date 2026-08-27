@@ -1921,6 +1921,22 @@ struct PanelView: View {
                     }
                     return
                 }
+                // command/skill palette: Tab types the selected command into
+                // the field (custom commands land in keyword mode so
+                // arguments can follow)
+                if query.hasPrefix(">") || query.hasPrefix("/") {
+                    if case .command(let id, let title, _)? = rows[safe: selected] {
+                        if id.hasPrefix("custom:") {
+                            query = "\(String(id.dropFirst(7))) "
+                        } else if id.hasPrefix("skill:") {
+                            query = "/\(String(id.dropFirst(6))) "
+                        } else {
+                            query = ">\(title)"
+                        }
+                        selected = 0
+                    }
+                    return
+                }
                 if case .session(let s, _)? = rows[safe: selected], s.status != "archived" {
                     messagingSession = s
                     messageText = ""
