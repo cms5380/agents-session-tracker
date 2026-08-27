@@ -1021,6 +1021,14 @@ case "${1:-list}" in
         claude stop "${2:0:8}" >/dev/null 2>&1 &
       fi
     fi
+    # attach/resume client tabs aren't in the record (pool forks have no
+    # terminal env) — find them by process and close their exact tabs
+    for apid in $(pgrep -f "claude attach ${2:0:8}" 2>/dev/null; pgrep -f "claude --resume $2" 2>/dev/null); do
+      aid=$(ps eww -o command= -p "$apid" 2>/dev/null | tr ' ' '\n' \
+        | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+      kill -TERM "$apid" 2>/dev/null || true
+      [ -n "$aid" ] && close_iterm_by_id "$aid" >/dev/null 2>&1 &
+    done
     if [ -n "$f" ]; then
       it=$(jq -r '.terminal.iterm_session_id // empty' "$f")
       at=$(jq -r '.attach_title // empty' "$f")
