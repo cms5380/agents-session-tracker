@@ -1306,6 +1306,16 @@ struct PanelView: View {
             }
             out += commandRows
             let liveIds = Set(model.sessions.map { $0.session_id })
+            // transcript-content matches on live sessions the title filter missed
+            let titleMatched = Set(filtered.map { $0.session_id })
+            let contentMatches = model.archive.compactMap { a in
+                liveIds.contains(a.session_id) && !titleMatched.contains(a.session_id)
+                    ? viewSessions.first { $0.session_id == a.session_id } : nil
+            }
+            if !contentMatches.isEmpty {
+                out.append(.label("내용 일치"))
+                out += contentMatches.map { .session($0, indented: false) }
+            }
             let archived = model.archive.filter { !liveIds.contains($0.session_id) }
             if model.archiveSearching {
                 out.append(.label("ARCHIVE — 검색 중…"))

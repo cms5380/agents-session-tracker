@@ -238,11 +238,15 @@ APPLESCRIPT
 
 resume_command() { # $1=session id → the agent-appropriate resume command
   local f="$STATE_DIR/$1.json"
-  if [ -f "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
-    printf 'codex resume %s' "$1"
-  else
-    printf 'claude --resume %s' "$1"
+  if [ -f "$f" ]; then
+    if [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
+      printf 'codex resume %s' "$1"; return
+    fi
+  elif ls "$HOME/.codex/sessions"/*/*/*/rollout-*-"$1".jsonl >/dev/null 2>&1; then
+    # archived codex session — no tracker record, but a rollout exists
+    printf 'codex resume %s' "$1"; return
   fi
+  printf 'claude --resume %s' "$1"
 }
 
 open_resume_tab() { # $1=cwd, $2=session id
@@ -732,30 +736,52 @@ case "${1:-list}" in
     open_resume_tab "$3" "$2"
     ;;
   archive-search)
-    # cst archive-search <query> — grep past transcripts, newest first
+    # cst archive-search <query> — full-text grep over claude + codex
+    # transcripts, newest first. Live sessions are included so the panel
+    # can surface content matches on running work too.
     [ $# -ge 2 ] || { echo "[]"; exit 0; }
     q="$2"
-    hits=$(grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.claude/projects" 2>/dev/null \
-      | xargs -I{} stat -f '%m {}' {} 2>/dev/null | sort -rn | head -10 | cut -d' ' -f2-)
+    hits=$( { grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.claude/projects" 2>/dev/null || true
+              grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.codex/sessions" 2>/dev/null || true; } \
+      | xargs -I{} stat -f '%m {}' {} 2>/dev/null | sort -rn | head -12 | cut -d' ' -f2-)
     out="[]"
+    seen=""
     while IFS= read -r t; do
       [ -n "$t" ] || continue
-      sid=$(basename "$t" .jsonl)
-      # skip live sessions and subagent transcripts
-      [ -f "$STATE_DIR/$sid.json" ] && continue
-      case "$sid" in agent-*) continue ;; esac
-      cwd=$(head -n 5 "$t" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | grep -m1 . || true)
-      title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
-      if [ -z "$title" ]; then
-        title=$( (head -n 80 "$t" 2>/dev/null \
-          | jq -r 'select(.type=="user") | .message.content
-                   | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
-          | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-60) || true)
-      fi
+      base=$(basename "$t" .jsonl)
+      agent="claude"; sid="$base"; cwd=""; title=""
+      case "$t" in
+        */.codex/*)
+          agent="codex"
+          sid="${base:${#base}-36}"  # rollout-<timestamp>-<uuid>
+          cwd=$(head -n 2 "$t" 2>/dev/null \
+            | jq -r 'select(.type=="session_meta") | .payload.cwd // empty' 2>/dev/null | grep -m1 . || true)
+          title=$( (head -n 200 "$t" 2>/dev/null \
+            | jq -r 'select(.type=="response_item") | .payload
+                     | select(.type=="message" and .role=="user")
+                     | ((.content // []) | map(select(.type=="input_text")) | first // {}).text // empty
+                     | select(length > 0) | select(startswith("<") | not)' 2>/dev/null \
+            | head -n 1 | cut -c1-60) || true)
+          ;;
+        *)
+          case "$sid" in agent-*) continue ;; esac  # subagent transcripts
+          cwd=$(head -n 5 "$t" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | grep -m1 . || true)
+          title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
+          if [ -z "$title" ]; then
+            title=$( (head -n 80 "$t" 2>/dev/null \
+              | jq -r 'select(.type=="user") | .message.content
+                       | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
+              | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-60) || true)
+          fi
+          ;;
+      esac
+      case " $seen " in *" $sid "*) continue ;; esac
+      seen="$seen $sid"
       mt=$(stat -f %m "$t" 2>/dev/null || echo 0)
-      out=$(jq --arg sid "$sid" --arg cwd "$cwd" --arg title "$title" --argjson mt "$mt" \
+      out=$(jq --arg sid "$sid" --arg cwd "$cwd" --arg title "$title" \
+               --arg agent "$agent" --argjson mt "$mt" \
         '. + [{session_id: $sid, cwd: $cwd, title: (if $title == "" then null else $title end),
-               status: "archived", updated_at: $mt}]' <<<"$out")
+               status: "archived", updated_at: $mt, agent: $agent}]' <<<"$out")
     done <<<"$hits"
     printf '%s\n' "$out"
     ;;
