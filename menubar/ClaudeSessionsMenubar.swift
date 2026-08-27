@@ -291,35 +291,84 @@ final class Model: ObservableObject {
         }
     }
 
-    // quota snapshot for the footer — cst caches the heavy work for 5min
+    // quota snapshot — official percentages where available (CodexBar-style)
+    struct Gauge: Identifiable, Equatable {
+        let id: String       // "claude-5h" …
+        let provider: String // CLAUDE / CODEX
+        let window: String   // 5h / 7d
+        let pct: Double      // 0-100
+        let reset: String    // "↺ 3h" / ""
+    }
+    @Published var gauges: [Gauge] = []
     @Published var usageText = ""
+
     func fetchUsage() {
         DispatchQueue.global().async {
             let out = runCST(["usage-json"], capture: true)
             guard let data = out.data(using: .utf8),
                   let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             else { return }
-            func fmtTok(_ n: Int) -> String {
-                n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000)
-                    : n >= 1_000 ? "\(n / 1_000)k" : "\(n)"
+            func resetText(secondsLeft d: Double) -> String {
+                guard d > 0 else { return "" }
+                if d >= 86400 { return "↺ \(Int(d / 86400))d" }
+                if d >= 3600 { return "↺ \(Int(d / 3600))h" }
+                return "↺ \(Int(d / 60))m"
             }
+            let isoFrac = ISO8601DateFormatter()
+            isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let iso = ISO8601DateFormatter()
+            func resetFromISO(_ s: Any?) -> String {
+                guard let s = s as? String,
+                      let d = isoFrac.date(from: s) ?? iso.date(from: s) else { return "" }
+                return resetText(secondsLeft: d.timeIntervalSinceNow)
+            }
+            var g: [Gauge] = []
+            if let off = obj["claude_official"] as? [String: Any] {
+                if let w = off["five_hour"] as? [String: Any], let p = w["utilization"] as? Double {
+                    g.append(Gauge(id: "claude-5h", provider: "CLAUDE", window: "5h",
+                                   pct: p, reset: resetFromISO(w["resets_at"])))
+                }
+                if let w = off["seven_day"] as? [String: Any], let p = w["utilization"] as? Double {
+                    g.append(Gauge(id: "claude-7d", provider: "CLAUDE", window: "7d",
+                                   pct: p, reset: resetFromISO(w["resets_at"])))
+                }
+            }
+            if let x = obj["codex"] as? [String: Any] {
+                for (key, name) in [("secondary", "5h"), ("primary", "7d")] {
+                    if let w = x[key] as? [String: Any], let p = w["used_percent"] as? Double {
+                        var reset = ""
+                        if let r = w["resets_at"] as? Double {
+                            reset = resetText(secondsLeft: r - Date().timeIntervalSince1970)
+                        }
+                        // window_minutes tells the truth better than our label guess
+                        let win = (w["window_minutes"] as? Double).map {
+                            $0 >= 10080 ? "7d" : $0 >= 240 ? "5h" : "\(Int($0))m"
+                        } ?? name
+                        g.append(Gauge(id: "codex-\(key)", provider: "CODEX", window: win,
+                                       pct: p, reset: reset))
+                    }
+                }
+            }
+            // footer summary + local-estimate fallback when no official data
             var parts: [String] = []
-            if let c = obj["claude"] as? [String: Any] {
+            for gg in g where gg.window != "5h" || gg.pct > 0 {
+                if !parts.contains(where: { $0.hasPrefix(gg.provider.lowercased()) }) {
+                    parts.append("\(gg.provider.lowercased()) \(Int(gg.pct.rounded()))%/\(gg.window)")
+                }
+            }
+            if g.isEmpty, let c = obj["claude"] as? [String: Any] {
                 let tok = (c["input"] as? Int ?? 0) + (c["output"] as? Int ?? 0)
+                func fmtTok(_ n: Int) -> String {
+                    n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000)
+                        : n >= 1_000 ? "\(n / 1_000)k" : "\(n)"
+                }
                 if tok > 0 { parts.append("claude \(fmtTok(tok))/5h") }
             }
-            if let x = obj["codex"] as? [String: Any],
-               let p = x["primary"] as? [String: Any],
-               let pct = p["used_percent"] as? Double {
-                var s = "codex \(Int(pct.rounded()))%"
-                if let reset = p["resets_at"] as? Double {
-                    let d = max(0, reset - Date().timeIntervalSince1970)
-                    s += d >= 86400 ? " ·↺\(Int(d / 86400))d" : " ·↺\(Int(d / 3600))h"
-                }
-                parts.append(s)
-            }
             let text = parts.joined(separator: "  ")
-            DispatchQueue.main.async { self.usageText = text }
+            DispatchQueue.main.async {
+                self.gauges = g
+                self.usageText = text
+            }
         }
     }
 
@@ -879,9 +928,44 @@ enum PanelRow: Identifiable, Equatable {
     }
 }
 
+// CodexBar-style quota gauge: [provider window ███████░░░ 37% ↺4d]
+struct QuotaGauge: View {
+    let g: Model.Gauge
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(g.provider)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(g.provider == "CLAUDE" ? claudeOrange : codexBlue)
+                .frame(width: 46, alignment: .leading)
+            Text(g.window)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule().fill(g.pct >= 85 ? Color(nsColor: .systemRed)
+                                   : g.pct >= 60 ? Color(nsColor: .systemOrange)
+                                   : Color(nsColor: .systemGreen))
+                        .frame(width: max(4, geo.size.width * min(1, g.pct / 100)))
+                }
+            }
+            .frame(height: 7)
+            Text("\(Int(g.pct.rounded()))%")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .frame(width: 36, alignment: .trailing)
+            Text(g.reset)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 44, alignment: .leading)
+        }
+    }
+}
+
 // pixel-flavored 14-day activity card for the "stats" command
 struct StatsCard: View {
     let stats: Model.Stats
+    let gauges: [Model.Gauge]
     let usageText: String
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -914,7 +998,15 @@ struct StatsCard: View {
                     }
                 }
             }
-            if !usageText.isEmpty {
+            if !gauges.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("사용량")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .tracking(1.2)
+                    ForEach(gauges) { QuotaGauge(g: $0) }
+                }
+            } else if !usageText.isEmpty {
                 Text("⚡ \(usageText)")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -1490,7 +1582,7 @@ struct PanelView: View {
             case .session: return acc + 47
             case .command: return acc + 42
             case .dropzone: return acc + 10
-            case .stats: return acc + 190
+            case .stats: return acc + 240
             }
         }
         var extra: CGFloat = 0
@@ -1655,7 +1747,7 @@ struct PanelView: View {
             .id(r.id)
         case .stats:
             if let st = model.stats {
-                StatsCard(stats: st, usageText: model.usageText)
+                StatsCard(stats: st, gauges: model.gauges, usageText: model.usageText)
             } else {
                 ProgressView().controlSize(.small)
                     .frame(maxWidth: .infinity, minHeight: 120)

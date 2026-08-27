@@ -1059,6 +1059,21 @@ case "${1:-list}" in
       if [ -n "$rl" ]; then codex_rl="$rl"; break; fi
     done
     # transcript timestamps are UTC ISO strings
+    # official claude usage (CodexBar-style): the OAuth token stays inside
+    # this process — read from Keychain, sent only to Anthropic's usage
+    # endpoint, never logged
+    claude_official="null"
+    cl_tok=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+      | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null || true)
+    if [ -n "$cl_tok" ]; then
+      resp=$(curl -sf --max-time 4 \
+        -H "Authorization: Bearer $cl_tok" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null || true)
+      if jq -e . >/dev/null 2>&1 <<<"$resp"; then claude_official="$resp"; fi
+    fi
+    unset cl_tok
+
     cutoff=$(date -u -v-5H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo "")
     cin=0; cout=0
     while IFS= read -r t; do
@@ -1073,7 +1088,9 @@ case "${1:-list}" in
     done < <(find "$HOME/.claude/projects" -name '*.jsonl' -not -name 'agent-*' -mmin -300 2>/dev/null)
     jq -n --argjson codex "$codex_rl" \
           --argjson cin "$cin" --argjson cout "$cout" \
-      '{claude: {window_h: 5, input: $cin, output: $cout}, codex: $codex}' \
+          --argjson clo "$claude_official" \
+      '{claude: {window_h: 5, input: $cin, output: $cout},
+        claude_official: $clo, codex: $codex}' \
       | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
     cat "$USAGE_CACHE"
     ;;
