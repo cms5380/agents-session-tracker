@@ -63,7 +63,7 @@ final class Model: ObservableObject {
     var moveSelection: ((Int) -> Void)?
     var arrowLR: ((Int) -> Bool)?
     var hotkeyNumber: ((Int) -> Void)?
-    var enterKey: (() -> Void)?
+    var enterKey: ((Bool) -> Void)?  // arg: ⌘ held (alternate agent)
     var messageSelected: (() -> Void)?
     var actionKey: ((String) -> Bool)?
     var timer: Timer?
@@ -965,7 +965,7 @@ struct PanelView: View {
         return (first, rest)
     }
 
-    func runPanelCommand(_ id: String) {
+    func runPanelCommand(_ id: String, alt: Bool = false) {
         if id.hasPrefix("skill:") {
             let name = String(id.dropFirst(6))
             // target: the session selected before entering "/" mode, else the
@@ -1007,9 +1007,9 @@ struct PanelView: View {
         else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
         else if id.hasPrefix("new:") {
             // ⌘↩ (or ⌘click) starts the non-main agent
-            let alt = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
+            let cmdClick = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
             model.newSession(in: String(id.dropFirst(4)),
-                             agent: alt ? model.otherAgent : model.mainAgent)
+                             agent: (alt || cmdClick) ? model.otherAgent : model.mainAgent)
         }
         else if id.hasPrefix("custom:") { model.runCommand(String(id.dropFirst(7))) }
     }
@@ -1320,12 +1320,12 @@ struct PanelView: View {
         return true
     }
 
-    func activateSelected() {
+    func activateSelected(alt: Bool = false) {
         if case .label? = rows[safe: selected] { selected = firstSelectable() }
         switch rows[safe: selected] ?? rows.first {
         case .session(let s, _): model.jump(s)
         case .header(let g): toggleExpand(g)
-        case .command(let id, _, _): runPanelCommand(id)
+        case .command(let id, _, _): runPanelCommand(id, alt: alt)
         case .label, .dropzone, nil: break
         }
     }
@@ -1836,7 +1836,7 @@ struct PanelView: View {
             model.moveSelection = { move($0) }
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
-            model.enterKey = { activateSelected() }
+            model.enterKey = { activateSelected(alt: $0) }
             model.actionKey = { action in
                 if case .label? = rows[safe: selected] { selected = firstSelectable() }
                 // on a group header: expand it and step into the first member,
@@ -2016,7 +2016,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                         return nil
                     }
                     if event.keyCode == 36 { // ⌘↩ — activate with the alt agent
-                        self.model.enterKey?()
+                        self.model.enterKey?(true)
                         return nil
                     }
                 }

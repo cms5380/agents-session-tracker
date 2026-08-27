@@ -502,10 +502,29 @@ cmd_sessions_json() {
   # this is the cache producer for fetch_agents (runs every 5s via the app)
   printf '%s' "$agents_json" >"$AGENTS_CACHE.tmp" 2>/dev/null && mv "$AGENTS_CACHE.tmp" "$AGENTS_CACHE" 2>/dev/null || true
 
+  # a session moved to the background forks a NEW session id that resumes the
+  # parent transcript (--fork-session --resume …/<parent>.jsonl) — map
+  # parent:fork for live forks so the superseded parent row can be hidden
+  local fork_pairs
+  fork_pairs=$(ps -axo command= 2>/dev/null \
+    | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*--fork-session.*--resume [^ ]*\/\([0-9a-f-]\{36\}\)\.jsonl.*/\2:\1/p' || true)
+
   sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
     local sid pid bg pcmd
     sid=$(jq -r '.session_id' <<<"$s")
     pid=$(jq -r '.pid // empty' <<<"$s")
+    # conversation continued by a live fork → show the fork, not the parent
+    # (unless the parent has newer activity again)
+    local fork_sid
+    fork_sid=$(printf '%s\n' "$fork_pairs" | sed -n "s/^$sid://p" | head -1)
+    if [ -n "$fork_sid" ]; then
+      local fu tu
+      fu=$(jq -r '.updated_at // 0' "$STATE_DIR/$fork_sid.json" 2>/dev/null || echo 0)
+      tu=$(jq -r '.updated_at // 0' <<<"$s")
+      if [ ! -f "$STATE_DIR/$fork_sid.json" ] || [ "$fu" -ge "$tu" ] 2>/dev/null; then
+        continue
+      fi
+    fi
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
     # turn fires no Stop hook) — a rollout file untouched for 5 minutes
     # means the turn is over
@@ -543,8 +562,13 @@ cmd_sessions_json() {
     fi
   done | jq -s '.')
 
-  extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" '
-    [.[] | select([.sessionId] | inside($tracked) | not) | {
+  # fork parents hidden above must not resurface as untracked daemon rows
+  local fork_parents_json
+  fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
+  extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
+             --argjson forked "$fork_parents_json" '
+    [.[] | select([.sessionId] | inside($tracked) | not)
+         | select([.sessionId] | inside($forked) | not) | {
       session_id: .sessionId,
       status: (if .status == "busy" then "running" else "done" end),
       cwd: .cwd,
