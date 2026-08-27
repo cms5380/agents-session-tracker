@@ -788,10 +788,22 @@ struct PanelView: View {
     @FocusState private var searchFocused: Bool
     @FocusState private var msgFocused: Bool
 
+    // sessions with an optimistic idle override for in-flight stops, so a
+    // stopped row moves to its final place (pin/group) immediately
+    var viewSessions: [Session] {
+        model.sessions.map { s in
+            guard stoppingSids.contains(s.session_id), s.status == "running" else { return s }
+            return Session(session_id: s.session_id, status: "done", cwd: s.cwd,
+                           title: s.title, message: s.message, updated_at: s.updated_at,
+                           bg: s.bg, kind: s.kind, group: s.group, pin_order: s.pin_order,
+                           group_color: s.group_color, group_order: s.group_order)
+        }
+    }
+
     var filtered: [Session] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        if q.isEmpty { return model.sessions }
-        return model.sessions.filter {
+        if q.isEmpty { return viewSessions }
+        return viewSessions.filter {
             ($0.title ?? "").lowercased().contains(q)
                 || ($0.cwd ?? "").lowercased().contains(q)
                 || ($0.group ?? "").lowercased().contains(q)
@@ -934,9 +946,9 @@ struct PanelView: View {
     }
 
     var groups: [String] {
-        let derived = Set(model.sessions.compactMap { $0.group })
+        let derived = Set(viewSessions.compactMap { $0.group })
         var orderOf: [String: Int] = [:]
-        for s in model.sessions {
+        for s in viewSessions {
             if let g = s.group, let o = s.group_order { orderOf[g] = o }
         }
         return Array(derived.union(Set(pendingGroups))).sorted { a, b in
@@ -1516,7 +1528,16 @@ struct PanelView: View {
                         let sid = s.session_id
                         stoppingSids.insert(sid)
                         followSid = sid
+                        // the row jumps to its final spot right away — make
+                        // sure it's visible and stays selected
+                        if !s.pinned { expanded.insert(s.group ?? "__ungrouped__") }
                         model.stopSession(sid)
+                        DispatchQueue.main.async {
+                            if let idx = rows.firstIndex(where: { $0.id == sid }) {
+                                selected = idx
+                                scrollTarget = sid
+                            }
+                        }
                         // safety net: never leave the indicator stuck
                         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                             stoppingSids.remove(sid)
