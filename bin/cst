@@ -824,6 +824,25 @@ case "${1:-list}" in
     fi
     rm -f "$AGENTS_CACHE"
     ;;
+  skills-json)
+    # list available skills / slash commands as [{name, description}]
+    out='[]'
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      case "$f" in
+        */commands/*.md) name=$(basename "$f" .md) ;;
+        *) name=$(basename "$(dirname "$f")") ;;
+      esac
+      desc=$(grep -m1 '^description:' "$f" 2>/dev/null | sed 's/^description:[[:space:]]*//' | head -c 100 || true)
+      out=$(jq --arg n "$name" --arg d "$desc" \
+        'if any(.[]; .name == $n) then . else . + [{name: $n, description: $d}] end' <<<"$out")
+    done < <(
+      ls "$HOME"/.claude/skills/*/SKILL.md 2>/dev/null
+      ls "$HOME"/.claude/commands/*.md 2>/dev/null
+      find "$HOME/.claude/plugins/cache" -maxdepth 6 -name SKILL.md 2>/dev/null | head -60
+    )
+    jq 'sort_by(.name)' <<<"$out"
+    ;;
   hub) focus_hub ;;
   agents-tab) focus_hub ;;
   focus-agent)

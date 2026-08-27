@@ -80,6 +80,7 @@ final class Model: ObservableObject {
 
     func start() {
         refresh()
+        loadSkills()
         var tick = 0
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -116,6 +117,23 @@ final class Model: ObservableObject {
         }
     }
 
+    struct Skill: Decodable, Equatable {
+        let name: String
+        let description: String
+    }
+
+    @Published var skills: [Skill] = []
+
+    func loadSkills() {
+        DispatchQueue.global(qos: .utility).async {
+            let out = runCST(["skills-json"], capture: true)
+            let parsed = (try? JSONDecoder().decode([Skill].self, from: Data(out.utf8))) ?? []
+            DispatchQueue.main.async {
+                if parsed != self.skills { self.skills = parsed }
+            }
+        }
+    }
+
     @Published var archive: [Session] = []
     @Published var archiveSearching = false
     private var archiveTask: DispatchWorkItem?
@@ -123,7 +141,7 @@ final class Model: ObservableObject {
     func searchArchive(_ query: String) {
         archiveTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 2, !q.hasPrefix(">") else {
+        guard q.count >= 2, !q.hasPrefix(">"), !q.hasPrefix("/") else {
             archive = []
             archiveSearching = false
             return
@@ -781,6 +799,7 @@ struct PanelView: View {
     @State private var draggingGroup: String? = nil
     @State private var followSid: String? = nil
     @State private var stoppingSids: Set<String> = []
+    @State private var lastSessionSid: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
     @State private var selected = 0
@@ -811,6 +830,20 @@ struct PanelView: View {
     }
 
     var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    // "/" mode: list Claude skills, pick one → pre-filled quick prompt
+    var skillQuery: String? {
+        guard query.hasPrefix("/") else { return nil }
+        return String(query.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    var skillRows: [PanelRow] {
+        guard let q = skillQuery else { return [] }
+        let list = q.isEmpty ? model.skills
+            : model.skills.filter { $0.name.lowercased().contains(q) || $0.description.lowercased().contains(q) }
+        return list.prefix(12).map { .command("skill:\($0.name)", "/\($0.name)",
+                                              $0.description.isEmpty ? "skill" : $0.description) }
+    }
 
     // Raycast-style command mode: query starting with ">"
     var commandQuery: String? {
@@ -849,6 +882,19 @@ struct PanelView: View {
     }
 
     func runPanelCommand(_ id: String) {
+        if id.hasPrefix("skill:") {
+            let name = String(id.dropFirst(6))
+            // target: the session selected before entering "/" mode, else the
+            // most attention-worthy one
+            let target = viewSessions.first(where: { $0.session_id == lastSessionSid })
+                ?? attention.first ?? viewSessions.first
+            if let t = target {
+                messagingSession = t
+                messageText = "/\(name) "
+                query = ""
+            }
+            return
+        }
         if id == "kw" {
             if let kw = keywordMatch {
                 let (folderToken, promptRest) = splitKeywordArg(kw.arg)
@@ -1009,6 +1055,7 @@ struct PanelView: View {
 
     // the navigable list, in display order
     var rows: [PanelRow] {
+        if skillQuery != nil { return skillRows }
         if commandQuery != nil { return commandRows }
         if let kw = keywordMatch {
             var out: [PanelRow] = []
@@ -1110,6 +1157,7 @@ struct PanelView: View {
         if case .label = rows[i] { return }
         selected = i
         scrollTarget = rows[safe: selected]?.id
+        if case .session(let s, _)? = rows[safe: selected] { lastSessionSid = s.session_id }
     }
 
     func toggleExpand(_ g: String) {
@@ -1198,7 +1246,7 @@ struct PanelView: View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
                 PixelMascot(pixel: 2.2)
-                TextField("Search…  (> for commands)", text: $query)
+                TextField("Search…  (> commands, / skills)", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
                     .focused($searchFocused)
