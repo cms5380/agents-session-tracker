@@ -698,12 +698,12 @@ struct SessionRow: View {
                         }
                 } else {
                     Text(name)
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .lineLimit(1)
                 }
                 Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -722,8 +722,8 @@ struct SessionRow: View {
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Capsule().fill(statusColor(s.status).opacity(0.18)))
-                    .foregroundStyle(statusColor(s.status))
+                    .background(Capsule().fill(statusColor(s.status).opacity(0.13)))
+                    .foregroundStyle(statusColor(s.status).opacity(0.85))
             }
             if hovering {
                 if s.status != "archived", onMessage != nil {
@@ -1322,7 +1322,7 @@ struct PanelView: View {
     var listHeight: CGFloat {
         let h = rows.reduce(CGFloat(0)) { acc, r in
             switch r {
-            case .label: return acc + 24
+            case .label: return acc + 28
             case .header: return acc + 34
             case .session: return acc + 47
             case .command: return acc + 42
@@ -1331,7 +1331,7 @@ struct PanelView: View {
         }
         var extra: CGFloat = 0
         if !searching {
-            if groupLayout == "chips" { extra += 36 }
+            if groupLayout == "chips" { extra += 42 }
         }
         return min(max(h + extra + 16 + (draggingGroup != nil ? 34 : 0), 100), 460)
     }
@@ -1459,12 +1459,13 @@ struct PanelView: View {
         case .label(let l):
             HStack(spacing: 5) {
                 Text(l)
-                    .font(.system(size: 10, weight: .heavy, design: .rounded))
-                    .foregroundStyle(l == "ATTENTION" || l == "NEEDS INPUT" ? claudeOrange : Color.secondary)
-                    .tracking(1.2)
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(l == "ATTENTION" || l == "NEEDS INPUT"
+                                     ? claudeOrange.opacity(0.9) : Color.secondary.opacity(0.8))
+                    .tracking(1.4)
                 Spacer()
             }
-            .padding(.horizontal, 12).padding(.top, 4)
+            .padding(.horizontal, 12).padding(.top, 8)
         case .command(let id, let title, let sub):
             HStack(spacing: 9) {
                 Text(">")
@@ -1632,17 +1633,22 @@ struct PanelView: View {
         let tint = g.map(chipColor) ?? claudeOrange
         let chipId = g ?? "__all__"
         let targeted = dropTarget == "chip-\(chipId)"
-        let body = HStack(spacing: 5) {
-            Circle().fill(tint).frame(width: 7, height: 7)
-            Text(label).font(.system(size: 11, weight: .semibold, design: .rounded))
-            Text("\(count)").font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.secondary)
+        let body = VStack(spacing: 3) {
+            HStack(spacing: 5) {
+                Circle().fill(tint.opacity(selectedNow ? 1 : 0.75)).frame(width: 7, height: 7)
+                Text(label).font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(selectedNow ? Color.primary : Color.secondary)
+                Text("\(count)").font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 3)
+            .background(Capsule().fill(targeted ? tint.opacity(0.3) : Color.primary.opacity(0.05)))
+            .overlay(Capsule().strokeBorder(targeted ? tint.opacity(0.7) : Color.clear, lineWidth: 1))
+            // selection = an underline indicator instead of a filled chip
+            Capsule().fill(selectedNow ? tint : Color.clear)
+                .frame(width: 22, height: 2)
         }
-        .padding(.horizontal, 9).padding(.vertical, 4)
-        .background(Capsule().fill(targeted ? tint.opacity(0.35)
-            : selectedNow ? tint.opacity(0.25) : Color.primary.opacity(0.06)))
-        .overlay(Capsule().strokeBorder(targeted || selectedNow ? tint.opacity(0.7) : Color.clear, lineWidth: 1))
-        .contentShape(Capsule())
+        .contentShape(Rectangle())
         .onTapGesture { selectedChip = g }
         .dropDestination(for: String.self) { items, _ in
             if let item = items.first {
@@ -1859,7 +1865,7 @@ struct PanelView: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     Spacer()
-                    Text("↩ open · →← fold · drag to group")
+                    Text("↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
