@@ -551,6 +551,7 @@ struct SessionRow: View {
     var isRenaming: Bool = false
     var isStopping: Bool = false
     var insertLine: Bool = false
+    var dropHighlight: Bool = false
     var onDragBegin: (() -> Void)? = nil
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
@@ -651,7 +652,8 @@ struct SessionRow: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 9)
-                .fill(isSelected ? claudeOrange.opacity(0.25)
+                .fill(dropHighlight ? claudeOrange.opacity(0.16)
+                    : isSelected ? claudeOrange.opacity(0.25)
                     : hovering ? Color.primary.opacity(0.08) : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
@@ -1387,7 +1389,8 @@ struct PanelView: View {
                                   animate: model.panelVisible,
                                   isRenaming: renamingSession?.session_id == s.session_id,
                                   isStopping: stoppingSids.contains(s.session_id),
-                                  insertLine: sessionDropTarget == s.session_id,
+                                  insertLine: s.pinned && sessionDropTarget == s.session_id,
+                                  dropHighlight: !s.pinned && sessionDropTarget == s.session_id,
                                   onDragBegin: { draggingSessionSid = s.session_id },
                                   onRename: { sess in
                                       renamingSession = sess
@@ -1415,7 +1418,19 @@ struct PanelView: View {
                         : (sessionDropTarget == s.session_id ? nil : sessionDropTarget)
                 }
             } else {
-                base
+                // dropping onto any other session moves the dragged one into
+                // that session's group (or ungroups it)
+                base.dropDestination(for: String.self) { items, _ in
+                    if let d = items.first, d != s.session_id, !d.hasPrefix("group:") {
+                        model.assign(d, to: s.group)
+                    }
+                    sessionDropTarget = nil
+                    draggingSessionSid = nil
+                    return true
+                } isTargeted: { over in
+                    sessionDropTarget = over ? s.session_id
+                        : (sessionDropTarget == s.session_id ? nil : sessionDropTarget)
+                }
             }
         }
     }
