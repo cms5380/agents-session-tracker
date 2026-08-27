@@ -531,6 +531,7 @@ struct SessionRow: View {
     var hotkeyNumber: Int? = nil
     var animate: Bool = true
     var isRenaming: Bool = false
+    var isStopping: Bool = false
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
     var renameCommit: ((String) -> Void)? = nil
@@ -589,7 +590,16 @@ struct SessionRow: View {
                     .font(.system(size: 8))
                     .foregroundStyle(claudeOrange.opacity(0.7))
             }
-            if !ageString(s.updated_at).isEmpty {
+            if isStopping {
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.small).scaleEffect(0.55)
+                    Text("중지 중…")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Capsule().fill(Color(nsColor: .systemGray).opacity(0.18)))
+                .foregroundStyle(.secondary)
+            } else if !ageString(s.updated_at).isEmpty {
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
@@ -770,6 +780,7 @@ struct PanelView: View {
     @State private var dropTarget: String? = nil
     @State private var draggingGroup: String? = nil
     @State private var followSid: String? = nil
+    @State private var stoppingSids: Set<String> = []
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
     @State private var selected = 0
@@ -1250,6 +1261,7 @@ struct PanelView: View {
                                                       hotkeyNumber: sessionNumbers[s.session_id],
                                                       animate: model.panelVisible,
                                                       isRenaming: renamingSession?.session_id == s.session_id,
+                                                      isStopping: stoppingSids.contains(s.session_id),
                                                       onRename: { sess in
                                                           renamingSession = sess
                                                       },
@@ -1435,6 +1447,10 @@ struct PanelView: View {
                 .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
         )
         .onChange(of: model.sessions) { _ in
+            // clear the stopping indicator once the session left running state
+            stoppingSids = stoppingSids.filter { sid in
+                model.sessions.first(where: { $0.session_id == sid })?.status == "running"
+            }
             // follow a session whose row moved between sections (e.g. stopped)
             guard let sid = followSid else { return }
             if let s = model.sessions.first(where: { $0.session_id == sid }) {
@@ -1486,11 +1502,14 @@ struct PanelView: View {
                 case "end":
                     // first Ctrl+X stops the session (stays as 💤, resumable);
                     // Ctrl+X on a stopped/gone session removes it from view
-                    if s.status == "gone" {
+                    if stoppingSids.contains(s.session_id) {
+                        // stop already in flight — swallow repeat presses
+                    } else if s.status == "gone" {
                         model.endSession(s.session_id)
                     } else if s.kind == "background" || s.kind == "interactive" {
                         // the row will move out of ATTENTION into its group —
                         // keep the highlight on it
+                        stoppingSids.insert(s.session_id)
                         followSid = s.session_id
                         model.stopSession(s.session_id)
                     } else {
