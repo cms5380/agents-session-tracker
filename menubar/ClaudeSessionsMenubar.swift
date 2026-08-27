@@ -1516,9 +1516,14 @@ struct PanelView: View {
                     } else if s.kind == "background" || s.kind == "interactive" {
                         // the row will move out of ATTENTION into its group —
                         // keep the highlight on it
-                        stoppingSids.insert(s.session_id)
-                        followSid = s.session_id
-                        model.stopSession(s.session_id)
+                        let sid = s.session_id
+                        stoppingSids.insert(sid)
+                        followSid = sid
+                        model.stopSession(sid)
+                        // safety net: never leave the indicator stuck
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                            stoppingSids.remove(sid)
+                        }
                     } else {
                         return false
                     }
