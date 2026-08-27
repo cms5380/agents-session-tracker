@@ -1053,6 +1053,15 @@ struct PanelView: View {
 
     func isSelected(_ r: PanelRow) -> Bool { rows[safe: selected]?.id == r.id }
 
+    // index of the first actionable row (labels are not selectable)
+    func firstSelectable() -> Int {
+        for (i, r) in rows.enumerated() {
+            if case .label = r { continue }
+            return i
+        }
+        return 0
+    }
+
     func move(_ delta: Int) {
         guard !rows.isEmpty else { return }
         var i = min(max(selected + delta, 0), rows.count - 1)
@@ -1079,6 +1088,7 @@ struct PanelView: View {
     }
 
     func activateSelected() {
+        if case .label? = rows[safe: selected] { selected = firstSelectable() }
         switch rows[safe: selected] ?? rows.first {
         case .session(let s, _): model.jump(s)
         case .header(let g): toggleExpand(g)
@@ -1425,7 +1435,7 @@ struct PanelView: View {
         }
         .onChange(of: model.focusTick) { _ in
             query = ""
-            selected = 0
+            selected = firstSelectable()
             searchFocused = true
             draggingGroup = nil
             dropTarget = nil
@@ -1437,6 +1447,7 @@ struct PanelView: View {
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
             model.actionKey = { action in
+                if case .label? = rows[safe: selected] { selected = firstSelectable() }
                 guard case .session(let s, _)? = rows[safe: selected], s.status != "archived" else {
                     return false
                 }
