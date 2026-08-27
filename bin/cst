@@ -700,11 +700,18 @@ case "${1:-list}" in
     cmd_jump "$sid"
     ;;
   stop-session)
-    # cst stop-session <session-id> — stop the background session; it stays
-    # listed as 💤 (resumable)
+    # cst stop-session <session-id> — stop the session; it stays listed as 💤
+    # (resumable). Background: claude stop. Interactive: SIGTERM the client
+    # so the terminal returns to a shell and SessionEnd fires cleanly.
     [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
-    # claude stop takes the short job id (first 8 chars of the session id)
-    claude stop "${2:0:8}" >/dev/null 2>&1 || true
+    entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
+    if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
+      cpid=$(jq -r '.pid // empty' <<<"$entry")
+      [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
+    else
+      # claude stop takes the short job id (first 8 chars of the session id)
+      claude stop "${2:0:8}" >/dev/null 2>&1 || true
+    fi
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     if [ -n "$f" ]; then
       jq '.status = "gone" | .owner = "client"' "$f" >"$f.tmp" && mv "$f.tmp" "$f"

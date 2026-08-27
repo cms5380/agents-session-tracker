@@ -36,6 +36,19 @@ func namedColor(_ name: String?) -> Color {
 
 let cstPath = ("~/.claude/session-tracker/cst" as NSString).expandingTildeInPath
 
+// temporary diagnostics for hotkey debugging
+func dbg(_ msg: String) {
+    let line = "\(Date()) \(msg)\n"
+    if let d = line.data(using: .utf8) {
+        let path = "/tmp/claude-sessions-debug.log"
+        if let h = FileHandle(forWritingAtPath: path) {
+            h.seekToEndOfFile(); h.write(d); try? h.close()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: d)
+        }
+    }
+}
+
 @discardableResult
 func runCST(_ args: [String], capture: Bool = false) -> String {
     let p = Process()
@@ -624,7 +637,7 @@ struct SessionRow: View {
             if s.status == "gone" {
                 Divider()
                 Button("Remove from list  ⌃X") { model.endSession(s.session_id) }
-            } else if s.kind == "background" {
+            } else if s.kind == "background" || s.kind == "interactive" {
                 Divider()
                 Button("Stop session  ⌃X") { model.stopSession(s.session_id) }
             }
@@ -1447,6 +1460,7 @@ struct PanelView: View {
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
             model.actionKey = { action in
+                dbg("actionKey \(action) selectedRow=\(String(describing: rows[safe: selected]?.id)) count=\(rows.count)")
                 if case .label? = rows[safe: selected] { selected = firstSelectable() }
                 // on a group header: expand it and step into the first member,
                 // so a second press acts on an actual session
@@ -1474,7 +1488,7 @@ struct PanelView: View {
                     // Ctrl+X on a stopped/gone session removes it from view
                     if s.status == "gone" {
                         model.endSession(s.session_id)
-                    } else if s.kind == "background" {
+                    } else if s.kind == "background" || s.kind == "interactive" {
                         // the row will move out of ATTENTION into its group —
                         // keep the highlight on it
                         followSid = s.session_id
@@ -1603,6 +1617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                         return nil
                     }
                 }
+                dbg("key=\(event.keyCode) ctrl=\(event.modifierFlags.contains(.control)) cmd=\(event.modifierFlags.contains(.command))")
                 if event.modifierFlags.contains(.control), !event.modifierFlags.contains(.command) {
                     // ⌃ actions on the selected session (less conflict-prone)
                     let shift = event.modifierFlags.contains(.shift)
@@ -1615,9 +1630,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     case (51, _): action = "ungroup"    // ⌃⌫
                     default: action = nil
                     }
-                    if let action, self.model.actionKey?(action) == true {
-                        return nil
-                    }
+                    let handled = action.flatMap { self.model.actionKey?($0) }
+                    dbg("action=\(action ?? "nil") handled=\(String(describing: handled))")
+                    if handled == true { return nil }
                 }
                 return event
             }
