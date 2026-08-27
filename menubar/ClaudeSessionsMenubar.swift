@@ -275,6 +275,22 @@ final class Model: ObservableObject {
     }
     var otherAgent: String { mainAgent == "claude" ? "codex" : "claude" }
 
+    // fun usage stats (cst stats-json, cached 1h on disk)
+    struct DailyStat: Decodable, Equatable { let date: String; let count: Int }
+    struct Stats: Decodable, Equatable {
+        let claude_total: Int
+        let codex_total: Int
+        let daily: [DailyStat]
+    }
+    @Published var stats: Stats? = nil
+    func fetchStats() {
+        DispatchQueue.global().async {
+            let out = runCST(["stats-json"], capture: true)
+            let parsed = try? JSONDecoder().decode(Stats.self, from: Data(out.utf8))
+            DispatchQueue.main.async { self.stats = parsed }
+        }
+    }
+
     // quota snapshot for the footer — cst caches the heavy work for 5min
     @Published var usageText = ""
     func fetchUsage() {
@@ -842,6 +858,7 @@ enum PanelRow: Identifiable, Equatable {
     case session(Session, indented: Bool)
     case command(String, String, String) // id, title, subtitle
     case dropzone(String)   // transient drop target (e.g. pin-to-end)
+    case stats              // usage statistics card
 
     var id: String {
         switch self {
@@ -850,13 +867,69 @@ enum PanelRow: Identifiable, Equatable {
         case .session(let s, _): return s.session_id
         case .command(let id, _, _): return "cmd-\(id)"
         case .dropzone(let s): return "dz-\(s)"
+        case .stats: return "stats-card"
         }
     }
 
     var selectable: Bool {
         switch self {
-        case .label, .dropzone: return false
+        case .label, .dropzone, .stats: return false
         default: return true
+        }
+    }
+}
+
+// pixel-flavored 14-day activity card for the "stats" command
+struct StatsCard: View {
+    let stats: Model.Stats
+    let usageText: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                statBlock("\(stats.claude_total + stats.codex_total)", "총 세션")
+                statBlock("\(stats.claude_total)", "claude")
+                statBlock("\(stats.codex_total)", "codex")
+                statBlock("\(stats.daily.last?.count ?? 0)", "오늘")
+                statBlock("\(stats.daily.suffix(7).reduce(0) { $0 + $1.count })", "7일")
+                Spacer()
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("최근 14일 활동")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .tracking(1.2)
+                let maxN = max(1, stats.daily.map { $0.count }.max() ?? 1)
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(stats.daily, id: \.date) { d in
+                        VStack(spacing: 2) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(claudeOrange.opacity(d.count == 0 ? 0.15
+                                    : 0.35 + 0.65 * Double(d.count) / Double(maxN)))
+                                .frame(width: 14, height: max(3, 42 * CGFloat(d.count) / CGFloat(maxN)))
+                            Text(String(d.date.suffix(2)))
+                                .font(.system(size: 7, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .help("\(d.date): \(d.count) 세션")
+                    }
+                }
+            }
+            if !usageText.isEmpty {
+                Text("⚡ \(usageText)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
+        .padding(.horizontal, 2)
+    }
+
+    func statBlock(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 1) {
+            Text(value).font(.system(size: 15, weight: .bold, design: .rounded))
+            Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
         }
     }
 }
@@ -968,6 +1041,7 @@ struct PanelView: View {
     @State private var renameText = ""
     @State private var messagingSession: Session? = nil
     @State private var editingCommand = false
+    @State private var showStats = false
     @State private var cmdDraftName = ""
     @State private var cmdDraftBody = ""
     @FocusState private var cmdNameFocused: Bool
@@ -1052,6 +1126,7 @@ struct PanelView: View {
         }
         cmds.append(("cmd-new", "New Command",
                      "커스텀 커맨드 만들기 — {query}/{prompt} 치환, @=백그라운드"))
+        cmds.append(("stats", "Stats", "사용 통계 — 14일 활동, 세션 수, 쿼터"))
         return cmds.filter { $0.1.lowercased().contains(q) || $0.2.lowercased().contains(q) }
             .prefix(8).map { .command($0.0, $0.1, $0.2) }
     }
@@ -1104,6 +1179,11 @@ struct PanelView: View {
         else if id == "clean" { model.clean(); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
         else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
+        else if id == "stats" {
+            model.fetchStats()
+            showStats = true
+            query = ""
+        }
         else if id == "cmd-new" {
             editingCommand = true
             cmdDraftName = ""
@@ -1146,7 +1226,7 @@ struct PanelView: View {
         var out: [HotkeyTarget] = []
         for r in rows {
             switch r {
-            case .label, .command, .dropzone: break
+            case .label, .command, .dropzone, .stats: break
             case .session(let s, _): out.append(.session(s))
             case .header(let g):
                 if !searching && !expanded.contains(g) { out.append(.group(g)) }
@@ -1323,6 +1403,7 @@ struct PanelView: View {
 
     // the navigable list, in display order
     var rows: [PanelRow] {
+        if showStats { return [.stats] }
         if skillQuery != nil { return skillRows }
         if let kw = keywordMatch {
             var out: [PanelRow] = []
@@ -1409,6 +1490,7 @@ struct PanelView: View {
             case .session: return acc + 47
             case .command: return acc + 42
             case .dropzone: return acc + 10
+            case .stats: return acc + 190
             }
         }
         var extra: CGFloat = 0
@@ -1470,7 +1552,7 @@ struct PanelView: View {
         case .session(let s, _): model.jump(s)
         case .header(let g): toggleExpand(g)
         case .command(let id, _, _): runPanelCommand(id, alt: alt)
-        case .label, .dropzone, nil: break
+        case .label, .dropzone, .stats, nil: break
         }
     }
 
@@ -1571,6 +1653,13 @@ struct PanelView: View {
             .contentShape(RoundedRectangle(cornerRadius: 9))
             .onTapGesture { runPanelCommand(id) }
             .id(r.id)
+        case .stats:
+            if let st = model.stats {
+                StatsCard(stats: st, usageText: model.usageText)
+            } else {
+                ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            }
         case .dropzone(let z):
             // silent drop strip — shows a line only while hovered
             Rectangle()
@@ -1777,6 +1866,7 @@ struct PanelView: View {
                     .onExitCommand { appDelegate?.hidePanel() }
                     .onChange(of: query) { q in
                         selected = 0
+                        if !q.isEmpty { showStats = false }
                         model.searchArchive(q)
                     }
                 let running = model.sessions.filter { $0.status == "running" }.count
@@ -2024,6 +2114,7 @@ struct PanelView: View {
             draggingSessionSid = nil
             sessionDropTarget = nil
             // transient editors don't survive the panel losing focus
+            showStats = false
             editingCommand = false
             cmdDraftName = ""
             cmdDraftBody = ""

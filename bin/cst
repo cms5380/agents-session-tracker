@@ -1077,6 +1077,34 @@ case "${1:-list}" in
       | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
     cat "$USAGE_CACHE"
     ;;
+  stats-json)
+    # cst stats-json — fun usage stats for the panel (1h cache).
+    # Daily counts bucket transcripts by mtime (= sessions active that day).
+    STATS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/stats-cache.json"
+    if [ -f "$STATS_CACHE" ]; then
+      age=$(( $(date +%s) - $(stat -f %m "$STATS_CACHE" 2>/dev/null || echo 0) ))
+      if [ "$age" -lt 3600 ]; then cat "$STATS_CACHE"; exit 0; fi
+    fi
+    cl_days=$(find "$HOME/.claude/projects" -name '*.jsonl' -not -name 'agent-*' 2>/dev/null \
+      | xargs -I{} stat -f '%Sm' -t '%F' {} 2>/dev/null)
+    cx_days=$(find "$HOME/.codex/sessions" -name '*.jsonl' 2>/dev/null \
+      | xargs -I{} stat -f '%Sm' -t '%F' {} 2>/dev/null)
+    cl_total=$(printf '%s\n' "$cl_days" | grep -c . || true)
+    cx_total=$(printf '%s\n' "$cx_days" | grep -c . || true)
+    daily="[]"
+    for i in 13 12 11 10 9 8 7 6 5 4 3 2 1 0; do
+      d=$(date -v-"$i"d +%F)
+      n=$(printf '%s\n%s\n' "$cl_days" "$cx_days" | grep -cx "$d" || true)
+      daily=$(jq --arg d "$d" --argjson n "$n" '. + [{date: $d, count: $n}]' <<<"$daily")
+    done
+    usage=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/usage-cache.json" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$usage" || usage='{}'
+    jq -n --argjson cl "$cl_total" --argjson cx "$cx_total" \
+          --argjson daily "$daily" --argjson usage "$usage" \
+      '{claude_total: $cl, codex_total: $cx, daily: $daily, usage: $usage}' \
+      >"$STATS_CACHE.tmp.$$" && mv "$STATS_CACHE.tmp.$$" "$STATS_CACHE"
+    cat "$STATS_CACHE"
+    ;;
   skills-json)
     # list available skills / slash commands as [{name, description}]
     out='[]'
