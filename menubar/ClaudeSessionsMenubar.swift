@@ -1285,11 +1285,13 @@ struct PanelView: View {
         }
         let pool = filtered.filter { !$0.pinned }
             .filter { selectedChip == nil || $0.group == selectedChip }
-        // fork children nest under their parent's row when both are visible
+        // fork children nest under their parent's row when both are visible —
+        // but only while the child is active; a stopped child drops back to
+        // its own section (ENDED/IDLE) instead of clinging to the parent
         let poolIds = Set(pool.map { $0.session_id })
         let children = Dictionary(grouping: pool.filter {
-            if let p = $0.parent { return poolIds.contains(p) }
-            return false
+            guard let p = $0.parent, poolIds.contains(p) else { return false }
+            return $0.status != "gone"
         }, by: { $0.parent! })
         let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
         let sections: [(String, String)] = [
