@@ -865,6 +865,7 @@ struct PanelView: View {
     @State private var dropTarget: String? = nil
     @State private var draggingGroup: String? = nil
     @State private var stoppingSids: Set<String> = []
+    @State private var endingSids: Set<String> = []
     @State private var followSid: String? = nil
     @State private var lastSessionSid: String? = nil
     @State private var sessionDropTarget: String? = nil
@@ -881,7 +882,7 @@ struct PanelView: View {
     // sessions with an optimistic idle override for in-flight stops, so a
     // stopped row moves to its final place (pin/group) immediately
     var viewSessions: [Session] {
-        model.sessions.map { s in
+        model.sessions.filter { !endingSids.contains($0.session_id) }.map { s in
             guard stoppingSids.contains(s.session_id), s.status == "running" else { return s }
             return Session(session_id: s.session_id, status: "done", cwd: s.cwd,
                            title: s.title, message: s.message, updated_at: s.updated_at,
@@ -1786,6 +1787,10 @@ struct PanelView: View {
             stoppingSids = stoppingSids.filter { sid in
                 model.sessions.first(where: { $0.session_id == sid })?.status == "running"
             }
+            // keep hiding ended sessions until the record actually drops out
+            endingSids = endingSids.filter { sid in
+                model.sessions.contains { $0.session_id == sid }
+            }
             // follow a session whose row moved between sections (e.g. stopped)
             if let sid = followSid {
                 if let s = model.sessions.first(where: { $0.session_id == sid }) {
@@ -1841,8 +1846,13 @@ struct PanelView: View {
                     // first Ctrl+X stops the session (stays as 💤, resumable);
                     // Ctrl+X on a stopped/gone session removes it from view
                     if stoppingSids.contains(s.session_id) {
-                        // stop already in flight — swallow repeat presses
+                        // second press while the "^X again = end" capsule is
+                        // up: end right away and drop the row immediately
+                        stoppingSids.remove(s.session_id)
+                        endingSids.insert(s.session_id)
+                        model.endSession(s.session_id)
                     } else if s.status == "gone" {
+                        endingSids.insert(s.session_id)
                         model.endSession(s.session_id)
                     } else {
                         // any tracked session (claude interactive/background,
