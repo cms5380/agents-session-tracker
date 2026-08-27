@@ -782,7 +782,9 @@ case "${1:-list}" in
           send_esc_iterm "$iterm_id" || true
           f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
           if [ -n "$f" ]; then
-            jq --arg it "$iterm_id" '.terminal.iterm_session_id = $it' \
+            # the interrupt is effectively instant — record idle right away
+            jq --arg it "$iterm_id" \
+              '.terminal.iterm_session_id = $it | .status = "done"' \
               "$f" >"$f.tmp" && mv "$f.tmp" "$f"
           fi
         fi

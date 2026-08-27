@@ -554,7 +554,7 @@ struct SessionRow: View {
                     .foregroundStyle(.secondary)
                     .help("⌘\(n)")
             }
-            statusGlyph(s.status, animate: animate)
+            statusGlyph(isStopping ? "done" : s.status, animate: animate)
             VStack(alignment: .leading, spacing: 1) {
                 if isRenaming {
                     TextField("session name (empty = auto)", text: $renameDraft)
@@ -591,14 +591,11 @@ struct SessionRow: View {
                     .foregroundStyle(claudeOrange.opacity(0.7))
             }
             if isStopping {
-                HStack(spacing: 4) {
-                    ProgressView().controlSize(.small).scaleEffect(0.55)
-                    Text("중지 중…")
-                        .font(.system(size: 10, weight: .semibold))
-                }
-                .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(Capsule().fill(Color(nsColor: .systemGray).opacity(0.18)))
-                .foregroundStyle(.secondary)
+                Text("중지됨")
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(Capsule().fill(Color(nsColor: .systemGray).opacity(0.18)))
+                    .foregroundStyle(.secondary)
             } else if !ageString(s.updated_at).isEmpty {
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
