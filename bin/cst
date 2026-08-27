@@ -686,9 +686,11 @@ case "${1:-list}" in
     fi
     ;;
   new-session)
-    # cst new-session <dir> — open a new claude session in a fresh tab
-    [ $# -ge 2 ] || { echo "usage: cst new-session <dir>" >&2; exit 1; }
-    open_tab_with "cd $(shquote "$2") && claude"
+    # cst new-session <dir> [claude|codex] — open a new session in a fresh tab
+    [ $# -ge 2 ] || { echo "usage: cst new-session <dir> [agent]" >&2; exit 1; }
+    agent_cmd="claude"
+    [ "${3:-}" = "codex" ] && agent_cmd="codex"
+    open_tab_with "cd $(shquote "$2") && $agent_cmd"
     ;;
   resume-tab)
     # cst resume-tab <session-id> <cwd> — reopen an archived session in a tab

@@ -264,9 +264,16 @@ final class Model: ObservableObject {
         DispatchQueue.global().async { runCST(["hub"]) }
     }
 
-    func newSession(in dir: String) {
+    // which agent a plain "New Session" opens; the other stays one row away
+    @Published var mainAgent: String = UserDefaults.standard.string(forKey: "mainAgent") ?? "claude" {
+        didSet { UserDefaults.standard.set(mainAgent, forKey: "mainAgent") }
+    }
+    var otherAgent: String { mainAgent == "claude" ? "codex" : "claude" }
+
+    func newSession(in dir: String, agent: String? = nil) {
         appDelegate?.hidePanel()
-        DispatchQueue.global().async { runCST(["new-session", dir]) }
+        let a = agent ?? mainAgent
+        DispatchQueue.global().async { runCST(["new-session", dir, a]) }
     }
 
     // user commands from commands.json (name → shell; '@' prefix = silent)
@@ -930,11 +937,15 @@ struct PanelView: View {
             ("hub", "Agents Hub", "에이전트 대시보드 탭 열기"),
             ("clean", "Clean Stale Sessions", "오래된 세션 정리"),
             ("quit", "Quit Claude Sessions", "앱 종료"),
+            ("agent-toggle", "Main Agent: \(model.mainAgent) → \(model.otherAgent)",
+             "새 세션 기본 에이전트 전환"),
         ]
         for dir in model.recentDirs {
             let name = (dir as NSString).lastPathComponent
+            let path = dir.replacingOccurrences(of: NSHomeDirectory(), with: "~")
             cmds.append(("new:\(dir)", "New Session: \(name)",
-                         dir.replacingOccurrences(of: NSHomeDirectory(), with: "~")))
+                         "\(model.mainAgent) · \(path)"))
+            cmds.append(("newalt:\(dir)", "New \(model.otherAgent.capitalized) Session: \(name)", path))
         }
         for (name, cmd) in model.customCommands.sorted(by: { $0.key < $1.key }) {
             let silent = cmd.hasPrefix("@")
@@ -993,7 +1004,9 @@ struct PanelView: View {
         if id == "hub" { model.hub() }
         else if id == "clean" { model.clean(); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
+        else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
         else if id.hasPrefix("new:") { model.newSession(in: String(id.dropFirst(4))) }
+        else if id.hasPrefix("newalt:") { model.newSession(in: String(id.dropFirst(7)), agent: model.otherAgent) }
         else if id.hasPrefix("custom:") { model.runCommand(String(id.dropFirst(7))) }
     }
 
