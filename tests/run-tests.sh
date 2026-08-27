@@ -120,8 +120,8 @@ NOW=$(date +%s)
 mkrec() { jq -n "{session_id: \"$1\", updated_at: $NOW} + $2" >"$STATE/$1.json"; }
 rm -f "$STATE"/*.json
 
-sleep 600 & LIVE1=$!
-sleep 600 & LIVE2=$!
+sleep 600 </dev/null >/dev/null 2>&1 & LIVE1=$!
+sleep 600 </dev/null >/dev/null 2>&1 & LIVE2=$!
 
 mkrec "s-ended"   '{status:"ended", owner:"client", pid:99999}'
 mkrec "s-old"     "{status:\"done\", owner:\"client\", pid:$LIVE1, updated_at: $((NOW - 90000))}"
@@ -175,7 +175,7 @@ SJ=$("$CST" sessions-json 2>/dev/null)
 t "T35 group unassign" "null" "$(sjq '.[] | select(.session_id=="s-alive") | .group')"
 
 # ══ stop-session / end lifecycle ═════════════════════════════════
-sleep 600 & SP1=$!
+sleep 600 </dev/null >/dev/null 2>&1 & SP1=$!
 mkrec "s-stop-run" "{status:\"running\", owner:\"client\", pid:$SP1, title:\"x\"}"
 "$CST" stop-session s-stop-run >/dev/null 2>&1
 t "T40 stop running → done"  "done" "$(rec s-stop-run .status)"
@@ -193,7 +193,7 @@ t "T44 end → ended"          "ended" "$(rec s-stop-run .status)"
 kill -0 "$SP1" 2>/dev/null && ALIVE=yes || ALIVE=no
 t "T45 end kills process"    "no"   "$ALIVE"
 
-sleep 600 & SP2=$!
+sleep 600 </dev/null >/dev/null 2>&1 & SP2=$!
 mkrec "s-cx-stop" "{status:\"running\", owner:\"client\", pid:$SP2, agent:\"codex\", transcript_path:\"$CXT\"}"
 "$CST" stop-session s-cx-stop >/dev/null 2>&1
 t "T46 codex stop → done"    "done" "$(rec s-cx-stop .status)"
@@ -235,10 +235,12 @@ t "T72 clean keeps fresh" "yes" "$([ -f "$STATE/s-clean-keep.json" ] && echo yes
 # ══ fork lineage: hide/nest ══════════════════════════════════════
 PSID="dddddddd-0000-0000-0000-000000000004"
 FSID="eeeeeeee-0000-0000-0000-000000000005"
-sleep 600 & PP=$!
-sleep 600 & FP=$!
-# a live process whose cmdline carries the fork markers
-bash -c 'sleep 600' qa-fork --session-id "$FSID" --fork-session --resume "/tmp/qa/$PSID.jsonl" &
+sleep 600 </dev/null >/dev/null 2>&1 & PP=$!
+sleep 600 </dev/null >/dev/null 2>&1 & FP=$!
+# a live process whose cmdline carries the fork markers. The loop form
+# keeps bash from exec-replacing itself (which would drop the argv) and
+# leaves no long-lived orphan child when killed.
+bash -c 'while :; do sleep 1; done' qa-fork --session-id "$FSID" --fork-session --resume "/tmp/qa/$PSID.jsonl" </dev/null >/dev/null 2>&1 &
 FORKPROC=$!
 sleep 0.2
 mkrec "$PSID" "{status:\"running\", owner:\"client\", pid:$PP, title:\"parent\"}"
