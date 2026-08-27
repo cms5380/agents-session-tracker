@@ -1844,8 +1844,10 @@ struct PanelView: View {
                         // stop already in flight — swallow repeat presses
                     } else if s.status == "gone" {
                         model.endSession(s.session_id)
-                    } else if s.kind == "background" || s.kind == "interactive" {
-                        // the row relocates to its final section immediately —
+                    } else {
+                        // any tracked session (claude interactive/background,
+                        // codex — which has no daemon kind) — cst drives it
+                        // from the record. The row relocates immediately;
                         // selection and scroll follow it there
                         let sid = s.session_id
                         stoppingSids.insert(sid)
@@ -1862,8 +1864,6 @@ struct PanelView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                             stoppingSids.remove(sid)
                         }
-                    } else {
-                        return false
                     }
                 default: return false
                 }
