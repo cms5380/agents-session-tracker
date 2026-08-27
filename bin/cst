@@ -240,6 +240,47 @@ focus_hub() {
 # kept for compatibility; the hub replaces per-directory pickers
 open_agents_tab() { focus_hub; }
 
+close_iterm_by_id() { # $1=ITERM_SESSION_ID (wXtYpZ:UUID) — close that tab
+  local uuid="${1##*:}"
+  osascript - "$uuid" <<'APPLESCRIPT' >/dev/null 2>&1
+on run argv
+  set target to item 1 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if id of s is target then
+            tell s to close
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+end run
+APPLESCRIPT
+}
+
+close_iterm_by_title() { # $1=title fragment
+  osascript - "$1" <<'APPLESCRIPT' >/dev/null 2>&1
+on run argv
+  set needle to item 1 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if (name of s) contains needle then
+            tell s to close
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+end run
+APPLESCRIPT
+}
+
 jump_iterm_by_title() { # $1=title fragment — attach tabs are titled with the agent name
   osascript - "$1" <<'APPLESCRIPT'
 on run argv
@@ -707,10 +748,22 @@ case "${1:-list}" in
     entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
     if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
       cpid=$(jq -r '.pid // empty' <<<"$entry")
-      [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
+      if [ -n "$cpid" ]; then
+        # capture the hosting iTerm tab before the process dies
+        iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
+          | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+        kill -TERM "$cpid" 2>/dev/null || true
+        if [ -n "$iterm_id" ]; then
+          sleep 0.4
+          close_iterm_by_id "$iterm_id" || true
+        fi
+      fi
     else
       # claude stop takes the short job id (first 8 chars of the session id)
       claude stop "${2:0:8}" >/dev/null 2>&1 || true
+      # close a tab attached to this agent, if one is open
+      agent_name=$(jq -r '.name // empty' <<<"$entry")
+      [ -n "$agent_name" ] && close_iterm_by_title "$agent_name" || true
     fi
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     if [ -n "$f" ]; then
