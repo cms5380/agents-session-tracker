@@ -1208,7 +1208,7 @@ struct PanelView: View {
             case .header: return acc + 34
             case .session: return acc + 47
             case .command: return acc + 42
-            case .dropzone: return acc + 22
+            case .dropzone: return acc + 10
             }
         }
         var extra: CGFloat = 0
@@ -1371,19 +1371,15 @@ struct PanelView: View {
             .onTapGesture { runPanelCommand(id) }
             .id(r.id)
         case .dropzone(let z):
-            VStack(spacing: 3) {
-                Rectangle()
-                    .fill(sessionDropTarget == "dz-\(z)" ? claudeOrange : Color.primary.opacity(0.12))
-                    .frame(height: 2)
-                    .cornerRadius(1)
-                    .padding(.horizontal, 6)
-                Text("📌 여기로 드롭 = 핀 (맨 아래)")
-                    .font(.system(size: 9, design: .rounded))
-                    .foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 3)
-            .contentShape(Rectangle())
+            // silent drop strip — shows a line only while hovered
+            Rectangle()
+                .fill(sessionDropTarget == "dz-\(z)" ? claudeOrange : Color.clear)
+                .frame(height: 2)
+                .cornerRadius(1)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
             .dropDestination(for: String.self) { items, _ in
                 if let d = items.first, !d.hasPrefix("group:") {
                     model.pinInsert(d, before: "end")
