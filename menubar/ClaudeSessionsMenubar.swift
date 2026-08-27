@@ -1061,7 +1061,10 @@ struct PanelView: View {
     }
 
     var pinnedSessions: [Session] {
-        filtered.filter { $0.pinned }.sorted { ($0.pin_order ?? 0) < ($1.pin_order ?? 0) }
+        // pins are scoped to the active group chip; the all-chip shows every pin
+        filtered.filter { $0.pinned }
+            .filter { selectedChip == nil || $0.group == selectedChip }
+            .sorted { ($0.pin_order ?? 0) < ($1.pin_order ?? 0) }
     }
 
     var attention: [Session] {
