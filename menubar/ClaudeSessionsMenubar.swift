@@ -551,6 +551,7 @@ struct SessionRow: View {
     var isRenaming: Bool = false
     var isStopping: Bool = false
     var insertLine: Bool = false
+    var onDragBegin: (() -> Void)? = nil
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
     var renameCommit: ((String) -> Void)? = nil
@@ -655,7 +656,10 @@ struct SessionRow: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
         .onHover { hovering = $0 }
-        .onDrag { NSItemProvider(object: s.session_id as NSString) }
+        .onDrag {
+            onDragBegin?()
+            return NSItemProvider(object: s.session_id as NSString)
+        }
         .onTapGesture { model.jump(s) }
         .contextMenu {
             Button("Jump  ↩") { model.jump(s) }
@@ -686,6 +690,7 @@ enum PanelRow: Identifiable, Equatable {
     case header(String)     // group name, or "__ungrouped__"
     case session(Session, indented: Bool)
     case command(String, String, String) // id, title, subtitle
+    case dropzone(String)   // transient drop target (e.g. pin-to-end)
 
     var id: String {
         switch self {
@@ -693,6 +698,14 @@ enum PanelRow: Identifiable, Equatable {
         case .header(let g): return "hdr-\(g)"
         case .session(let s, _): return s.session_id
         case .command(let id, _, _): return "cmd-\(id)"
+        case .dropzone(let s): return "dz-\(s)"
+        }
+    }
+
+    var selectable: Bool {
+        switch self {
+        case .label, .dropzone: return false
+        default: return true
         }
     }
 }
@@ -808,6 +821,7 @@ struct PanelView: View {
     @State private var stoppingSids: Set<String> = []
     @State private var lastSessionSid: String? = nil
     @State private var sessionDropTarget: String? = nil
+    @State private var draggingSessionSid: String? = nil
     @AppStorage("groupLayout") private var groupLayout = "inbox" // inbox | chips | grid
     @State private var selectedChip: String? = nil
     @State private var pendingGroups: [String] = []
@@ -947,7 +961,7 @@ struct PanelView: View {
         var out: [HotkeyTarget] = []
         for r in rows {
             switch r {
-            case .label, .command: break
+            case .label, .command, .dropzone: break
             case .session(let s, _): out.append(.session(s))
             case .header(let g):
                 if !searching && !expanded.contains(g) { out.append(.group(g)) }
@@ -1081,6 +1095,7 @@ struct PanelView: View {
             out.append(.label("PINNED"))
             out += pinnedSessions.map { .session($0, indented: false) }
         }
+        if draggingSessionSid != nil { out.append(.dropzone("pin-end")) }
         let pool = filtered.filter { !$0.pinned }
             .filter { selectedChip == nil || $0.group == selectedChip }
         let sections: [(String, String)] = [
@@ -1149,6 +1164,7 @@ struct PanelView: View {
             out.append(.label("PINNED"))
             out += pinnedSessions.map { .session($0, indented: false) }
         }
+        if draggingSessionSid != nil { out.append(.dropzone("pin-end")) }
         if !attention.isEmpty {
             out.append(.label("ATTENTION"))
             out += attention.map { .session($0, indented: false) }
@@ -1175,6 +1191,7 @@ struct PanelView: View {
             case .header: return acc + 34
             case .session: return acc + 47
             case .command: return acc + 42
+            case .dropzone: return acc + 22
             }
         }
         var extra: CGFloat = 0
@@ -1186,10 +1203,9 @@ struct PanelView: View {
 
     func isSelected(_ r: PanelRow) -> Bool { rows[safe: selected]?.id == r.id }
 
-    // index of the first actionable row (labels are not selectable)
+    // index of the first actionable row (labels/dropzones are not selectable)
     func firstSelectable() -> Int {
-        for (i, r) in rows.enumerated() {
-            if case .label = r { continue }
+        for (i, r) in rows.enumerated() where r.selectable {
             return i
         }
         return 0
@@ -1199,10 +1215,10 @@ struct PanelView: View {
         guard !rows.isEmpty else { return }
         let n = rows.count
         var i = selected
-        // wrap around at both ends, skipping section labels
+        // wrap around at both ends, skipping non-selectable rows
         for _ in 0..<n {
             i = (i + delta % n + n) % n
-            if case .label = rows[i] { continue }
+            if !rows[i].selectable { continue }
             selected = i
             scrollTarget = rows[safe: selected]?.id
             if case .session(let s, _)? = rows[safe: selected] { lastSessionSid = s.session_id }
@@ -1237,7 +1253,7 @@ struct PanelView: View {
         case .session(let s, _): model.jump(s)
         case .header(let g): toggleExpand(g)
         case .command(let id, _, _): runPanelCommand(id)
-        case .label, nil: break
+        case .label, .dropzone, nil: break
         }
     }
 
@@ -1337,6 +1353,31 @@ struct PanelView: View {
             .contentShape(RoundedRectangle(cornerRadius: 9))
             .onTapGesture { runPanelCommand(id) }
             .id(r.id)
+        case .dropzone(let z):
+            VStack(spacing: 3) {
+                Rectangle()
+                    .fill(sessionDropTarget == "dz-\(z)" ? claudeOrange : Color.primary.opacity(0.12))
+                    .frame(height: 2)
+                    .cornerRadius(1)
+                    .padding(.horizontal, 6)
+                Text("📌 여기로 드롭 = 핀 (맨 아래)")
+                    .font(.system(size: 9, design: .rounded))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .dropDestination(for: String.self) { items, _ in
+                if let d = items.first, !d.hasPrefix("group:") {
+                    model.pinInsert(d, before: "end")
+                }
+                sessionDropTarget = nil
+                draggingSessionSid = nil
+                return true
+            } isTargeted: { over in
+                sessionDropTarget = over ? "dz-\(z)"
+                    : (sessionDropTarget == "dz-\(z)" ? nil : sessionDropTarget)
+            }
         case .header(let g):
             headerRow(g)
                 .padding(.top, 5)
@@ -1347,6 +1388,7 @@ struct PanelView: View {
                                   isRenaming: renamingSession?.session_id == s.session_id,
                                   isStopping: stoppingSids.contains(s.session_id),
                                   insertLine: sessionDropTarget == s.session_id,
+                                  onDragBegin: { draggingSessionSid = s.session_id },
                                   onRename: { sess in
                                       renamingSession = sess
                                   },
@@ -1632,6 +1674,8 @@ struct PanelView: View {
             dropTarget = nil
             renamingSession = nil
             messagingSession = nil
+            draggingSessionSid = nil
+            sessionDropTarget = nil
         }
         .onAppear {
             model.moveSelection = { move($0) }
