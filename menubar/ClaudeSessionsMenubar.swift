@@ -1268,7 +1268,7 @@ struct PanelView: View {
             hasAttention: hasAttention,
             expanded: expanded.contains(g),
             isSelected: isSelected(.header(g)),
-            highlight: dropTarget == g && draggingGroup == nil,
+            highlight: (dropTarget == g && draggingGroup == nil) || sessionDropGroup == g,
             insertLine: dropTarget == g && draggingGroup != nil,
             hotkeyNumber: groupNumbers[g],
             tint: namedColor(members.first?.group_color)
@@ -1435,6 +1435,14 @@ struct PanelView: View {
         }
     }
 
+    // the group a session-onto-session drop would land in — used to co-
+    // highlight that group's header while hovering
+    var sessionDropGroup: String? {
+        guard let t = sessionDropTarget, !t.hasPrefix("dz-") else { return nil }
+        guard let target = viewSessions.first(where: { $0.session_id == t }), !target.pinned else { return nil }
+        return target.group ?? "__ungrouped__"
+    }
+
     func chipColor(_ g: String) -> Color {
         namedColor(viewSessions.first(where: { $0.group == g })?.group_color)
     }
@@ -1451,25 +1459,53 @@ struct PanelView: View {
         }
     }
 
+    @ViewBuilder
     func chipView(_ g: String?, _ label: String, _ count: Int) -> some View {
         let selectedNow = selectedChip == g
         let tint = g.map(chipColor) ?? claudeOrange
-        return HStack(spacing: 5) {
+        let chipId = g ?? "__all__"
+        let targeted = dropTarget == "chip-\(chipId)"
+        let body = HStack(spacing: 5) {
             Circle().fill(tint).frame(width: 7, height: 7)
             Text(label).font(.system(size: 11, weight: .semibold, design: .rounded))
             Text("\(count)").font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 9).padding(.vertical, 4)
-        .background(Capsule().fill(selectedNow ? tint.opacity(0.25) : Color.primary.opacity(0.06)))
-        .overlay(Capsule().strokeBorder(selectedNow ? tint.opacity(0.7) : Color.clear, lineWidth: 1))
+        .background(Capsule().fill(targeted ? tint.opacity(0.35)
+            : selectedNow ? tint.opacity(0.25) : Color.primary.opacity(0.06)))
+        .overlay(Capsule().strokeBorder(targeted || selectedNow ? tint.opacity(0.7) : Color.clear, lineWidth: 1))
         .contentShape(Capsule())
         .onTapGesture { selectedChip = g }
         .dropDestination(for: String.self) { items, _ in
-            if let sid = items.first, !sid.hasPrefix("group:") {
-                model.assign(sid, to: g)
+            if let item = items.first {
+                if item.hasPrefix("group:") {
+                    // chip reorder: drop a group chip before this one
+                    let dragged = String(item.dropFirst(6))
+                    if let g, dragged != g {
+                        model.groupMove(dragged, before: g)
+                    } else if g == nil, let first = groups.first, dragged != first {
+                        model.groupMove(dragged, before: first)
+                    }
+                } else {
+                    model.assign(item, to: g)
+                }
             }
+            dropTarget = nil
+            draggingGroup = nil
+            draggingSessionSid = nil
             return true
+        } isTargeted: { over in
+            dropTarget = over ? "chip-\(chipId)"
+                : (dropTarget == "chip-\(chipId)" ? nil : dropTarget)
+        }
+        if let g {
+            body.onDrag {
+                DispatchQueue.main.async { draggingGroup = g }
+                return NSItemProvider(object: "group:\(g)" as NSString)
+            }
+        } else {
+            body
         }
     }
 
