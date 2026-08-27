@@ -22,6 +22,7 @@ struct Session: Decodable, Identifiable, Equatable {
     let sort_order: Int?
     let agent: String?
     let model: String?
+    let parent: String?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
 }
@@ -996,7 +997,8 @@ struct PanelView: View {
                            title: s.title, message: s.message, updated_at: s.updated_at,
                            bg: s.bg, kind: s.kind, group: s.group, pin_order: s.pin_order,
                            group_color: s.group_color, group_order: s.group_order,
-                           sort_order: s.sort_order, agent: s.agent, model: s.model)
+                           sort_order: s.sort_order, agent: s.agent, model: s.model,
+                           parent: s.parent)
         }
     }
 
@@ -1282,13 +1284,20 @@ struct PanelView: View {
         }
         let pool = filtered.filter { !$0.pinned }
             .filter { selectedChip == nil || $0.group == selectedChip }
+        // fork children nest under their parent's row when both are visible
+        let poolIds = Set(pool.map { $0.session_id })
+        let children = Dictionary(grouping: pool.filter {
+            if let p = $0.parent { return poolIds.contains(p) }
+            return false
+        }, by: { $0.parent! })
+        let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
         let sections: [(String, String)] = [
             ("waiting", "NEEDS INPUT"), ("input", "REPLY WAITING"),
             ("finished", "FINISHED"), ("running", "RUNNING"),
             ("done", "IDLE"), ("gone", "ENDED"),
         ]
         for (st, label) in sections {
-            let members = pool.filter { $0.status == st }
+            let members = pool.filter { $0.status == st && !nestedIds.contains($0.session_id) }
                 .sorted { a, b in
                     // manual order first, then recency
                     let oa = a.sort_order ?? Int.max
@@ -1298,7 +1307,13 @@ struct PanelView: View {
                 }
             if members.isEmpty { continue }
             out.append(.label(label))
-            out += members.map { .session($0, indented: false) }
+            for m in members {
+                out.append(.session(m, indented: false))
+                for c in (children[m.session_id] ?? [])
+                    .sorted(by: { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }) {
+                    out.append(.session(c, indented: true))
+                }
+            }
         }
         return out
     }

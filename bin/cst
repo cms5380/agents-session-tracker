@@ -609,13 +609,19 @@ cmd_sessions_json() {
   local sorder_json
   sorder_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$sorder_json" || sorder_json='[]'
+  # fork lineage for the UI: a fork nests under its parent when both are shown
+  local pairs_json
+  pairs_json=$(printf '%s\n' "$fork_pairs" \
+    | awk -F: 'NF==2{printf "{\"p\":\"%s\",\"f\":\"%s\"}\n",$1,$2}' | jq -sc '.' 2>/dev/null || echo '[]')
   jq --argjson extra "$extra" --argjson agents "$agents_json" \
      --argjson groups "$groups_json" --argjson names "$names_json" \
      --argjson pins "$pins_json" --argjson colors "$colors_json" \
-     --argjson gorder "$order_json" --argjson sorder "$sorder_json" '
+     --argjson gorder "$order_json" --argjson sorder "$sorder_json" \
+     --argjson pairs "$pairs_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
+      | .parent = (([$pairs[] | select(.f == $s.session_id) | .p] | first) // null)
       # daemon status corrects stale hook state (permission waits stay
       # waiting) — applies to interactive sessions too, e.g. an Esc-
       # interrupted turn never fires the Stop hook
