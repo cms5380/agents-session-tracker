@@ -797,6 +797,8 @@ struct PanelView: View {
     @State private var followSid: String? = nil
     @State private var stoppingSids: Set<String> = []
     @State private var lastSessionSid: String? = nil
+    @AppStorage("groupLayout") private var groupLayout = "inbox" // inbox | chips | grid
+    @State private var selectedChip: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
     @State private var selected = 0
@@ -1050,6 +1052,61 @@ struct PanelView: View {
         return sorted.prefix(8).map { ($0, baseExp + "/" + $0) }
     }
 
+    static let statusOrderAll = ["waiting", "input", "finished", "running", "done", "gone"]
+
+    func statusSorted(_ list: [Session]) -> [Session] {
+        list.sorted { a, b in
+            let pa = Self.statusOrderAll.firstIndex(of: a.status) ?? 9
+            let pb = Self.statusOrderAll.firstIndex(of: b.status) ?? 9
+            if pa != pb { return pa < pb }
+            return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+        }
+    }
+
+    // chips layout: pinned, then a flat status-sorted pool filtered by chip
+    var chipRows: [PanelRow] {
+        var out: [PanelRow] = []
+        if !pinnedSessions.isEmpty {
+            out.append(.label("PINNED"))
+            out += pinnedSessions.map { .session($0, indented: false) }
+        }
+        let pool = statusSorted(filtered.filter { !$0.pinned }
+            .filter { selectedChip == nil || $0.group == selectedChip })
+        out += pool.map { .session($0, indented: false) }
+        return out
+    }
+
+    // grid layout: pinned + attention navigable; expanded groups' members
+    // appear below the card grid
+    var gridTopRows: [PanelRow] {
+        var out: [PanelRow] = []
+        if !pinnedSessions.isEmpty {
+            out.append(.label("PINNED"))
+            out += pinnedSessions.map { .session($0, indented: false) }
+        }
+        if !attention.isEmpty {
+            out.append(.label("ATTENTION"))
+            out += attention.map { .session($0, indented: false) }
+        }
+        return out
+    }
+
+    var gridExpandedRows: [PanelRow] {
+        var out: [PanelRow] = []
+        for g in groups where expanded.contains(g) {
+            let members = restMembers(g)
+            if members.isEmpty { continue }
+            out.append(.label(g == "__ungrouped__" ? "미배정" : g))
+            out += members.map { .session($0, indented: true) }
+        }
+        let loose = restMembers(nil)
+        if expanded.contains("__ungrouped__"), !loose.isEmpty {
+            out.append(.label("미배정"))
+            out += loose.map { .session($0, indented: true) }
+        }
+        return out
+    }
+
     // the navigable list, in display order
     var rows: [PanelRow] {
         if skillQuery != nil { return skillRows }
@@ -1095,6 +1152,8 @@ struct PanelView: View {
             }
             return out
         }
+        if groupLayout == "chips" { return chipRows }
+        if groupLayout == "grid" { return gridTopRows + gridExpandedRows }
         var out: [PanelRow] = []
         if !pinnedSessions.isEmpty {
             out.append(.label("PINNED"))
@@ -1128,7 +1187,14 @@ struct PanelView: View {
             case .command: return acc + 42
             }
         }
-        return min(max(h + 16 + (draggingGroup != nil ? 34 : 0), 100), 460)
+        var extra: CGFloat = 0
+        if !searching {
+            if groupLayout == "chips" { extra += 36 }
+            if groupLayout == "grid" {
+                extra += CGFloat((groups.count + 1) / 2) * 86 + 12
+            }
+        }
+        return min(max(h + extra + 16 + (draggingGroup != nil ? 34 : 0), 100), 460)
     }
 
     func isSelected(_ r: PanelRow) -> Bool { rows[safe: selected]?.id == r.id }
@@ -1161,9 +1227,19 @@ struct PanelView: View {
         if expanded.contains(g) { expanded.remove(g) } else { expanded.insert(g) }
     }
 
-    // → expands / ← collapses when a group header is selected (query empty)
+    // → expands / ← collapses when a group header is selected (query empty);
+    // in chips layout the arrows cycle the selected chip instead
     func handleLR(_ dir: Int) -> Bool {
-        guard !searching, case .header(let g)? = rows[safe: selected] else { return false }
+        guard !searching else { return false }
+        if groupLayout == "chips" {
+            let chips: [String?] = [nil] + groups.map { Optional($0) }
+            let cur = chips.firstIndex(where: { $0 == selectedChip }) ?? 0
+            let next = (cur + dir + chips.count) % chips.count
+            selectedChip = chips[next]
+            selected = firstSelectable()
+            return true
+        }
+        guard case .header(let g)? = rows[safe: selected] else { return false }
         if dir > 0 { expanded.insert(g) } else { expanded.remove(g) }
         return true
     }
@@ -1239,6 +1315,177 @@ struct PanelView: View {
         .id("hdr-\(g)")
     }
 
+    @ViewBuilder
+    func rowView(_ r: PanelRow) -> some View {
+        switch r {
+        case .label(let l):
+            HStack(spacing: 5) {
+                Text(l)
+                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                    .foregroundStyle(l == "ATTENTION" ? claudeOrange : Color.secondary)
+                    .tracking(1.2)
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.top, 4)
+        case .command(let id, let title, let sub):
+            HStack(spacing: 9) {
+                Text(">")
+                    .font(.system(size: 13, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(claudeOrange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                    Text(sub)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(isSelected(r) ? claudeOrange.opacity(0.25) : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .onTapGesture { runPanelCommand(id) }
+            .id(r.id)
+        case .header(let g):
+            headerRow(g)
+                .padding(.top, 5)
+        case .session(let s, let indented):
+            let base = SessionRow(s: s, model: model, isSelected: isSelected(r),
+                                  hotkeyNumber: sessionNumbers[s.session_id],
+                                  animate: model.panelVisible,
+                                  isRenaming: renamingSession?.session_id == s.session_id,
+                                  isStopping: stoppingSids.contains(s.session_id),
+                                  onRename: { sess in
+                                      renamingSession = sess
+                                  },
+                                  onMessage: { sess in
+                                      messagingSession = sess
+                                      messageText = ""
+                                  },
+                                  renameCommit: { newName in
+                                      model.renameSession(s.session_id, to: newName)
+                                      renamingSession = nil
+                                  },
+                                  renameCancel: { renamingSession = nil })
+                .padding(.leading, indented ? 16 : 0)
+                .id(r.id)
+            if s.pinned && !searching {
+                base.dropDestination(for: String.self) { items, _ in
+                    if let d = items.first, d != s.session_id {
+                        model.pinInsert(d, before: s.session_id)
+                    }
+                    return true
+                }
+            } else {
+                base
+            }
+        }
+    }
+
+    func chipColor(_ g: String) -> Color {
+        namedColor(viewSessions.first(where: { $0.group == g })?.group_color)
+    }
+
+    var chipBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                chipView(nil, "전체", viewSessions.count)
+                ForEach(groups, id: \.self) { g in
+                    chipView(g, g, viewSessions.filter { $0.group == g }.count)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 4)
+        }
+    }
+
+    func chipView(_ g: String?, _ label: String, _ count: Int) -> some View {
+        let selectedNow = selectedChip == g
+        let tint = g.map(chipColor) ?? claudeOrange
+        return HStack(spacing: 5) {
+            Circle().fill(tint).frame(width: 7, height: 7)
+            Text(label).font(.system(size: 11, weight: .semibold, design: .rounded))
+            Text("\(count)").font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 9).padding(.vertical, 4)
+        .background(Capsule().fill(selectedNow ? tint.opacity(0.25) : Color.primary.opacity(0.06)))
+        .overlay(Capsule().strokeBorder(selectedNow ? tint.opacity(0.7) : Color.clear, lineWidth: 1))
+        .contentShape(Capsule())
+        .onTapGesture { selectedChip = g }
+        .dropDestination(for: String.self) { items, _ in
+            if let sid = items.first, !sid.hasPrefix("group:") {
+                model.assign(sid, to: g)
+            }
+            return true
+        }
+    }
+
+    var gridCards: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                  spacing: 8) {
+            ForEach(groups, id: \.self) { g in
+                gridCard(g)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    func gridCard(_ g: String) -> some View {
+        let members = filtered.filter { $0.group == g }
+        let tint = chipColor(g)
+        let hasAttn = members.contains { ["waiting", "input", "finished"].contains($0.status) }
+        let isOpen = expanded.contains(g)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                PixelGlyph(map: duoMap, color: tint, pixel: 1.4)
+                Spacer()
+                if hasAttn { Circle().fill(Color(nsColor: .systemOrange)).frame(width: 7, height: 7) }
+            }
+            Text(g)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text("\(members.count) sessions")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12).fill(tint.opacity(isOpen ? 0.22 : 0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(dropTarget == g ? tint.opacity(0.8) : Color.clear, lineWidth: 1.5))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .onTapGesture { toggleExpand(g) }
+        .contextMenu {
+            Button("Open all sessions") { model.openAll(members) }
+            Button("Rename group") { renaming = g; renameText = g }
+            Menu("Color") {
+                ForEach(["orange", "blue", "green", "purple", "pink", "gray"], id: \.self) { c in
+                    Button(c) { model.setGroupColor(g, c) }
+                }
+            }
+            Button("Dissolve group") { model.dissolveGroup(g) }
+        }
+        .dropDestination(for: String.self) { items, _ in
+            if let sid = items.first, !sid.hasPrefix("group:") {
+                model.assign(sid, to: g)
+                expanded.insert(g)
+            }
+            dropTarget = nil
+            return true
+        } isTargeted: { over in
+            dropTarget = over ? g : (dropTarget == g ? nil : dropTarget)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
@@ -1276,75 +1523,13 @@ struct PanelView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 2) {
-                        ForEach(rows) { r in
-                            switch r {
-                            case .label(let l):
-                                HStack(spacing: 5) {
-                                    Text(l)
-                                        .font(.system(size: 10, weight: .heavy, design: .rounded))
-                                        .foregroundStyle(l == "ATTENTION" ? claudeOrange : Color.secondary)
-                                        .tracking(1.2)
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 12).padding(.top, 4)
-                            case .command(let id, let title, let sub):
-                                HStack(spacing: 9) {
-                                    Text(">")
-                                        .font(.system(size: 13, weight: .heavy, design: .monospaced))
-                                        .foregroundStyle(claudeOrange)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(title)
-                                            .font(.system(size: 13, weight: .medium, design: .rounded))
-                                        Text(sub)
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 10).padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 9)
-                                        .fill(isSelected(r) ? claudeOrange.opacity(0.25) : Color.clear)
-                                )
-                                .contentShape(RoundedRectangle(cornerRadius: 9))
-                                .onTapGesture { runPanelCommand(id) }
-                                .id(r.id)
-                            case .header(let g):
-                                headerRow(g)
-                                    .padding(.top, 5)
-                            case .session(let s, let indented):
-                                let base = SessionRow(s: s, model: model, isSelected: isSelected(r),
-                                                      hotkeyNumber: sessionNumbers[s.session_id],
-                                                      animate: model.panelVisible,
-                                                      isRenaming: renamingSession?.session_id == s.session_id,
-                                                      isStopping: stoppingSids.contains(s.session_id),
-                                                      onRename: { sess in
-                                                          renamingSession = sess
-                                                      },
-                                                      onMessage: { sess in
-                                                          messagingSession = sess
-                                                          messageText = ""
-                                                      },
-                                                      renameCommit: { newName in
-                                                          model.renameSession(s.session_id, to: newName)
-                                                          renamingSession = nil
-                                                      },
-                                                      renameCancel: { renamingSession = nil })
-                                    .padding(.leading, indented ? 16 : 0)
-                                    .id(r.id)
-                                if s.pinned && !searching {
-                                    // drop another session here to pin it in this slot
-                                    base.dropDestination(for: String.self) { items, _ in
-                                        if let d = items.first, d != s.session_id {
-                                            model.pinInsert(d, before: s.session_id)
-                                        }
-                                        return true
-                                    }
-                                } else {
-                                    base
-                                }
-                            }
+                        if !searching, groupLayout == "grid" {
+                            ForEach(gridTopRows) { rowView($0) }
+                            gridCards
+                            ForEach(gridExpandedRows) { rowView($0) }
+                        } else {
+                            if !searching, groupLayout == "chips" { chipBar }
+                            ForEach(rows) { rowView($0) }
                         }
                         if draggingGroup != nil {
                             // end-of-list drop zone, visible only while
@@ -1480,6 +1665,18 @@ struct PanelView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
+                Menu {
+                    Button("리스트 (inbox)") { groupLayout = "inbox" }
+                    Button("칩 필터") { groupLayout = "chips" }
+                    Button("그리드 카드") { groupLayout = "grid" }
+                } label: {
+                    Image(systemName: groupLayout == "grid" ? "square.grid.2x2"
+                        : groupLayout == "chips" ? "tag" : "list.bullet")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .foregroundStyle(.secondary)
+                .help("그룹 레이아웃")
                 if model.refreshing {
                     ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 16, height: 16)
                 } else {

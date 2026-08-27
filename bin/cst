@@ -143,7 +143,7 @@ read_pid_env() { # $1=pid → sets R_* from that process's environment
   R_TERM=$(grep -m1 '^TERM_PROGRAM=' <<<"$envs" | cut -d= -f2- || true)
   R_TTY=$(ps -o tty= -p "$1" 2>/dev/null | tr -d ' ')
   [ "$R_TTY" = "??" ] && R_TTY=""
-  [ -n "$R_ITERM$R_CMUX$R_TMUX$R_TTY" ]
+  [ -n "$R_ITERM$R_CMUX$R_TMUX$R_TTY$R_TERM" ]
 }
 
 # exact resolution: the daemon knows each session's client pid
@@ -161,6 +161,18 @@ jump_resolved() {
   if [ -n "$R_ITERM" ] && jump_iterm "$R_ITERM" >/dev/null 2>&1; then return 0; fi
   if [ -n "$R_TMUX" ] && jump_tmux "$R_TMUX" "$R_TERM"; then return 0; fi
   if [ -n "$R_TTY" ] && [ "$R_TERM" = "Apple_Terminal" ] && jump_terminal_app "$R_TTY" >/dev/null 2>&1; then return 0; fi
+  # generic: no tab-level driver for this terminal — at least bring the
+  # right app forward instead of opening an iTerm resume tab
+  if [ -n "$R_TERM" ]; then
+    case "$R_TERM" in
+      iTerm.app) open -a iTerm 2>/dev/null && return 0 ;;
+      Apple_Terminal) open -a Terminal 2>/dev/null && return 0 ;;
+      WezTerm) open -a WezTerm 2>/dev/null && return 0 ;;
+      ghostty|Ghostty) open -a Ghostty 2>/dev/null && return 0 ;;
+      vscode) open -a "Visual Studio Code" 2>/dev/null && return 0 ;;
+      *) open -a "${R_TERM%.app}" 2>/dev/null && return 0 ;;
+    esac
+  fi
   return 1
 }
 
