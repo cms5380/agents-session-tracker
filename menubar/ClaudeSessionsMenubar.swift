@@ -104,16 +104,25 @@ final class Model: ObservableObject {
     }
 
     @Published var archive: [Session] = []
+    @Published var archiveSearching = false
     private var archiveTask: DispatchWorkItem?
 
     func searchArchive(_ query: String) {
         archiveTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 2 else { archive = []; return }
+        guard q.count >= 2, !q.hasPrefix(">") else {
+            archive = []
+            archiveSearching = false
+            return
+        }
+        archiveSearching = true
         let work = DispatchWorkItem { [weak self] in
             let out = runCST(["archive-search", q], capture: true)
             let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
-            DispatchQueue.main.async { self?.archive = parsed }
+            DispatchQueue.main.async {
+                self?.archive = parsed
+                self?.archiveSearching = false
+            }
         }
         archiveTask = work
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
@@ -950,7 +959,9 @@ struct PanelView: View {
             }
             let liveIds = Set(model.sessions.map { $0.session_id })
             let archived = model.archive.filter { !liveIds.contains($0.session_id) }
-            if !archived.isEmpty {
+            if model.archiveSearching {
+                out.append(.label("ARCHIVE — 검색 중…"))
+            } else if !archived.isEmpty {
                 out.append(.label("ARCHIVE"))
                 out += archived.map { .session($0, indented: false) }
             }

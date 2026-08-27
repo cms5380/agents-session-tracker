@@ -582,8 +582,9 @@ case "${1:-list}" in
     while IFS= read -r t; do
       [ -n "$t" ] || continue
       sid=$(basename "$t" .jsonl)
-      # skip sessions already shown live
+      # skip live sessions and subagent transcripts
       [ -f "$STATE_DIR/$sid.json" ] && continue
+      case "$sid" in agent-*) continue ;; esac
       cwd=$(head -n 5 "$t" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | grep -m1 . || true)
       title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
       if [ -z "$title" ]; then
