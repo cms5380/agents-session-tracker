@@ -746,35 +746,45 @@ case "${1:-list}" in
     # so the terminal returns to a shell and SessionEnd fires cleanly.
     [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
     entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
-    iterm_id=""
-    attach_title=""
     if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
+      # interrupt the running turn only (like Ctrl+C) — claude stays at the
+      # prompt; remember the tab for a later full 'end'
       cpid=$(jq -r '.pid // empty' <<<"$entry")
       if [ -n "$cpid" ]; then
-        # remember the hosting tab so a later 'end' can close it
         iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
           | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
-        kill -TERM "$cpid" 2>/dev/null || true
+        kill -INT "$cpid" 2>/dev/null || true
+        f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+        if [ -n "$f" ] && [ -n "$iterm_id" ]; then
+          jq --arg it "$iterm_id" '.terminal.iterm_session_id = $it' \
+            "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+        fi
       fi
     else
       # claude stop takes the short job id (first 8 chars of the session id)
       claude stop "${2:0:8}" >/dev/null 2>&1 || true
       attach_title=$(jq -r '.name // empty' <<<"$entry")
-    fi
-    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
-    if [ -n "$f" ]; then
-      jq --arg it "$iterm_id" --arg at "$attach_title" \
-        '.status = "gone" | .owner = "client"
-         | if $it != "" then .terminal.iterm_session_id = $it else . end
-         | if $at != "" then .attach_title = $at else . end' \
-        "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+      f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+      if [ -n "$f" ]; then
+        jq --arg at "$attach_title" \
+          '.status = "gone" | .owner = "client"
+           | if $at != "" then .attach_title = $at else . end' \
+          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+      fi
     fi
     rm -f "$AGENTS_CACHE"
     ;;
   end)
     # cst end <session-id> — stop (if needed), drop from view, close its tab
     [ $# -ge 2 ] || { echo "usage: cst end <session-id>" >&2; exit 1; }
-    claude stop "${2:0:8}" >/dev/null 2>&1 || true
+    entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
+    if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
+      cpid=$(jq -r '.pid // empty' <<<"$entry")
+      [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
+      sleep 0.3
+    else
+      claude stop "${2:0:8}" >/dev/null 2>&1 || true
+    fi
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     if [ -n "$f" ]; then
       it=$(jq -r '.terminal.iterm_session_id // empty' "$f")
