@@ -824,7 +824,7 @@ struct PanelView: View {
     @State private var lastSessionSid: String? = nil
     @State private var sessionDropTarget: String? = nil
     @State private var draggingSessionSid: String? = nil
-    @AppStorage("groupLayout") private var groupLayout = "inbox" // inbox | chips | grid
+    private let groupLayout = "chips" // chips is the one true layout
     @State private var selectedChip: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
@@ -1668,16 +1668,6 @@ struct PanelView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
-                Menu {
-                    Button("리스트 (inbox)") { groupLayout = "inbox" }
-                    Button("칩 필터") { groupLayout = "chips" }
-                } label: {
-                    Image(systemName: groupLayout == "chips" ? "tag" : "list.bullet")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .foregroundStyle(.secondary)
-                .help("그룹 레이아웃")
                 if model.refreshing {
                     ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 16, height: 16)
                 } else {
