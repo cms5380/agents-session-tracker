@@ -756,6 +756,7 @@ struct PanelView: View {
     @State private var messageText = ""
     @State private var dropTarget: String? = nil
     @State private var draggingGroup: String? = nil
+    @State private var followSid: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
     @State private var selected = 0
@@ -1391,6 +1392,18 @@ struct PanelView: View {
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
         )
+        .onChange(of: model.sessions) { _ in
+            // follow a session whose row moved between sections (e.g. stopped)
+            guard let sid = followSid else { return }
+            if let s = model.sessions.first(where: { $0.session_id == sid }) {
+                expanded.insert(s.group ?? "__ungrouped__")
+                if let idx = rows.firstIndex(where: { $0.id == sid }) {
+                    selected = idx
+                    scrollTarget = sid
+                }
+            }
+            followSid = nil
+        }
         .onChange(of: model.focusTick) { _ in
             query = ""
             selected = 0
@@ -1421,6 +1434,9 @@ struct PanelView: View {
                     if s.status == "gone" {
                         model.endSession(s.session_id)
                     } else if s.kind == "background" {
+                        // the row will move out of ATTENTION into its group —
+                        // keep the highlight on it
+                        followSid = s.session_id
                         model.stopSession(s.session_id)
                     } else {
                         return false
