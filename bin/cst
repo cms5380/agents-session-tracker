@@ -630,24 +630,19 @@ case "${1:-list}" in
       | grep -v '^\s*$' | tail -n 8 | head -c 600 || true
     ;;
   send)
-    # cst send <session-id> <message…> — run one headless turn, notify when done
+    # cst send <session-id> <message…> — run one headless turn in the
+    # background; the panel's status tracking shows the result
     [ $# -ge 3 ] || { echo "usage: cst send <session-id> <message>" >&2; exit 1; }
     sid="$2"; shift 2; msg="$*"
     f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
     cwd=$([ -n "$f" ] && jq -r '.cwd // empty' "$f" || echo "$HOME")
-    title=$([ -n "$f" ] && jq -r '(.title // "session")[:30]' "$f" || echo "session")
     agent=$([ -n "$f" ] && jq -r '.agent // "claude"' "$f" || echo "claude")
     (
       cd "$cwd" 2>/dev/null || cd "$HOME"
       if [ "$agent" = "codex" ]; then
-        run_turn() { codex exec resume "$sid" "$msg" --skip-git-repo-check </dev/null; }
+        codex exec resume "$sid" "$msg" --skip-git-repo-check </dev/null
       else
-        run_turn() { claude -p --resume "$sid" "$msg"; }
-      fi
-      if run_turn >/dev/null 2>&1; then
-        osascript -e "display notification \"응답 완료 — 패널에서 확인\" with title \"$title\"" 2>/dev/null
-      else
-        osascript -e "display notification \"전송 실패 (세션이 busy일 수 있음)\" with title \"$title\"" 2>/dev/null
+        claude -p --resume "$sid" "$msg"
       fi
     ) >/dev/null 2>&1 &
     disown 2>/dev/null || true
