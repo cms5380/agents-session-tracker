@@ -20,6 +20,7 @@ struct Session: Decodable, Identifiable, Equatable {
     let group_color: String?
     let group_order: Int?
     let sort_order: Int?
+    let agent: String?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
 }
@@ -472,13 +473,52 @@ func mascotFrames(_ status: String) -> (frames: [[String]], interval: Double, ti
     }
 }
 
+// ── codex mascot ─────────────────────────────────────────────────
+// the Codex logo as a pixel blob: cloud-flower body with a white >_
+let codexBlue = Color(red: 0.42, green: 0.42, blue: 0.93)
+let codexMap: [String] = [
+    "....oooooooo....",
+    "..oooooooooooo..",
+    ".oooooooooooooo.",
+    "oooowooooooooooo",
+    "ooooowoooooooooo",
+    "oooowooooooooooo",
+    "oooooooowwwwoooo",
+    ".oooooooooooooo.",
+    "..oooooooooooo..",
+    "....oooooooo....",
+]
+
+func codexFrames(_ status: String) -> (frames: [[String]], interval: Double, tint: Color) {
+    let empty = String(repeating: ".", count: 16)
+    let body = codexMap
+    switch status {
+    case "running": // the blob bounces like the claude mascot does
+        return ([[empty] + body, body + [empty]], 0.35, codexBlue)
+    case "waiting":
+        let alert = ".......!!......."
+        return ([[alert] + body, [empty] + body], 0.4, codexBlue)
+    case "input":
+        let q = ".......??......."
+        return ([[q] + body, [empty] + body], 0.6, codexBlue)
+    case "finished":
+        let sparks = ".g............g."
+        return ([[sparks] + body, [empty] + body], 0.45, codexBlue)
+    case "gone":
+        return ([[empty] + body], 1, codexBlue.opacity(0.55))
+    default:
+        return ([[empty] + body], 1, codexBlue.opacity(0.85))
+    }
+}
+
 struct StatusMascot: View {
     let status: String
+    var agent: String = "claude"
     var animate: Bool = true
     var pixel: CGFloat = 1.5
 
     var body: some View {
-        let spec = mascotFrames(status)
+        let spec = agent == "codex" ? codexFrames(status) : mascotFrames(status)
         // panel hidden → render a static frame; a ticking TimelineView in an
         // ordered-out window still burns CPU
         if !animate {
@@ -502,6 +542,7 @@ struct StatusMascot: View {
                 drawPixelMap(cg, map: frame, pixel: px) { ch in
                     switch ch {
                     case "o": return NSColor(tint)
+                    case "w": return .white
                     case "g": return .systemGreen
                     case "?": return .systemBlue
                     case "!": return .systemOrange
@@ -517,8 +558,8 @@ struct StatusMascot: View {
 }
 
 @ViewBuilder
-func statusGlyph(_ status: String, animate: Bool = true) -> some View {
-    StatusMascot(status: status, animate: animate)
+func statusGlyph(_ status: String, agent: String = "claude", animate: Bool = true) -> some View {
+    StatusMascot(status: status, agent: agent, animate: animate)
 }
 
 func statusColor(_ status: String) -> Color {
@@ -596,7 +637,7 @@ struct SessionRow: View {
                     .foregroundStyle(.secondary)
                     .help("⌘\(n)")
             }
-            statusGlyph(isStopping ? "done" : s.status, animate: animate)
+            statusGlyph(isStopping ? "done" : s.status, agent: s.agent ?? "claude", animate: animate)
             VStack(alignment: .leading, spacing: 1) {
                 if isRenaming {
                     TextField("session name (empty = auto)", text: $renameDraft)
@@ -857,7 +898,7 @@ struct PanelView: View {
                            title: s.title, message: s.message, updated_at: s.updated_at,
                            bg: s.bg, kind: s.kind, group: s.group, pin_order: s.pin_order,
                            group_color: s.group_color, group_order: s.group_order,
-                           sort_order: s.sort_order)
+                           sort_order: s.sort_order, agent: s.agent)
         }
     }
 

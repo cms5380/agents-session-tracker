@@ -15,16 +15,32 @@ cwd=$(jq -r '.cwd // empty' <<<"$input")
 message=$(jq -r '.message // empty' <<<"$input")
 transcript=$(jq -r '.transcript_path // empty' <<<"$input")
 
+# which agent produced this session — codex writes rollout files under
+# ~/.codex/sessions and speaks the same hook protocol
+agent="claude"
+case "$transcript" in */.codex/*) agent="codex" ;; esac
+
 # human-readable session title: first user prompt (immutable), else the
 # transcript summary — summaries evolve every few turns and made names churn
 title=""
 if [ -n "$transcript" ] && [ -f "$transcript" ]; then
-  title=$( (head -n 80 "$transcript" 2>/dev/null \
-    | jq -r 'select(.type=="user") | .message.content
-             | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
-    | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-80) || true)
-  if [ -z "$title" ]; then
-    title=$( (grep '"type":"summary"' "$transcript" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
+  if [ "$agent" = "codex" ]; then
+    # skip injected context messages (they start with an <xml-ish> tag) at the
+    # message level — their bodies span lines that a line filter would keep
+    title=$( (head -n 200 "$transcript" 2>/dev/null \
+      | jq -r 'select(.type=="response_item") | .payload
+               | select(.type=="message" and .role=="user")
+               | ((.content // []) | map(select(.type=="input_text")) | first // {}).text // empty
+               | select(length > 0) | select(startswith("<") | not)' 2>/dev/null \
+      | head -n 1 | cut -c1-80) || true)
+  else
+    title=$( (head -n 80 "$transcript" 2>/dev/null \
+      | jq -r 'select(.type=="user") | .message.content
+               | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
+      | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-80) || true)
+    if [ -z "$title" ]; then
+      title=$( (grep '"type":"summary"' "$transcript" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
+    fi
   fi
 fi
 
@@ -43,18 +59,34 @@ case "$event" in
       *) status="" ;;
     esac
     ;;
+  # codex asks for tool approval via its own PermissionRequest hook event
+  PermissionRequest) status="waiting" ;;
   Stop) status="finished" ;;
   SessionEnd) status="ended" ;;
   *) status="running" ;;
 esac
 
-# tty of the claude process (hook's parent) — Terminal.app fallback driver uses it
-claude_tty=$(ps -o tty= -p "$PPID" 2>/dev/null | tr -d ' ' || true)
+# the owning agent process. Claude runs hooks as a direct child; codex runs
+# them via a $SHELL -lc wrapper, so walk up until the codex process is found
+owner_pid="$PPID"
+if [ "$agent" = "codex" ]; then
+  p="$PPID"
+  for _ in 1 2 3; do
+    cmd=$(ps -o command= -p "$p" 2>/dev/null || true)
+    case "$cmd" in *codex*) owner_pid="$p"; break ;; esac
+    np=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ' || true)
+    case "$np" in ''|0|1) break ;; esac
+    p="$np"
+  done
+fi
+
+# tty of the agent process — Terminal.app fallback driver uses it
+claude_tty=$(ps -o tty= -p "$owner_pid" 2>/dev/null | tr -d ' ' || true)
 [ "$claude_tty" = "??" ] && claude_tty=""
 
 # classify the owning process so phantom sessions (spawned by agents-view
 # TUIs / the spare pool) can be told apart from real clients after death
-owner_cmd=$(ps -o command= -p "$PPID" 2>/dev/null || true)
+owner_cmd=$(ps -o command= -p "$owner_pid" 2>/dev/null || true)
 case "$owner_cmd" in
   *bg-spare*|*bg-pty-host*|*"claude agents"*) owner="pool" ;;
   *) owner="client" ;;
@@ -85,15 +117,17 @@ jq -n \
   --arg tmux_pane "${TMUX_PANE:-}" \
   --arg tty "$claude_tty" \
   --arg app "$app" \
-  --arg pid "$PPID" \
+  --arg pid "$owner_pid" \
   --arg owner "$owner" \
   --arg title "$title" \
   --arg transcript "$transcript" \
+  --arg agent "$agent" \
   '$prev * {
     session_id: $session_id,
     last_event: $event,
     pid: ($pid | tonumber),
     owner: $owner,
+    agent: $agent,
     updated_at: ($updated_at | tonumber)
   }
   | .status = (if $status == "" then (.status // "running") else $status end)

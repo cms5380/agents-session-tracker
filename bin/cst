@@ -236,8 +236,17 @@ APPLESCRIPT
   fi
 }
 
+resume_command() { # $1=session id → the agent-appropriate resume command
+  local f="$STATE_DIR/$1.json"
+  if [ -f "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
+    printf 'codex resume %s' "$1"
+  else
+    printf 'claude --resume %s' "$1"
+  fi
+}
+
 open_resume_tab() { # $1=cwd, $2=session id
-  open_tab_with "cd $(shquote "$1") && claude --resume $2"
+  open_tab_with "cd $(shquote "$1") && $(resume_command "$2")"
 }
 
 # The hub: one persistent terminal tab running the 'claude agents' dashboard.
@@ -394,6 +403,8 @@ cmd_jump() {
   app=$(jq -r '.terminal.app // empty' "$file")
   pid=$(jq -r '.pid // empty' "$file")
   cwd=$(jq -r '.cwd // empty' "$file")
+  local agent
+  agent=$(jq -r '.agent // "claude"' "$file")
 
   if [ "$app" = "vscode" ]; then
     open -a "Visual Studio Code" "$cwd" 2>/dev/null && exit 0
@@ -404,6 +415,12 @@ cmd_jump() {
   if [ -n "$iterm_id" ] && jump_iterm "$iterm_id" >/dev/null 2>&1; then exit 0; fi
   if [ -n "$tmux_pane" ] && jump_tmux "$tmux_pane" "$term_program"; then exit 0; fi
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
+
+  # recorded handles thin (codex sanitizes hook env) but the client process
+  # is alive — read its environment for the terminal identity
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && read_pid_env "$pid" && jump_resolved; then
+    exit 0
+  fi
 
   # one daemon lookup (cache-first), reused for every remaining strategy
   local agents entry kind daemon_pid agent_name
@@ -443,9 +460,9 @@ cmd_jump() {
   # fallback: no live terminal (desktop session etc.) — resume in a new tab
   if open_resume_tab "$cwd" "$sid" >/dev/null 2>&1; then exit 0; fi
 
-  printf 'cd %s && claude --resume %s' "$cwd" "$sid" | pbcopy 2>/dev/null || true
+  printf 'cd %s && %s' "$cwd" "$(resume_command "$sid")" | pbcopy 2>/dev/null || true
   osascript -e "display notification \"resume 명령 복사됨 — 터미널에 붙여넣으세요\" with title \"터미널 핸들 없는 세션\" subtitle \"${cwd/#$HOME/~}\"" 2>/dev/null || true
-  echo "no jump handle for $sid — resume command copied: cd $cwd && claude --resume $sid" >&2
+  echo "no jump handle for $sid — resume command copied: cd $cwd && $(resume_command "$sid")" >&2
   exit 1
 }
 
@@ -455,8 +472,8 @@ cmd_copy_resume() {
   [ -f "$file" ] || { echo "unknown session: $sid" >&2; exit 1; }
   local cwd
   cwd=$(jq -r '.cwd // empty' "$file")
-  printf 'cd %s && claude --resume %s' "$cwd" "$sid" | pbcopy
-  osascript -e "display notification \"cd ${cwd/#$HOME/~} && claude --resume …\" with title \"resume command copied\"" 2>/dev/null || true
+  printf 'cd %s && %s' "$cwd" "$(resume_command "$sid")" | pbcopy
+  osascript -e "display notification \"cd ${cwd/#$HOME/~} && resume …\" with title \"resume command copied\"" 2>/dev/null || true
 }
 
 cmd_clean() {
@@ -810,6 +827,30 @@ case "${1:-list}" in
     # (resumable). Background: claude stop. Interactive: SIGTERM the client
     # so the terminal returns to a shell and SessionEnd fires cleanly.
     [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
+    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    if [ -n "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
+      # codex is unknown to the claude daemon — drive it from the record
+      cpid=$(jq -r '.pid // empty' "$f")
+      rstatus=$(jq -r '.status // empty' "$f")
+      iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$f")
+      if [ -z "$iterm_id" ] && [ -n "$cpid" ]; then
+        iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
+          | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+      fi
+      if [ "$rstatus" = "running" ]; then
+        [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" || true
+        jq --arg it "$iterm_id" \
+          '.status = "done" | if $it != "" then .terminal.iterm_session_id = $it else . end' \
+          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+      else
+        jq --arg it "$iterm_id" \
+          '.status = "gone" | .owner = "client"
+           | if $it != "" then .terminal.iterm_session_id = $it else . end' \
+          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+      fi
+      rm -f "$AGENTS_CACHE"
+      exit 0
+    fi
     entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
     if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
       cpid=$(jq -r '.pid // empty' <<<"$entry")
@@ -855,13 +896,20 @@ case "${1:-list}" in
   end)
     # cst end <session-id> — stop (if needed), drop from view, close its tab
     [ $# -ge 2 ] || { echo "usage: cst end <session-id>" >&2; exit 1; }
-    entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
-    if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
-      cpid=$(jq -r '.pid // empty' <<<"$entry")
+    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    if [ -n "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
+      cpid=$(jq -r '.pid // empty' "$f")
       [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
       sleep 0.3
     else
-      claude stop "${2:0:8}" >/dev/null 2>&1 || true
+      entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
+      if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
+        cpid=$(jq -r '.pid // empty' <<<"$entry")
+        [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
+        sleep 0.3
+      else
+        claude stop "${2:0:8}" >/dev/null 2>&1 || true
+      fi
     fi
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     if [ -n "$f" ]; then
