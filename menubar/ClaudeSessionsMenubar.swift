@@ -663,7 +663,7 @@ struct SessionRow: View {
                     .foregroundStyle(claudeOrange.opacity(0.7))
             }
             if isStopping {
-                Text("중지됨")
+                Text("중지됨 · ⌃X 한번 더 = 종료")
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Capsule().fill(Color(nsColor: .systemGray).opacity(0.18)))
