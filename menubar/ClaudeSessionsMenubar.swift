@@ -1966,6 +1966,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.action = #selector(togglePanel)
         statusItem.button?.target = self
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        buildMenubarImages()
         updateTitle(sessions: [])
         model.start()
         registerHotkey()
@@ -2020,6 +2022,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     var keyMonitor: Any?
 
     @objc func togglePanel() {
+        if NSApp.currentEvent?.type == .rightMouseUp { showMenubarMenu(); return }
         if panel.isVisible { hidePanel() } else { showPanel() }
     }
 
@@ -2152,23 +2155,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     // menubar mascot frames: static idle pose + the running bounce, all
-    // 11 rows tall so swapping frames never shifts the icon's baseline
-    lazy var menubarStaticImage: NSImage = {
-        let empty = String(repeating: ".", count: 16)
-        return mascotNSImage(map: [empty] + mascotMap, pixel: 1.2)
-    }()
-    lazy var menubarStatusFrames: [String: [NSImage]] = {
-        var d: [String: [NSImage]] = [:]
-        for st in ["running", "waiting"] {
-            d[st] = mascotFrames(st).frames.map { mascotNSImage(map: $0, pixel: 1.2) }
-        }
-        return d
-    }()
+    // 11 rows tall so swapping frames never shifts the icon's baseline.
+    // The mascot itself is user-selectable (right-click → Claude / Codex).
+    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
+    var menubarStaticImage = NSImage()
+    var menubarStatusFrames: [String: [NSImage]] = [:]
     var menubarStatus: String?
     var menubarTimer: Timer?
     var menubarFrameIdx = 0
+    var lastSessions: [Session] = []
+
+    func buildMenubarImages() {
+        let empty = String(repeating: ".", count: 16)
+        let codex = menubarAgent == "codex"
+        menubarStaticImage = mascotNSImage(map: [empty] + (codex ? codexMap : mascotMap), pixel: 1.2)
+        menubarStatusFrames = [:]
+        for st in ["running", "waiting"] {
+            let frames = (codex ? codexFrames(st) : mascotFrames(st)).frames
+            menubarStatusFrames[st] = frames.map { mascotNSImage(map: $0, pixel: 1.2) }
+        }
+    }
+
+    @objc func chooseMenubarClaude() { setMenubarAgent("claude") }
+    @objc func chooseMenubarCodex() { setMenubarAgent("codex") }
+    func setMenubarAgent(_ agent: String) {
+        menubarAgent = agent
+        UserDefaults.standard.set(agent, forKey: "menubarAgent")
+        buildMenubarImages()
+        menubarStatus = "__rebuild__" // force the timer + image to reset
+        updateTitle(sessions: lastSessions)
+    }
+
+    func showMenubarMenu() {
+        let menu = NSMenu()
+        let c = NSMenuItem(title: "메뉴바 아이콘: Claude", action: #selector(chooseMenubarClaude), keyEquivalent: "")
+        c.target = self
+        c.state = menubarAgent == "claude" ? .on : .off
+        let x = NSMenuItem(title: "메뉴바 아이콘: Codex", action: #selector(chooseMenubarCodex), keyEquivalent: "")
+        x.target = self
+        x.state = menubarAgent == "codex" ? .on : .off
+        menu.addItem(c)
+        menu.addItem(x)
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil // left-clicks keep toggling the panel
+    }
 
     func updateTitle(sessions: [Session]) {
+        lastSessions = sessions
         guard let button = statusItem.button else { return }
         // most attention-worthy state wins: approval ask > running
         let statuses = Set(sessions.map(\.status))
