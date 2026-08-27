@@ -19,6 +19,7 @@ struct Session: Decodable, Identifiable, Equatable {
     let pin_order: Int?
     let group_color: String?
     let group_order: Int?
+    let sort_order: Int?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
 }
@@ -189,6 +190,13 @@ final class Model: ObservableObject {
     func pinInsert(_ sid: String, before: String) {
         DispatchQueue.global().async {
             runCST(["pin-insert", sid, before])
+            self.refresh()
+        }
+    }
+
+    func orderInsert(_ sid: String, before: String) {
+        DispatchQueue.global().async {
+            runCST(["order-insert", sid, before])
             self.refresh()
         }
     }
@@ -841,7 +849,8 @@ struct PanelView: View {
             return Session(session_id: s.session_id, status: "done", cwd: s.cwd,
                            title: s.title, message: s.message, updated_at: s.updated_at,
                            bg: s.bg, kind: s.kind, group: s.group, pin_order: s.pin_order,
-                           group_color: s.group_color, group_order: s.group_order)
+                           group_color: s.group_color, group_order: s.group_order,
+                           sort_order: s.sort_order)
         }
     }
 
@@ -1107,7 +1116,13 @@ struct PanelView: View {
         ]
         for (st, label) in sections {
             let members = pool.filter { $0.status == st }
-                .sorted { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }
+                .sorted { a, b in
+                    // manual order first, then recency
+                    let oa = a.sort_order ?? Int.max
+                    let ob = b.sort_order ?? Int.max
+                    if oa != ob { return oa < ob }
+                    return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+                }
             if members.isEmpty { continue }
             out.append(.label(label))
             out += members.map { .session($0, indented: false) }
@@ -1389,8 +1404,10 @@ struct PanelView: View {
                                   animate: model.panelVisible,
                                   isRenaming: renamingSession?.session_id == s.session_id,
                                   isStopping: stoppingSids.contains(s.session_id),
-                                  insertLine: s.pinned && sessionDropTarget == s.session_id,
-                                  dropHighlight: !s.pinned && sessionDropTarget == s.session_id,
+                                  insertLine: sessionDropTarget == s.session_id
+                                      && (s.pinned || draggedSameStatus(as: s)),
+                                  dropHighlight: !s.pinned && sessionDropTarget == s.session_id
+                                      && !draggedSameStatus(as: s),
                                   onDragBegin: { draggingSessionSid = s.session_id },
                                   onRename: { sess in
                                       renamingSession = sess
@@ -1418,11 +1435,16 @@ struct PanelView: View {
                         : (sessionDropTarget == s.session_id ? nil : sessionDropTarget)
                 }
             } else {
-                // dropping onto any other session moves the dragged one into
-                // that session's group (or ungroups it)
+                // same-status drop = reorder within the section; otherwise the
+                // dragged session joins this session's group
                 base.dropDestination(for: String.self) { items, _ in
                     if let d = items.first, d != s.session_id, !d.hasPrefix("group:") {
-                        model.assign(d, to: s.group)
+                        let draggedStatus = viewSessions.first(where: { $0.session_id == d })?.status
+                        if draggedStatus == s.status {
+                            model.orderInsert(d, before: s.session_id)
+                        } else {
+                            model.assign(d, to: s.group)
+                        }
                     }
                     sessionDropTarget = nil
                     draggingSessionSid = nil
@@ -1433,6 +1455,12 @@ struct PanelView: View {
                 }
             }
         }
+    }
+
+    func draggedSameStatus(as s: Session) -> Bool {
+        guard let d = draggingSessionSid,
+              let dragged = viewSessions.first(where: { $0.session_id == d }) else { return false }
+        return dragged.status == s.status
     }
 
     // the group a session-onto-session drop would land in — used to co-

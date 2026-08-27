@@ -539,10 +539,13 @@ cmd_sessions_json() {
   jq -e . >/dev/null 2>&1 <<<"$colors_json" || colors_json='{}'
   order_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$order_json" || order_json='[]'
+  local sorder_json
+  sorder_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json" 2>/dev/null || echo '[]')
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$sorder_json" || sorder_json='[]'
   jq --argjson extra "$extra" --argjson agents "$agents_json" \
      --argjson groups "$groups_json" --argjson names "$names_json" \
      --argjson pins "$pins_json" --argjson colors "$colors_json" \
-     --argjson gorder "$order_json" '
+     --argjson gorder "$order_json" --argjson sorder "$sorder_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
@@ -559,7 +562,8 @@ cmd_sessions_json() {
                title: ($names[.session_id] // .title),
                pin_order: (.session_id as $s | ($pins | index($s)))})
     | map(. + {group_color: (if .group then ($colors[.group] // null) else null end),
-               group_order: (if .group then (.group as $g | ($gorder | index($g))) else null end)})' <<<"$sessions"
+               group_order: (if .group then (.group as $g | ($gorder | index($g))) else null end),
+               sort_order: (.session_id as $s | ($sorder | index($s)))})' <<<"$sessions"
 }
 
 case "${1:-list}" in
@@ -688,6 +692,19 @@ case "${1:-list}" in
                status: "archived", updated_at: $mt}]' <<<"$out")
     done <<<"$hits"
     printf '%s\n' "$out"
+    ;;
+  order-insert)
+    # cst order-insert <sid> <before-sid|end> — manual ordering within
+    # status sections (session-order.json)
+    [ $# -ge 3 ] || { echo "usage: cst order-insert <sid> <before-sid|end>" >&2; exit 1; }
+    ORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json"
+    existing=$(cat "$ORDER_FILE" 2>/dev/null || echo '[]')
+    jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
+    jq --arg sid "$2" --arg before "$3" '
+      map(select(. != $sid))
+      | if $before == "end" then . + [$sid]
+        else (index($before) // length) as $i | .[:$i] + [$sid] + .[$i:] end' \
+      <<<"$existing" >"$ORDER_FILE.tmp" && mv "$ORDER_FILE.tmp" "$ORDER_FILE"
     ;;
   pin-insert)
     # cst pin-insert <sid> <before-sid|end> — reorder pins
