@@ -2113,27 +2113,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         let empty = String(repeating: ".", count: 16)
         return mascotNSImage(map: [empty] + mascotMap, pixel: 1.2)
     }()
-    lazy var menubarRunFrames: [NSImage] =
-        mascotFrames("running").frames.map { mascotNSImage(map: $0, pixel: 1.2) }
+    lazy var menubarStatusFrames: [String: [NSImage]] = {
+        var d: [String: [NSImage]] = [:]
+        for st in ["running", "waiting", "input"] {
+            d[st] = mascotFrames(st).frames.map { mascotNSImage(map: $0, pixel: 1.2) }
+        }
+        return d
+    }()
+    var menubarStatus: String?
     var menubarTimer: Timer?
     var menubarFrameIdx = 0
 
     func updateTitle(sessions: [Session]) {
         guard let button = statusItem.button else { return }
-        // any session mid-turn → the menubar mascot bounces along
-        let running = sessions.contains { $0.status == "running" }
-        if running {
-            if menubarTimer == nil {
-                menubarTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
-                    guard let self else { return }
-                    self.menubarFrameIdx = (self.menubarFrameIdx + 1) % self.menubarRunFrames.count
-                    self.statusItem.button?.image = self.menubarRunFrames[self.menubarFrameIdx]
-                }
-            }
-            button.image = menubarRunFrames[menubarFrameIdx]
-        } else {
+        // most attention-worthy state wins: approval ask > reply waiting > running
+        let statuses = Set(sessions.map(\.status))
+        let active = ["waiting", "input", "running"].first { statuses.contains($0) }
+        if active != menubarStatus {
+            menubarStatus = active
+            menubarFrameIdx = 0
             menubarTimer?.invalidate()
             menubarTimer = nil
+            if let st = active, let frames = menubarStatusFrames[st], frames.count > 1 {
+                let interval = ["running": 0.35, "waiting": 0.4, "input": 0.6][st] ?? 0.4
+                menubarTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+                    guard let self, let st = self.menubarStatus,
+                          let fr = self.menubarStatusFrames[st] else { return }
+                    self.menubarFrameIdx = (self.menubarFrameIdx + 1) % fr.count
+                    self.statusItem.button?.image = fr[self.menubarFrameIdx]
+                }
+            }
+        }
+        if let st = active, let fr = menubarStatusFrames[st] {
+            button.image = fr[menubarFrameIdx % fr.count]
+        } else {
             button.image = menubarStaticImage
         }
         // only sessions blocked on an approval (permission prompt)
