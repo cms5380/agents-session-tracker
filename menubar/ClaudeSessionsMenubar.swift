@@ -372,8 +372,10 @@ func mascotNSImage(map: [String], pixel: CGFloat) -> NSImage {
         cg.setShouldAntialias(false)
         // template image — the menubar tints it like every other icon
         cg.setFillColor(NSColor.black.cgColor)
+        // "w" cells are knocked out (transparent) — a monochrome template
+        // can't show the white >_ any other way
         for (y, row) in map.enumerated() {
-            for (x, ch) in row.enumerated() where ch != "." {
+            for (x, ch) in row.enumerated() where ch != "." && ch != "w" {
                 cg.fill(CGRect(x: CGFloat(x) * px,
                                y: size.height - CGFloat(y + 1) * px,
                                width: px, height: px))
@@ -480,10 +482,10 @@ let codexMap: [String] = [
     "......oooo......",
     ".....oooooo.....",
     "....oooooooo....",
-    "...oowooooooo...",
-    "...ooowoooooo...",
-    "...oowooooooo...",
-    "...ooooowwwoo...",
+    "...owwooooooo...",
+    "...oowwoooooo...",
+    "...owwooooooo...",
+    "...oooowwwwoo...",
     "....oooooooo....",
     ".....oooooo.....",
     "......oooo......",
