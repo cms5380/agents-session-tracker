@@ -646,8 +646,8 @@ struct SessionRow: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 9))
         .onHover { hovering = $0 }
+        .onDrag { NSItemProvider(object: s.session_id as NSString) }
         .onTapGesture { model.jump(s) }
-        .draggable(s.session_id)
         .contextMenu {
             Button("Jump  ↩") { model.jump(s) }
             if s.status != "archived" {
