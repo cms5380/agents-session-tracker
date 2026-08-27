@@ -66,6 +66,7 @@ final class Model: ObservableObject {
     var arrowLR: ((Int) -> Bool)?
     var hotkeyNumber: ((Int) -> Void)?
     var enterKey: ((Bool) -> Void)?  // arg: ⌘ held (alternate agent)
+    var isTextEditing: (() -> Bool)?  // an inline editor owns the keyboard
     var messageSelected: (() -> Void)?
     var actionKey: ((String) -> Bool)?
     var timer: Timer?
@@ -2029,6 +2030,10 @@ struct PanelView: View {
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
             model.enterKey = { activateSelected(alt: $0) }
+            model.isTextEditing = {
+                renamingSession != nil || editingCommand || messagingSession != nil
+                    || renaming != nil || addingGroup
+            }
             model.actionKey = { action in
                 if case .label? = rows[safe: selected] { selected = firstSelectable() }
                 // on a group header: expand it and step into the first member,
@@ -2201,6 +2206,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         // focus — intercept them at the event level while the panel is key
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel.isKeyWindow else { return event }
+            // an inline editor (rename, command editor, quick prompt…) owns
+            // arrows and tab — don't steal them for list navigation
+            if self.model.isTextEditing?() == true { return event }
             switch event.keyCode {
             case 125: self.model.moveSelection?(1); return nil // down
             case 126: self.model.moveSelection?(-1); return nil // up
