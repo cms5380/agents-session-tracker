@@ -421,8 +421,11 @@ cmd_jump() {
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
 
   # recorded handles thin (codex sanitizes hook env) but the client process
-  # is alive — read its environment for the terminal identity
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && read_pid_env "$pid" && jump_resolved; then
+  # is alive — read its environment for the terminal identity. Pool-owned
+  # pids (daemon spare processes) carry the daemon's env, not a terminal's —
+  # trusting them "succeeds" by just raising the app with no tab focus.
+  if [ "$(jq -r '.owner // ""' "$file")" = "client" ] \
+     && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && read_pid_env "$pid" && jump_resolved; then
     exit 0
   fi
 
