@@ -329,43 +329,36 @@ let mascotMap: [String] = [
 
 // Cells snapped to shared integer edges + antialiasing off — fractional
 // cell sizes otherwise leave hairline seams on non-retina/scaled displays.
-// mirror-symmetric column edges: rounding fractional cells independently
-// made the two mascot eyes differ by a device pixel
-func symmetricEdges(_ count: Int, _ pixel: CGFloat) -> [CGFloat] {
-    var edges = [CGFloat](repeating: 0, count: count + 1)
-    let total = (CGFloat(count) * pixel).rounded()
-    for i in 0...(count / 2) {
-        edges[i] = (CGFloat(i) * pixel).rounded()
-        edges[count - i] = total - edges[i]
-    }
-    return edges
+// quantize a cell size to whole device pixels so every cell is identical —
+// per-cell rounding made eyes/legs differ by a pixel
+func quantizedPixel(_ pixel: CGFloat, scale: CGFloat) -> CGFloat {
+    max(1 / scale, (pixel * scale).rounded() / scale)
 }
 
 func drawPixelMap(_ cg: CGContext, map: [String], pixel: CGFloat,
                   colorFor: (Character) -> NSColor?) {
     cg.setShouldAntialias(false)
-    let cols = map.first?.count ?? 0
-    let xs = symmetricEdges(cols, pixel)
-    let ys = symmetricEdges(map.count, pixel)
     for (y, row) in map.enumerated() {
         for (x, ch) in row.enumerated() {
             guard let c = colorFor(ch) else { continue }
             cg.setFillColor(c.cgColor)
-            cg.fill(CGRect(x: xs[x], y: ys[y],
-                           width: xs[x + 1] - xs[x], height: ys[y + 1] - ys[y]))
+            cg.fill(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                           width: pixel, height: pixel))
         }
     }
 }
 
 struct PixelMascot: View {
     var pixel: CGFloat = 3
+    @Environment(\.displayScale) private var scale
     var body: some View {
+        let px = quantizedPixel(pixel, scale: scale)
         Canvas { ctx, _ in
             ctx.withCGContext { cg in
-                drawPixelMap(cg, map: mascotMap, pixel: pixel) { $0 == "o" ? claudeOrangeNS : nil }
+                drawPixelMap(cg, map: mascotMap, pixel: px) { $0 == "o" ? claudeOrangeNS : nil }
             }
         }
-        .frame(width: pixel * 16, height: pixel * 10)
+        .frame(width: px * 16, height: px * 10)
     }
 }
 
@@ -377,13 +370,12 @@ func mascotNSImage(pixel: CGFloat) -> NSImage {
         cg.setShouldAntialias(false)
         // template image — the menubar tints it like every other icon
         cg.setFillColor(NSColor.black.cgColor)
-        let xs = symmetricEdges(16, pixel)
-        let ys = symmetricEdges(10, pixel)
+        let px = quantizedPixel(pixel, scale: 2)
         for (y, row) in mascotMap.enumerated() {
             for (x, ch) in row.enumerated() where ch == "o" {
-                let h = ys[y + 1] - ys[y]
-                cg.fill(CGRect(x: xs[x], y: size.height - ys[y] - h,
-                               width: xs[x + 1] - xs[x], height: h))
+                cg.fill(CGRect(x: CGFloat(x) * px,
+                               y: size.height - CGFloat(y + 1) * px,
+                               width: px, height: px))
             }
         }
     }
@@ -501,10 +493,13 @@ struct StatusMascot: View {
         }
     }
 
+    @Environment(\.displayScale) private var scale
+
     func frameView(_ frame: [String], tint: Color) -> some View {
-        Canvas { ctx, _ in
+        let px = quantizedPixel(pixel, scale: scale)
+        return Canvas { ctx, _ in
             ctx.withCGContext { cg in
-                drawPixelMap(cg, map: frame, pixel: pixel) { ch in
+                drawPixelMap(cg, map: frame, pixel: px) { ch in
                     switch ch {
                     case "o": return NSColor(tint)
                     case "g": return .systemGreen
@@ -517,7 +512,7 @@ struct StatusMascot: View {
                 }
             }
         }
-        .frame(width: pixel * 16, height: pixel * 11)
+        .frame(width: px * 16, height: px * 11)
     }
 }
 
@@ -734,14 +729,16 @@ struct PixelGlyph: View {
     let map: [String]
     let color: Color
     var pixel: CGFloat = 2
+    @Environment(\.displayScale) private var scale
     var body: some View {
+        let px = quantizedPixel(pixel, scale: scale)
         Canvas { ctx, _ in
             ctx.withCGContext { cg in
-                drawPixelMap(cg, map: map, pixel: pixel) { $0 == "o" ? NSColor(color) : nil }
+                drawPixelMap(cg, map: map, pixel: px) { $0 == "o" ? NSColor(color) : nil }
             }
         }
-        .frame(width: pixel * CGFloat(map.first?.count ?? 8),
-               height: pixel * CGFloat(map.count))
+        .frame(width: px * CGFloat(map.first?.count ?? 8),
+               height: px * CGFloat(map.count))
     }
 }
 
