@@ -1106,7 +1106,6 @@ struct PanelView: View {
             out.append(.label("PINNED"))
             out += pinnedSessions.map { .session($0, indented: false) }
         }
-        if draggingSessionSid != nil { out.append(.dropzone("pin-end")) }
         let pool = filtered.filter { !$0.pinned }
             .filter { selectedChip == nil || $0.group == selectedChip }
         let sections: [(String, String)] = [
@@ -1181,7 +1180,6 @@ struct PanelView: View {
             out.append(.label("PINNED"))
             out += pinnedSessions.map { .session($0, indented: false) }
         }
-        if draggingSessionSid != nil { out.append(.dropzone("pin-end")) }
         if !attention.isEmpty {
             out.append(.label("ATTENTION"))
             out += attention.map { .session($0, indented: false) }
@@ -1420,11 +1418,18 @@ struct PanelView: View {
                 .padding(.leading, indented ? 16 : 0)
                 .id(r.id)
             if s.pinned && !searching {
-                base.dropDestination(for: String.self) { items, _ in
+                base.dropDestination(for: String.self) { items, location in
                     if let d = items.first, d != s.session_id, !d.hasPrefix("group:") {
-                        model.pinInsert(d, before: s.session_id)
+                        // dropping on the bottom half of the last pin = append
+                        let isLast = pinnedSessions.last?.session_id == s.session_id
+                        if isLast && location.y > 24 {
+                            model.pinInsert(d, before: "end")
+                        } else {
+                            model.pinInsert(d, before: s.session_id)
+                        }
                     }
                     sessionDropTarget = nil
+                    draggingSessionSid = nil
                     return true
                 } isTargeted: { over in
                     sessionDropTarget = over ? s.session_id
@@ -1433,11 +1438,15 @@ struct PanelView: View {
             } else {
                 // same-status drop = reorder within the section; otherwise the
                 // dragged session joins this session's group
-                base.dropDestination(for: String.self) { items, _ in
+                base.dropDestination(for: String.self) { items, location in
                     if let d = items.first, d != s.session_id, !d.hasPrefix("group:") {
                         let draggedStatus = viewSessions.first(where: { $0.session_id == d })?.status
                         if draggedStatus == s.status {
-                            model.orderInsert(d, before: s.session_id)
+                            if isLastInSection(s) && location.y > 24 {
+                                model.orderInsert(d, before: "end")
+                            } else {
+                                model.orderInsert(d, before: s.session_id)
+                            }
                         } else {
                             model.assign(d, to: s.group)
                         }
@@ -1451,6 +1460,20 @@ struct PanelView: View {
                 }
             }
         }
+    }
+
+    func manualThenRecent(_ a: Session, _ b: Session) -> Bool {
+        let oa = a.sort_order ?? Int.max
+        let ob = b.sort_order ?? Int.max
+        if oa != ob { return oa < ob }
+        return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+    }
+
+    func isLastInSection(_ s: Session) -> Bool {
+        let pool = filtered.filter { !$0.pinned && $0.status == s.status }
+            .filter { selectedChip == nil || $0.group == selectedChip }
+            .sorted(by: manualThenRecent)
+        return pool.last?.session_id == s.session_id
     }
 
     func draggedSameStatus(as s: Session) -> Bool {
