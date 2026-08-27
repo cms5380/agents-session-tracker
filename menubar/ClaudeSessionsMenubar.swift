@@ -1063,46 +1063,26 @@ struct PanelView: View {
         }
     }
 
-    // chips layout: pinned, then a flat status-sorted pool filtered by chip
+    // chips layout: pinned, then the chip-filtered pool in status sections
     var chipRows: [PanelRow] {
         var out: [PanelRow] = []
         if !pinnedSessions.isEmpty {
             out.append(.label("PINNED"))
             out += pinnedSessions.map { .session($0, indented: false) }
         }
-        let pool = statusSorted(filtered.filter { !$0.pinned }
-            .filter { selectedChip == nil || $0.group == selectedChip })
-        out += pool.map { .session($0, indented: false) }
-        return out
-    }
-
-    // grid layout: pinned + attention navigable; expanded groups' members
-    // appear below the card grid
-    var gridTopRows: [PanelRow] {
-        var out: [PanelRow] = []
-        if !pinnedSessions.isEmpty {
-            out.append(.label("PINNED"))
-            out += pinnedSessions.map { .session($0, indented: false) }
-        }
-        if !attention.isEmpty {
-            out.append(.label("ATTENTION"))
-            out += attention.map { .session($0, indented: false) }
-        }
-        return out
-    }
-
-    var gridExpandedRows: [PanelRow] {
-        var out: [PanelRow] = []
-        for g in groups where expanded.contains(g) {
-            let members = restMembers(g)
+        let pool = filtered.filter { !$0.pinned }
+            .filter { selectedChip == nil || $0.group == selectedChip }
+        let sections: [(String, String)] = [
+            ("waiting", "NEEDS INPUT"), ("input", "REPLY WAITING"),
+            ("finished", "FINISHED"), ("running", "RUNNING"),
+            ("done", "IDLE"), ("gone", "ENDED"),
+        ]
+        for (st, label) in sections {
+            let members = pool.filter { $0.status == st }
+                .sorted { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }
             if members.isEmpty { continue }
-            out.append(.label(g == "__ungrouped__" ? "미배정" : g))
-            out += members.map { .session($0, indented: true) }
-        }
-        let loose = restMembers(nil)
-        if expanded.contains("__ungrouped__"), !loose.isEmpty {
-            out.append(.label("미배정"))
-            out += loose.map { .session($0, indented: true) }
+            out.append(.label(label))
+            out += members.map { .session($0, indented: false) }
         }
         return out
     }
@@ -1153,7 +1133,6 @@ struct PanelView: View {
             return out
         }
         if groupLayout == "chips" { return chipRows }
-        if groupLayout == "grid" { return gridTopRows + gridExpandedRows }
         var out: [PanelRow] = []
         if !pinnedSessions.isEmpty {
             out.append(.label("PINNED"))
@@ -1190,9 +1169,6 @@ struct PanelView: View {
         var extra: CGFloat = 0
         if !searching {
             if groupLayout == "chips" { extra += 36 }
-            if groupLayout == "grid" {
-                extra += CGFloat((groups.count + 1) / 2) * 86 + 12
-            }
         }
         return min(max(h + extra + 16 + (draggingGroup != nil ? 34 : 0), 100), 460)
     }
@@ -1322,7 +1298,7 @@ struct PanelView: View {
             HStack(spacing: 5) {
                 Text(l)
                     .font(.system(size: 10, weight: .heavy, design: .rounded))
-                    .foregroundStyle(l == "ATTENTION" ? claudeOrange : Color.secondary)
+                    .foregroundStyle(l == "ATTENTION" || l == "NEEDS INPUT" ? claudeOrange : Color.secondary)
                     .tracking(1.2)
                 Spacer()
             }
@@ -1424,67 +1400,6 @@ struct PanelView: View {
         }
     }
 
-    var gridCards: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                  spacing: 8) {
-            ForEach(groups, id: \.self) { g in
-                gridCard(g)
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-    }
-
-    func gridCard(_ g: String) -> some View {
-        let members = filtered.filter { $0.group == g }
-        let tint = chipColor(g)
-        let hasAttn = members.contains { ["waiting", "input", "finished"].contains($0.status) }
-        let isOpen = expanded.contains(g)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                PixelGlyph(map: duoMap, color: tint, pixel: 1.4)
-                Spacer()
-                if hasAttn { Circle().fill(Color(nsColor: .systemOrange)).frame(width: 7, height: 7) }
-            }
-            Text(g)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
-                .lineLimit(1)
-            HStack(spacing: 4) {
-                Text("\(members.count) sessions")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 12).fill(tint.opacity(isOpen ? 0.22 : 0.10)))
-        .overlay(RoundedRectangle(cornerRadius: 12)
-            .strokeBorder(dropTarget == g ? tint.opacity(0.8) : Color.clear, lineWidth: 1.5))
-        .contentShape(RoundedRectangle(cornerRadius: 12))
-        .onTapGesture { toggleExpand(g) }
-        .contextMenu {
-            Button("Open all sessions") { model.openAll(members) }
-            Button("Rename group") { renaming = g; renameText = g }
-            Menu("Color") {
-                ForEach(["orange", "blue", "green", "purple", "pink", "gray"], id: \.self) { c in
-                    Button(c) { model.setGroupColor(g, c) }
-                }
-            }
-            Button("Dissolve group") { model.dissolveGroup(g) }
-        }
-        .dropDestination(for: String.self) { items, _ in
-            if let sid = items.first, !sid.hasPrefix("group:") {
-                model.assign(sid, to: g)
-                expanded.insert(g)
-            }
-            dropTarget = nil
-            return true
-        } isTargeted: { over in
-            dropTarget = over ? g : (dropTarget == g ? nil : dropTarget)
-        }
-    }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -1523,14 +1438,8 @@ struct PanelView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 2) {
-                        if !searching, groupLayout == "grid" {
-                            ForEach(gridTopRows) { rowView($0) }
-                            gridCards
-                            ForEach(gridExpandedRows) { rowView($0) }
-                        } else {
-                            if !searching, groupLayout == "chips" { chipBar }
-                            ForEach(rows) { rowView($0) }
-                        }
+                        if !searching, groupLayout == "chips" { chipBar }
+                        ForEach(rows) { rowView($0) }
                         if draggingGroup != nil {
                             // end-of-list drop zone, visible only while
                             // dragging a group card
@@ -1668,10 +1577,8 @@ struct PanelView: View {
                 Menu {
                     Button("리스트 (inbox)") { groupLayout = "inbox" }
                     Button("칩 필터") { groupLayout = "chips" }
-                    Button("그리드 카드") { groupLayout = "grid" }
                 } label: {
-                    Image(systemName: groupLayout == "grid" ? "square.grid.2x2"
-                        : groupLayout == "chips" ? "tag" : "list.bullet")
+                    Image(systemName: groupLayout == "chips" ? "tag" : "list.bullet")
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
