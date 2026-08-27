@@ -335,7 +335,7 @@ jump_bg() { # $1=session id
   name=$(fetch_agents \
     | jq -r --arg sid "$1" '[.[] | select(.sessionId == $sid)] | (first // {}).name // empty')
   if [ -n "$name" ] && jump_iterm_by_title "$name" >/dev/null 2>&1; then return 0; fi
-  open_tab_with "claude attach $1"
+  open_tab_with "claude attach ${1:0:8}"
 }
 
 bg_agent_status() { # $1=session id → busy|idle|empty (background kind only —
@@ -400,7 +400,7 @@ cmd_jump() {
   # background agent: focus an attached tab by title, else attach in a new tab
   if [ "$kind" = "background" ]; then
     if [ -n "$agent_name" ] && jump_iterm_by_title "$agent_name" >/dev/null 2>&1; then exit 0; fi
-    open_tab_with "claude attach $sid" >/dev/null 2>&1 && exit 0
+    open_tab_with "claude attach ${sid:0:8}" >/dev/null 2>&1 && exit 0
   fi
 
   # live background agent — attach directly by id (existing attach tab wins)
