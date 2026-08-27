@@ -616,7 +616,7 @@ struct SessionRow: View {
             }
             if s.kind == "background" {
                 Divider()
-                Button("End session  ⌃E") { model.endSession(s.session_id) }
+                Button("End session  ⌃X") { model.endSession(s.session_id) }
             }
         }
         .help(s.message ?? s.cwd ?? "")
@@ -1537,7 +1537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     case (35, _): action = "pin"        // ⌃P
                     case (15, false): action = "rename" // ⌃R
                     case (8, _): action = "copyresume"  // ⌃C
-                    case (14, _): action = "end"        // ⌃E
+                    case (7, _): action = "end"         // ⌃X
                     case (51, _): action = "ungroup"    // ⌃⌫
                     default: action = nil
                     }
