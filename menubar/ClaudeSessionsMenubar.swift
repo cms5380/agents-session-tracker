@@ -1683,7 +1683,10 @@ struct PanelView: View {
                 }
                 .frame(height: listHeight)
                 .onChange(of: scrollTarget) { t in
-                    if let t { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) } }
+                    guard let t else { return }
+                    withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) }
+                    // reset so setting the same target again still scrolls
+                    DispatchQueue.main.async { scrollTarget = nil }
                 }
             }
 
