@@ -2115,7 +2115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }()
     lazy var menubarStatusFrames: [String: [NSImage]] = {
         var d: [String: [NSImage]] = [:]
-        for st in ["running", "waiting", "input"] {
+        for st in ["running", "waiting"] {
             d[st] = mascotFrames(st).frames.map { mascotNSImage(map: $0, pixel: 1.2) }
         }
         return d
@@ -2126,9 +2126,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func updateTitle(sessions: [Session]) {
         guard let button = statusItem.button else { return }
-        // most attention-worthy state wins: approval ask > reply waiting > running
+        // most attention-worthy state wins: approval ask > running
         let statuses = Set(sessions.map(\.status))
-        let active = ["waiting", "input", "running"].first { statuses.contains($0) }
+        let active = ["waiting", "running"].first { statuses.contains($0) }
         if active != menubarStatus {
             menubarStatus = active
             menubarFrameIdx = 0
