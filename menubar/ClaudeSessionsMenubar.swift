@@ -550,6 +550,7 @@ struct SessionRow: View {
     var animate: Bool = true
     var isRenaming: Bool = false
     var isStopping: Bool = false
+    var insertLine: Bool = false
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
     var renameCommit: ((String) -> Void)? = nil
@@ -563,6 +564,14 @@ struct SessionRow: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+        // insertion indicator while another session is dragged over this row
+        Rectangle()
+            .fill(insertLine ? claudeOrange : Color.clear)
+            .frame(height: 2)
+            .cornerRadius(1)
+            .padding(.horizontal, 6)
+            .padding(.bottom, insertLine ? 3 : 0)
         HStack(spacing: 9) {
             if let n = hotkeyNumber {
                 Text("⌘\(n)")
@@ -668,6 +677,7 @@ struct SessionRow: View {
             }
         }
         .help(s.message ?? s.cwd ?? "")
+        }
     }
 }
 
@@ -797,6 +807,7 @@ struct PanelView: View {
     @State private var followSid: String? = nil
     @State private var stoppingSids: Set<String> = []
     @State private var lastSessionSid: String? = nil
+    @State private var sessionDropTarget: String? = nil
     @AppStorage("groupLayout") private var groupLayout = "inbox" // inbox | chips | grid
     @State private var selectedChip: String? = nil
     @State private var pendingGroups: [String] = []
@@ -1335,6 +1346,7 @@ struct PanelView: View {
                                   animate: model.panelVisible,
                                   isRenaming: renamingSession?.session_id == s.session_id,
                                   isStopping: stoppingSids.contains(s.session_id),
+                                  insertLine: sessionDropTarget == s.session_id,
                                   onRename: { sess in
                                       renamingSession = sess
                                   },
@@ -1351,10 +1363,14 @@ struct PanelView: View {
                 .id(r.id)
             if s.pinned && !searching {
                 base.dropDestination(for: String.self) { items, _ in
-                    if let d = items.first, d != s.session_id {
+                    if let d = items.first, d != s.session_id, !d.hasPrefix("group:") {
                         model.pinInsert(d, before: s.session_id)
                     }
+                    sessionDropTarget = nil
                     return true
+                } isTargeted: { over in
+                    sessionDropTarget = over ? s.session_id
+                        : (sessionDropTarget == s.session_id ? nil : sessionDropTarget)
                 }
             } else {
                 base
