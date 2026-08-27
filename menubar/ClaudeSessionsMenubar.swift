@@ -937,10 +937,14 @@ struct PanelView: View {
 
     // templates shaped like "cd <base>/{query}" autocomplete folder names
     // under <base> as you type the argument
-    func keywordCompletions(template: String, arg: String) -> [(String, String)] {
-        guard let r = template.range(of: #"cd ([^ ]+)/\{query\}"#, options: .regularExpression) else { return [] }
+    func folderBase(template: String) -> String? {
+        guard let r = template.range(of: #"cd ([^ ]+)/\{query\}"#, options: .regularExpression) else { return nil }
         let sub = String(template[r])
-        let base = String(sub.dropFirst(3).dropLast("/{query}".count))
+        return String(sub.dropFirst(3).dropLast("/{query}".count))
+    }
+
+    func keywordCompletions(template: String, arg: String) -> [(String, String)] {
+        guard let base = folderBase(template: template) else { return [] }
         let baseExp = (base as NSString).expandingTildeInPath
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(atPath: baseExp) else { return [] }
@@ -968,7 +972,13 @@ struct PanelView: View {
             let (folderToken, promptRest) = splitKeywordArg(kw.arg)
             let comps = keywordCompletions(template: kw.template, arg: folderToken)
             if comps.isEmpty {
-                out.append(.command("kw", "\(kw.name) \(kw.arg)", String(kw.preview.prefix(50))))
+                if let base = folderBase(template: kw.template) {
+                    // folder-style keyword with no match — don't offer a
+                    // broken cd command
+                    out.append(.label("일치하는 폴더 없음 — \(base)"))
+                } else {
+                    out.append(.command("kw", "\(kw.name) \(kw.arg)", String(kw.preview.prefix(50))))
+                }
             } else {
                 for (folder, path) in comps {
                     let title = promptRest.isEmpty
