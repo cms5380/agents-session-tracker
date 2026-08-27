@@ -1448,6 +1448,17 @@ struct PanelView: View {
             model.hotkeyNumber = { handleHotkey($0) }
             model.actionKey = { action in
                 if case .label? = rows[safe: selected] { selected = firstSelectable() }
+                // on a group header: expand it and step into the first member,
+                // so a second press acts on an actual session
+                if case .header(let g)? = rows[safe: selected] {
+                    expanded.insert(g)
+                    if let hIdx = rows.firstIndex(where: { $0.id == "hdr-\(g)" }),
+                       case .session(let m, _)? = rows[safe: hIdx + 1] {
+                        selected = hIdx + 1
+                        scrollTarget = m.session_id
+                    }
+                    return true
+                }
                 guard case .session(let s, _)? = rows[safe: selected], s.status != "archived" else {
                     return false
                 }
