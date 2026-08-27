@@ -672,7 +672,9 @@ cmd_sessions_json() {
       # unacknowledged results / input waits decay to idle after 30 minutes
       | if (.status | IN("finished", "input")) and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
     | . + $extra
-    | map(. + {group: ($groups[.session_id] // null),
+    | map(. + {group: ($groups[.session_id]
+                       # a fork inherits its parent'\''s group unless assigned
+                       // (if .parent then ($groups[.parent] // null) else null end)),
                title: ($names[.session_id] // .title),
                pin_order: (.session_id as $s | ($pins | index($s)))})
     | map(. + {group_color: (if .group then ($colors[.group] // null) else null end),
