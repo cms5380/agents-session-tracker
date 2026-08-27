@@ -63,6 +63,7 @@ final class Model: ObservableObject {
     var moveSelection: ((Int) -> Void)?
     var arrowLR: ((Int) -> Bool)?
     var hotkeyNumber: ((Int) -> Void)?
+    var enterKey: (() -> Void)?
     var messageSelected: (() -> Void)?
     var actionKey: ((String) -> Bool)?
     var timer: Timer?
@@ -944,8 +945,7 @@ struct PanelView: View {
             let name = (dir as NSString).lastPathComponent
             let path = dir.replacingOccurrences(of: NSHomeDirectory(), with: "~")
             cmds.append(("new:\(dir)", "New Session: \(name)",
-                         "\(model.mainAgent) · \(path)"))
-            cmds.append(("newalt:\(dir)", "New \(model.otherAgent.capitalized) Session: \(name)", path))
+                         "↩ \(model.mainAgent) · ⌘↩ \(model.otherAgent) · \(path)"))
         }
         for (name, cmd) in model.customCommands.sorted(by: { $0.key < $1.key }) {
             let silent = cmd.hasPrefix("@")
@@ -1005,8 +1005,12 @@ struct PanelView: View {
         else if id == "clean" { model.clean(); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
         else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
-        else if id.hasPrefix("new:") { model.newSession(in: String(id.dropFirst(4))) }
-        else if id.hasPrefix("newalt:") { model.newSession(in: String(id.dropFirst(7)), agent: model.otherAgent) }
+        else if id.hasPrefix("new:") {
+            // ⌘↩ (or ⌘click) starts the non-main agent
+            let alt = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
+            model.newSession(in: String(id.dropFirst(4)),
+                             agent: alt ? model.otherAgent : model.mainAgent)
+        }
         else if id.hasPrefix("custom:") { model.runCommand(String(id.dropFirst(7))) }
     }
 
@@ -1832,6 +1836,7 @@ struct PanelView: View {
             model.moveSelection = { move($0) }
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
+            model.enterKey = { activateSelected() }
             model.actionKey = { action in
                 if case .label? = rows[safe: selected] { selected = firstSelectable() }
                 // on a group header: expand it and step into the first member,
@@ -2008,6 +2013,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     }
                     if event.keyCode == 15 { // ⌘R — refresh now
                         self.model.refresh()
+                        return nil
+                    }
+                    if event.keyCode == 36 { // ⌘↩ — activate with the alt agent
+                        self.model.enterKey?()
                         return nil
                     }
                 }
