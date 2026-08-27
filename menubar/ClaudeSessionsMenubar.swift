@@ -211,6 +211,13 @@ final class Model: ObservableObject {
         }
     }
 
+    func stopSession(_ sid: String) {
+        DispatchQueue.global().async {
+            runCST(["stop-session", sid])
+            self.refresh()
+        }
+    }
+
     func endSession(_ sid: String) {
         DispatchQueue.global().async {
             runCST(["end", sid])
@@ -511,7 +518,6 @@ struct SessionRow: View {
     var hotkeyNumber: Int? = nil
     var animate: Bool = true
     var isRenaming: Bool = false
-    var endArmed: Bool = false
     var onRename: ((Session) -> Void)? = nil
     var onMessage: ((Session) -> Void)? = nil
     var renameCommit: ((String) -> Void)? = nil
@@ -570,13 +576,7 @@ struct SessionRow: View {
                     .font(.system(size: 8))
                     .foregroundStyle(claudeOrange.opacity(0.7))
             }
-            if endArmed {
-                Text("다시 ⌃X → 종료")
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Capsule().fill(Color(nsColor: .systemRed).opacity(0.2)))
-                    .foregroundStyle(Color(nsColor: .systemRed))
-            } else if !ageString(s.updated_at).isEmpty {
+            if !ageString(s.updated_at).isEmpty {
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
@@ -621,9 +621,12 @@ struct SessionRow: View {
             if s.group != nil {
                 Button("Remove from group  ⌃⌫") { model.assign(s.session_id, to: nil) }
             }
-            if s.kind == "background" {
+            if s.status == "gone" {
                 Divider()
-                Button("End session  ⌃X") { model.endSession(s.session_id) }
+                Button("Remove from list  ⌃X") { model.endSession(s.session_id) }
+            } else if s.kind == "background" {
+                Divider()
+                Button("Stop session  ⌃X") { model.stopSession(s.session_id) }
             }
         }
         .help(s.message ?? s.cwd ?? "")
@@ -753,7 +756,6 @@ struct PanelView: View {
     @State private var messageText = ""
     @State private var dropTarget: String? = nil
     @State private var draggingGroup: String? = nil
-    @State private var endArmedSid: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
     @State private var selected = 0
@@ -1205,7 +1207,6 @@ struct PanelView: View {
                                                       hotkeyNumber: sessionNumbers[s.session_id],
                                                       animate: model.panelVisible,
                                                       isRenaming: renamingSession?.session_id == s.session_id,
-                                                      endArmed: endArmedSid == s.session_id,
                                                       onRename: { sess in
                                                           renamingSession = sess
                                                       },
@@ -1415,17 +1416,14 @@ struct PanelView: View {
                     guard s.group != nil else { return false }
                     model.assign(s.session_id, to: nil)
                 case "end":
-                    guard s.kind == "background" else { return false }
-                    // two-stage: first Ctrl+X arms, second within 2.5s ends
-                    if endArmedSid == s.session_id {
-                        endArmedSid = nil
+                    // first Ctrl+X stops the session (stays as 💤, resumable);
+                    // Ctrl+X on a stopped/gone session removes it from view
+                    if s.status == "gone" {
                         model.endSession(s.session_id)
+                    } else if s.kind == "background" {
+                        model.stopSession(s.session_id)
                     } else {
-                        let sid = s.session_id
-                        endArmedSid = sid
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                            if endArmedSid == sid { endArmedSid = nil }
-                        }
+                        return false
                     }
                 default: return false
                 }

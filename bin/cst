@@ -699,10 +699,21 @@ case "${1:-list}" in
     fi
     cmd_jump "$sid"
     ;;
-  end)
-    # cst end <session-id> — stop a background session and drop it from view
-    [ $# -ge 2 ] || { echo "usage: cst end <session-id>" >&2; exit 1; }
+  stop-session)
+    # cst stop-session <session-id> — stop the background session; it stays
+    # listed as 💤 (resumable)
+    [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
     # claude stop takes the short job id (first 8 chars of the session id)
+    claude stop "${2:0:8}" >/dev/null 2>&1 || true
+    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    if [ -n "$f" ]; then
+      jq '.status = "gone" | .owner = "client"' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+    fi
+    rm -f "$AGENTS_CACHE"
+    ;;
+  end)
+    # cst end <session-id> — stop (if needed) and drop from view entirely
+    [ $# -ge 2 ] || { echo "usage: cst end <session-id>" >&2; exit 1; }
     claude stop "${2:0:8}" >/dev/null 2>&1 || true
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     if [ -n "$f" ]; then
