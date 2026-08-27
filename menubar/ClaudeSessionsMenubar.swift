@@ -211,6 +211,13 @@ final class Model: ObservableObject {
         }
     }
 
+    func endSession(_ sid: String) {
+        DispatchQueue.global().async {
+            runCST(["end", sid])
+            self.refresh()
+        }
+    }
+
     func clean() {
         DispatchQueue.global().async {
             runCST(["clean"])
@@ -606,6 +613,10 @@ struct SessionRow: View {
             Button("Copy resume command  ⌃C") { model.copyResume(s) }
             if s.group != nil {
                 Button("Remove from group  ⌃⌫") { model.assign(s.session_id, to: nil) }
+            }
+            if s.kind == "background" {
+                Divider()
+                Button("End session  ⌃E") { model.endSession(s.session_id) }
             }
         }
         .help(s.message ?? s.cwd ?? "")
@@ -1394,6 +1405,9 @@ struct PanelView: View {
                 case "ungroup":
                     guard s.group != nil else { return false }
                     model.assign(s.session_id, to: nil)
+                case "end":
+                    guard s.kind == "background" else { return false }
+                    model.endSession(s.session_id)
                 default: return false
                 }
                 return true
@@ -1523,6 +1537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     case (35, _): action = "pin"        // ⌃P
                     case (15, false): action = "rename" // ⌃R
                     case (8, _): action = "copyresume"  // ⌃C
+                    case (14, _): action = "end"        // ⌃E
                     case (51, _): action = "ungroup"    // ⌃⌫
                     default: action = nil
                     }

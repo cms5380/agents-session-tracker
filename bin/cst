@@ -699,6 +699,16 @@ case "${1:-list}" in
     fi
     cmd_jump "$sid"
     ;;
+  end)
+    # cst end <session-id> — stop a background session and drop it from view
+    [ $# -ge 2 ] || { echo "usage: cst end <session-id>" >&2; exit 1; }
+    claude stop "$2" >/dev/null 2>&1 || true
+    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    if [ -n "$f" ]; then
+      jq '.status = "ended"' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+    fi
+    rm -f "$AGENTS_CACHE"
+    ;;
   hub) focus_hub ;;
   agents-tab) focus_hub ;;
   focus-agent)
