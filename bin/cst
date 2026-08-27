@@ -636,9 +636,15 @@ case "${1:-list}" in
     f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
     cwd=$([ -n "$f" ] && jq -r '.cwd // empty' "$f" || echo "$HOME")
     title=$([ -n "$f" ] && jq -r '(.title // "session")[:30]' "$f" || echo "session")
+    agent=$([ -n "$f" ] && jq -r '.agent // "claude"' "$f" || echo "claude")
     (
       cd "$cwd" 2>/dev/null || cd "$HOME"
-      if claude -p --resume "$sid" "$msg" >/dev/null 2>&1; then
+      if [ "$agent" = "codex" ]; then
+        run_turn() { codex exec resume "$sid" "$msg" --skip-git-repo-check </dev/null; }
+      else
+        run_turn() { claude -p --resume "$sid" "$msg"; }
+      fi
+      if run_turn >/dev/null 2>&1; then
         osascript -e "display notification \"응답 완료 — 패널에서 확인\" with title \"$title\"" 2>/dev/null
       else
         osascript -e "display notification \"전송 실패 (세션이 busy일 수 있음)\" with title \"$title\"" 2>/dev/null
