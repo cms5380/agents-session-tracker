@@ -329,22 +329,30 @@ let mascotMap: [String] = [
 
 // Cells snapped to shared integer edges + antialiasing off — fractional
 // cell sizes otherwise leave hairline seams on non-retina/scaled displays.
-func snappedCell(_ x: Int, _ y: Int, _ pixel: CGFloat) -> CGRect {
-    let x0 = (CGFloat(x) * pixel).rounded()
-    let y0 = (CGFloat(y) * pixel).rounded()
-    let x1 = (CGFloat(x + 1) * pixel).rounded()
-    let y1 = (CGFloat(y + 1) * pixel).rounded()
-    return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+// mirror-symmetric column edges: rounding fractional cells independently
+// made the two mascot eyes differ by a device pixel
+func symmetricEdges(_ count: Int, _ pixel: CGFloat) -> [CGFloat] {
+    var edges = [CGFloat](repeating: 0, count: count + 1)
+    let total = (CGFloat(count) * pixel).rounded()
+    for i in 0...(count / 2) {
+        edges[i] = (CGFloat(i) * pixel).rounded()
+        edges[count - i] = total - edges[i]
+    }
+    return edges
 }
 
 func drawPixelMap(_ cg: CGContext, map: [String], pixel: CGFloat,
                   colorFor: (Character) -> NSColor?) {
     cg.setShouldAntialias(false)
+    let cols = map.first?.count ?? 0
+    let xs = symmetricEdges(cols, pixel)
+    let ys = symmetricEdges(map.count, pixel)
     for (y, row) in map.enumerated() {
         for (x, ch) in row.enumerated() {
             guard let c = colorFor(ch) else { continue }
             cg.setFillColor(c.cgColor)
-            cg.fill(snappedCell(x, y, pixel))
+            cg.fill(CGRect(x: xs[x], y: ys[y],
+                           width: xs[x + 1] - xs[x], height: ys[y + 1] - ys[y]))
         }
     }
 }
@@ -369,11 +377,13 @@ func mascotNSImage(pixel: CGFloat) -> NSImage {
         cg.setShouldAntialias(false)
         // template image — the menubar tints it like every other icon
         cg.setFillColor(NSColor.black.cgColor)
+        let xs = symmetricEdges(16, pixel)
+        let ys = symmetricEdges(10, pixel)
         for (y, row) in mascotMap.enumerated() {
             for (x, ch) in row.enumerated() where ch == "o" {
-                var r = snappedCell(x, y, pixel)
-                r.origin.y = size.height - r.origin.y - r.size.height
-                cg.fill(r)
+                let h = ys[y + 1] - ys[y]
+                cg.fill(CGRect(x: xs[x], y: size.height - ys[y] - h,
+                               width: xs[x + 1] - xs[x], height: h))
             }
         }
     }
