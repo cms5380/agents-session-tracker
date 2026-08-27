@@ -539,6 +539,44 @@ cmd_sessions_json() {
         continue
       fi
     fi
+    # claude forks carry logicalParentUuid (a message uuid inside the parent
+    # transcript) — resolve it to a parent session id once and cache it on
+    # the record; spare-pool forks have no --fork-session cmdline to read
+    if [ "$(jq -r '.parent_resolved // empty' <<<"$s")" != "true" ] \
+       && [ "$(jq -r '.agent // "claude"' <<<"$s")" = "claude" ]; then
+      local tpath0 lp parent_sid pf psid pt
+      tpath0=$(jq -r '.transcript_path // ""' <<<"$s")
+      parent_sid=""
+      # the recorded path goes stale when a session's cwd changes (transcripts
+      # live under a per-project dir) — relocate by session id
+      if [ -n "$tpath0" ] && [ ! -f "$tpath0" ]; then
+        tpath0=$(ls "$HOME/.claude/projects"/*/"$sid.jsonl" 2>/dev/null | head -1 || true)
+      fi
+      if [ -n "$tpath0" ] && [ -f "$tpath0" ]; then
+        lp=$(head -n 12 "$tpath0" 2>/dev/null \
+          | jq -r 'select(.logicalParentUuid) | .logicalParentUuid' 2>/dev/null | head -1 || true)
+        if [ -n "$lp" ]; then
+          for pf in "$STATE_DIR"/*.json; do
+            [ -e "$pf" ] || continue
+            psid=$(basename "$pf" .json)
+            [ "$psid" = "$sid" ] && continue
+            pt=$(jq -r '.transcript_path // ""' "$pf" 2>/dev/null)
+            [ -n "$pt" ] && [ -f "$pt" ] || continue
+            if grep -m1 -q "\"uuid\":\"$lp\"" "$pt" 2>/dev/null; then
+              parent_sid="$psid"; break
+            fi
+          done
+        fi
+        s=$(jq -c --arg p "$parent_sid" \
+          '.parent_resolved = true | if $p != "" then .parent = $p else . end' <<<"$s")
+        rf0="$STATE_DIR/$sid.json"
+        if [ -f "$rf0" ]; then
+          jq --arg p "$parent_sid" \
+            '.parent_resolved = true | if $p != "" then .parent = $p else . end' \
+            "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0"
+        fi
+      fi
+    fi
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
     # turn fires no Stop hook) — a rollout file untouched for 5 minutes
     # means the turn is over
@@ -621,7 +659,7 @@ cmd_sessions_json() {
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
-      | .parent = (([$pairs[] | select(.f == $s.session_id) | .p] | first) // null)
+      | .parent = ($s.parent // ([$pairs[] | select(.f == $s.session_id) | .p] | first) // null)
       # daemon status corrects stale hook state (permission waits stay
       # waiting) — applies to interactive sessions too, e.g. an Esc-
       # interrupted turn never fires the Stop hook
