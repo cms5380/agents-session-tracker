@@ -1870,6 +1870,11 @@ struct PanelView: View {
                             messagingSession = nil
                             messageText = ""
                         }
+                        .onExitCommand {
+                            messagingSession = nil
+                            messageText = ""
+                            searchFocused = true
+                        }
                     Button("✕") { messagingSession = nil }.buttonStyle(.plain).font(.system(size: 10))
                 }
                 .padding(.horizontal, 14)
