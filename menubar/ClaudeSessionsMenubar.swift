@@ -1338,10 +1338,6 @@ struct PanelView: View {
                     .buttonStyle(.plain).help("Refresh (⌘R)")
                     .frame(width: 16, height: 16)
                 }
-                Button { model.clean() } label: {
-                    Image(systemName: "sparkles")
-                }
-                .buttonStyle(.plain).help("Clean stale sessions")
                 Button { NSApp.terminate(nil) } label: {
                     Image(systemName: "power")
                 }
