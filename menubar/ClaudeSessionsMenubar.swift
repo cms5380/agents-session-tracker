@@ -662,9 +662,6 @@ struct SessionRow: View {
             if s.status == "gone" {
                 Divider()
                 Button("Remove from list  ⌃X") { model.endSession(s.session_id) }
-            } else if s.kind == "interactive", s.status != "running" {
-                Divider()
-                Button("End session  ⌃X") { model.endSession(s.session_id) }
             } else if s.kind == "background" || s.kind == "interactive" {
                 Divider()
                 Button("Stop  ⌃X") { model.stopSession(s.session_id) }
@@ -1565,10 +1562,6 @@ struct PanelView: View {
                     if stoppingSids.contains(s.session_id) {
                         // stop already in flight — swallow repeat presses
                     } else if s.status == "gone" {
-                        model.endSession(s.session_id)
-                    } else if s.kind == "interactive", s.status != "running" {
-                        // interactive at the prompt — second press fully ends
-                        // (kills claude, closes the tab, removes the row)
                         model.endSession(s.session_id)
                     } else if s.kind == "background" || s.kind == "interactive" {
                         // the row will move out of ATTENTION into its group —

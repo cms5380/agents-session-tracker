@@ -779,20 +779,28 @@ case "${1:-list}" in
     [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
     entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
     if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
-      # interrupt the running turn only — claude treats Esc as
-      # stop-generation, so inject the keypress into its tab (a SIGINT
-      # signal would make claude exit to the shell)
       cpid=$(jq -r '.pid // empty' <<<"$entry")
+      dstatus=$(jq -r '.status // empty' <<<"$entry")
       if [ -n "$cpid" ]; then
         iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
           | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
-        if [ -n "$iterm_id" ]; then
-          send_esc_iterm "$iterm_id" || true
-          f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+        f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+        if [ "$dstatus" = "busy" ]; then
+          # running turn: inject Esc (stop-generation) — a SIGINT signal
+          # would make claude exit to the shell
+          [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" || true
           if [ -n "$f" ]; then
-            # the interrupt is effectively instant — record idle right away
             jq --arg it "$iterm_id" \
-              '.terminal.iterm_session_id = $it | .status = "done"' \
+              '.status = "done" | if $it != "" then .terminal.iterm_session_id = $it else . end' \
+              "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+          fi
+        else
+          # idle at the prompt: first press just shelves it as 💤 — the
+          # process and tab stay untouched until a second press ends it
+          if [ -n "$f" ]; then
+            jq --arg it "$iterm_id" \
+              '.status = "gone" | .owner = "client"
+               | if $it != "" then .terminal.iterm_session_id = $it else . end' \
               "$f" >"$f.tmp" && mv "$f.tmp" "$f"
           fi
         fi
