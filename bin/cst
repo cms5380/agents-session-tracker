@@ -391,7 +391,7 @@ cmd_jump() {
   # jumping to a finished/input-waiting session acknowledges it
   case "$(jq -r '.status' "$file")" in
     finished|input)
-      jq '.status = "done"' "$file" >"$file.tmp" && mv "$file.tmp" "$file" ;;
+      jq '.status = "done"' "$file" >"$file.tmp.$$" && mv "$file.tmp.$$" "$file" ;;
   esac
 
   local cmux_ws iterm_id tmux_pane tty term_program app pid cwd
@@ -495,7 +495,12 @@ cmd_clean() {
 cmd_sessions_json() {
   local now sessions agents_json extra
   now=$(date +%s)
-  sessions=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s --argjson now "$now" '
+  # read records one by one so a single corrupt file (e.g. a torn write)
+  # can't blank the whole list
+  sessions=$({ for rf in "$STATE_DIR"/*.json; do
+      [ -e "$rf" ] || continue
+      jq -c . "$rf" 2>/dev/null || true
+    done; } | jq -s --argjson now "$now" '
     [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
     | sort_by(-.updated_at)')
   agents_json=$(claude agents --json 2>/dev/null || echo '[]')
@@ -518,6 +523,11 @@ cmd_sessions_json() {
     local fork_sid
     fork_sid=$(printf '%s\n' "$fork_pairs" | sed -n "s/^$sid://p" | head -1)
     if [ -n "$fork_sid" ]; then
+      # skip the parent when the fork is newer — or when the parent's own
+      # client is dead (forwarded notifications keep bumping its timestamp)
+      if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        continue
+      fi
       local fu tu
       fu=$(jq -r '.updated_at // 0' "$STATE_DIR/$fork_sid.json" 2>/dev/null || echo 0)
       tu=$(jq -r '.updated_at // 0' <<<"$s")
@@ -886,14 +896,14 @@ case "${1:-list}" in
         [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" >/dev/null 2>&1 &
         jq --arg it "$iterm_id" \
           '.status = "done" | if $it != "" then .terminal.iterm_session_id = $it else . end' \
-          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+          "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
       else
         # idle at the prompt: first press just shelves it as 💤 — the
         # process and tab stay untouched until a second press ends it
         jq --arg it "$iterm_id" \
           '.status = "gone" | .owner = "client"
            | if $it != "" then .terminal.iterm_session_id = $it else . end' \
-          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+          "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
       fi
     else
       # daemon-hosted background agent (or a record without a live client)
@@ -905,7 +915,7 @@ case "${1:-list}" in
         jq --arg at "$attach_title" \
           '.status = "gone" | .owner = "client"
            | if $at != "" then .attach_title = $at else . end' \
-          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+          "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
       fi
     fi
     rm -f "$AGENTS_CACHE"
@@ -937,7 +947,7 @@ case "${1:-list}" in
       elif [ -n "$at" ]; then
         close_iterm_by_title "$at" >/dev/null 2>&1 &
       fi
-      jq '.status = "ended"' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+      jq '.status = "ended"' "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
     fi
     rm -f "$AGENTS_CACHE"
     ;;

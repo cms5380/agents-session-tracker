@@ -101,6 +101,8 @@ fi
 file="$STATE_DIR/$session_id.json"
 existing="{}"
 [ -f "$file" ] && existing=$(cat "$file")
+# a torn record (crashed writer) must not wedge the hook — start fresh
+jq -e . >/dev/null 2>&1 <<<"$existing" || existing="{}"
 
 jq -n \
   --argjson prev "$existing" \
@@ -145,6 +147,6 @@ jq -n \
       tty: $tty,
       app: $app
     } | with_entries(select(.value != ""))))
-  ' >"$file.tmp" && mv "$file.tmp" "$file"
+  ' >"$file.tmp.$$" && mv "$file.tmp.$$" "$file"
 
 exit 0
