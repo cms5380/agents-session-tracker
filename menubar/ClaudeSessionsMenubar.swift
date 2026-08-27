@@ -1569,7 +1569,7 @@ struct PanelView: View {
         return sorted.prefix(8).map { ($0, baseExp + "/" + $0) }
     }
 
-    static let statusOrderAll = ["waiting", "input", "finished", "running", "done", "gone"]
+    static let statusOrderAll = ["waiting", "running", "input", "finished", "done", "gone"]
 
     func statusSorted(_ list: [Session]) -> [Session] {
         list.sorted { a, b in
@@ -1599,17 +1599,19 @@ struct PanelView: View {
         }, by: { $0.parent! })
         let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
         let sections: [(String, String)] = [
-            ("waiting", "NEEDS INPUT"), ("input", "REPLY WAITING"),
-            ("finished", "FINISHED"), ("running", "RUNNING"),
+            ("waiting", "NEEDS INPUT"), ("running", "RUNNING"),
+            ("input", "REPLY WAITING"), ("finished", "FINISHED"),
             ("done", "IDLE"), ("gone", "ENDED"),
         ]
         for (st, label) in sections {
             let members = pool.filter { $0.status == st && !nestedIds.contains($0.session_id) }
                 .sorted { a, b in
-                    // manual order first, then recency
-                    let oa = a.sort_order ?? Int.max
-                    let ob = b.sort_order ?? Int.max
-                    if oa != ob { return oa < ob }
+                    // IDLE is pure recency; other sections honor manual order
+                    if st != "done" {
+                        let oa = a.sort_order ?? Int.max
+                        let ob = b.sort_order ?? Int.max
+                        if oa != ob { return oa < ob }
+                    }
                     return (a.updated_at ?? 0) > (b.updated_at ?? 0)
                 }
             if members.isEmpty { continue }
@@ -1657,7 +1659,7 @@ struct PanelView: View {
         }
         if searching {
             var out: [PanelRow] = []
-            for st in ["waiting", "input", "finished", "running", "done", "gone"] {
+            for st in ["waiting", "running", "input", "finished", "done", "gone"] {
                 out += filtered.filter { $0.status == st }.map { .session($0, indented: false) }
             }
             out += commandRows
@@ -2088,7 +2090,7 @@ struct PanelView: View {
                     .font(.system(size: 16, design: .rounded))
                     .focused($searchFocused)
                     .onSubmit { activateSelected() }
-                    .onExitCommand { appDelegate?.hidePanel() }
+                    .onExitCommand { appDelegate?.hidePanel(restoreFocus: true) }
                     .onChange(of: query) { q in
                         selected = 0
                         if !q.isEmpty { showStats = false }
@@ -2467,7 +2469,7 @@ final class FloatingPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { // esc
-            appDelegate?.hidePanel()
+            appDelegate?.hidePanel(restoreFocus: true)
             return
         }
         super.keyDown(with: event)
@@ -2580,10 +2582,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     @objc func togglePanel() {
         if NSApp.currentEvent?.type == .rightMouseUp { showMenubarMenu(); return }
-        if panel.isVisible { hidePanel() } else { showPanel() }
+        if panel.isVisible { hidePanel(restoreFocus: true) } else { showPanel() }
     }
 
+    // whoever had focus before the panel opened — Esc/⌥Space return it
+    var previousApp: NSRunningApplication?
+
     func showPanel() {
+        previousApp = NSWorkspace.shared.frontmostApplication
         model.refresh()
         panel.layoutIfNeeded()
         if let screen = NSScreen.main {
@@ -2601,9 +2607,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         model.focusTick += 1
     }
 
-    func hidePanel() {
+    func hidePanel(restoreFocus: Bool = false) {
         panel.orderOut(nil)
         model.panelVisible = false
+        // dismissals (Esc / ⌥Space) hand focus back to where it was; action
+        // paths (jump, new session…) pick their own target instead
+        if restoreFocus, let p = previousApp,
+           p.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            p.activate(options: [])
+        }
     }
 
     func windowDidResignKey(_ notification: Notification) {
