@@ -21,6 +21,13 @@ model=$(jq -r '.model // empty' <<<"$input")
 agent="claude"
 case "$transcript" in */.codex/*) agent="codex" ;; esac
 
+# the payload's transcript path can be stale (forks/worktrees land in a
+# different per-project dir) — relocate by session id
+if [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ ! -f "$transcript" ]; then
+  alt=$(ls "$HOME/.claude/projects"/*/"$session_id.jsonl" 2>/dev/null | head -1 || true)
+  [ -n "$alt" ] && transcript="$alt"
+fi
+
 # human-readable session title: first user prompt (immutable), else the
 # transcript summary — summaries evolve every few turns and made names churn
 title=""
