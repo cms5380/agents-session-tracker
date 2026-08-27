@@ -474,19 +474,19 @@ func mascotFrames(_ status: String) -> (frames: [[String]], interval: Double, ti
 }
 
 // ── codex mascot ─────────────────────────────────────────────────
-// the Codex logo as a pixel blob: cloud-flower body with a white >_
+// the Codex logo as a pixel circle with a white >_ prompt inside
 let codexBlue = Color(red: 0.42, green: 0.42, blue: 0.93)
 let codexMap: [String] = [
+    "......oooo......",
+    ".....oooooo.....",
     "....oooooooo....",
-    "..oooooooooooo..",
-    ".oooooooooooooo.",
-    "oooowooooooooooo",
-    "ooooowoooooooooo",
-    "oooowooooooooooo",
-    "oooooooowwwwoooo",
-    ".oooooooooooooo.",
-    "..oooooooooooo..",
+    "...oowooooooo...",
+    "...ooowoooooo...",
+    "...oowooooooo...",
+    "...ooooowwwoo...",
     "....oooooooo....",
+    ".....oooooo.....",
+    "......oooo......",
 ]
 
 func codexFrames(_ status: String) -> (frames: [[String]], interval: Double, tint: Color) {
