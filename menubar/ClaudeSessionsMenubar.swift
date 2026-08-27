@@ -539,6 +539,13 @@ struct SessionRow: View {
                         }
                         .onSubmit { renameCommit?(renameDraft.trimmingCharacters(in: .whitespaces)) }
                         .onExitCommand { renameCancel?() }
+                        .onChange(of: renameFocused) { focused in
+                            // clicking away commits instead of leaving the
+                            // field stuck open
+                            if !focused && isRenaming {
+                                renameCommit?(renameDraft.trimmingCharacters(in: .whitespaces))
+                            }
+                        }
                 } else {
                     Text(name)
                         .font(.system(size: 13, weight: .medium, design: .rounded))
@@ -1369,6 +1376,8 @@ struct PanelView: View {
             searchFocused = true
             draggingGroup = nil
             dropTarget = nil
+            renamingSession = nil
+            messagingSession = nil
         }
         .onAppear {
             model.moveSelection = { move($0) }
