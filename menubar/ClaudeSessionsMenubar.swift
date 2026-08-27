@@ -355,6 +355,37 @@ func drawPixelMap(_ cg: CGContext, map: [String], pixel: CGFloat,
     }
 }
 
+// agent-neutral app icon: a terminal window outline with a >_ prompt —
+// the menubar and search field use this; session rows keep agent mascots
+let appIconMap: [String] = [
+    ".oooooooooooooo.",
+    "o..............o",
+    "o..............o",
+    "o..o...........o",
+    "o...o..........o",
+    "o..o...........o",
+    "o......oooo....o",
+    "o..............o",
+    "o..............o",
+    ".oooooooooooooo.",
+]
+
+struct PixelAppIcon: View {
+    var pixel: CGFloat = 3
+    @Environment(\.displayScale) private var scale
+    var body: some View {
+        let px = quantizedPixel(pixel, scale: scale)
+        Canvas { ctx, _ in
+            ctx.withCGContext { cg in
+                drawPixelMap(cg, map: appIconMap, pixel: px) {
+                    $0 == "o" ? NSColor.textColor.withAlphaComponent(0.75) : nil
+                }
+            }
+        }
+        .frame(width: px * 16, height: px * 10)
+    }
+}
+
 struct PixelMascot: View {
     var pixel: CGFloat = 3
     @Environment(\.displayScale) private var scale
@@ -1649,7 +1680,7 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                PixelMascot(pixel: 2.2)
+                PixelAppIcon(pixel: 2.2)
                 TextField("Search…  (/ skills)", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
@@ -2247,7 +2278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // menubar mascot frames: static idle pose + the running bounce, all
     // 11 rows tall so swapping frames never shifts the icon's baseline.
     // The mascot itself is user-selectable (right-click → Claude / Codex).
-    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
+    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
     var menubarStaticImage = NSImage()
     var menubarStatusFrames: [String: [NSImage]] = [:]
     var menubarStatus: String?
@@ -2257,15 +2288,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func buildMenubarImages() {
         let empty = String(repeating: ".", count: 16)
-        let codex = menubarAgent == "codex"
-        menubarStaticImage = mascotNSImage(map: [empty] + (codex ? codexMap : mascotMap), pixel: 1.2)
+        let body: [String]
+        switch menubarAgent {
+        case "claude": body = mascotMap
+        case "codex": body = codexMap
+        default: body = appIconMap
+        }
+        menubarStaticImage = mascotNSImage(map: [empty] + body, pixel: 1.2)
         menubarStatusFrames = [:]
         for st in ["running", "waiting"] {
-            let frames = (codex ? codexFrames(st) : mascotFrames(st)).frames
+            let frames: [[String]]
+            switch menubarAgent {
+            case "claude": frames = mascotFrames(st).frames
+            case "codex": frames = codexFrames(st).frames
+            default: // generic: the terminal glyph bounces / raises !!
+                if st == "running" {
+                    frames = [[empty] + body, body + [empty]]
+                } else {
+                    frames = [[".......!!......."] + body, [empty] + body]
+                }
+            }
             menubarStatusFrames[st] = frames.map { mascotNSImage(map: $0, pixel: 1.2) }
         }
     }
 
+    @objc func chooseMenubarGeneric() { setMenubarAgent("generic") }
     @objc func chooseMenubarClaude() { setMenubarAgent("claude") }
     @objc func chooseMenubarCodex() { setMenubarAgent("codex") }
     func setMenubarAgent(_ agent: String) {
@@ -2278,12 +2325,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func showMenubarMenu() {
         let menu = NSMenu()
+        let g = NSMenuItem(title: "메뉴바 아이콘: 기본", action: #selector(chooseMenubarGeneric), keyEquivalent: "")
+        g.target = self
+        g.state = (menubarAgent != "claude" && menubarAgent != "codex") ? .on : .off
         let c = NSMenuItem(title: "메뉴바 아이콘: Claude", action: #selector(chooseMenubarClaude), keyEquivalent: "")
         c.target = self
         c.state = menubarAgent == "claude" ? .on : .off
         let x = NSMenuItem(title: "메뉴바 아이콘: Codex", action: #selector(chooseMenubarCodex), keyEquivalent: "")
         x.target = self
         x.state = menubarAgent == "codex" ? .on : .off
+        menu.addItem(g)
         menu.addItem(c)
         menu.addItem(x)
         statusItem.menu = menu
