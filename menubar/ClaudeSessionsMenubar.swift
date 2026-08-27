@@ -131,7 +131,7 @@ final class Model: ObservableObject {
     func searchArchive(_ query: String) {
         archiveTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 2, !q.hasPrefix(">"), !q.hasPrefix("/") else {
+        guard q.count >= 2, !q.hasPrefix("/") else {
             archive = []
             archiveSearching = false
             return
@@ -926,16 +926,11 @@ struct PanelView: View {
                                               $0.description.isEmpty ? "skill" : $0.description) }
     }
 
-    // Raycast-style command mode: query starting with ">"
-    var commandQuery: String? {
-        guard query.hasPrefix(">") else { return nil }
-        return String(query.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
-    }
-
+    // Raycast-style: typing matches commands right alongside sessions
     var commandRows: [PanelRow] {
-        guard let q = commandQuery else { return [] }
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard searching, !q.isEmpty, !query.hasPrefix("/") else { return [] }
         var cmds: [(String, String, String)] = [
-            ("hub", "Agents Hub", "에이전트 대시보드 탭 열기"),
             ("clean", "Clean Stale Sessions", "오래된 세션 정리"),
             ("quit", "Quit Claude Sessions", "앱 종료"),
             ("agent-toggle", "Main Agent: \(model.mainAgent) → \(model.otherAgent)",
@@ -952,9 +947,8 @@ struct PanelView: View {
             cmds.append(("custom:\(name)", name,
                          (silent ? "⚙︎ " : "⌘ ") + String(cmd.dropFirst(silent ? 1 : 0)).prefix(40)))
         }
-        let filtered = q.isEmpty ? cmds
-            : cmds.filter { $0.1.lowercased().contains(q) || $0.2.lowercased().contains(q) }
-        return filtered.map { .command($0.0, $0.1, $0.2) }
+        return cmds.filter { $0.1.lowercased().contains(q) || $0.2.lowercased().contains(q) }
+            .prefix(8).map { .command($0.0, $0.1, $0.2) }
     }
 
     // "c biddersvc 광고 로직 봐줘" → folder token + trailing initial prompt
@@ -1105,7 +1099,7 @@ struct PanelView: View {
     // Raycast keyword: first word matches a commands.json name → run with
     // the rest of the query as {query}
     var keywordMatch: (name: String, arg: String, preview: String, template: String)? {
-        guard commandQuery == nil, searching else { return nil }
+        guard searching else { return nil }
         let parts = query.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
         guard let first = parts.first, !first.isEmpty else { return nil }
         let name = String(first)
@@ -1190,7 +1184,6 @@ struct PanelView: View {
     // the navigable list, in display order
     var rows: [PanelRow] {
         if skillQuery != nil { return skillRows }
-        if commandQuery != nil { return commandRows }
         if let kw = keywordMatch {
             var out: [PanelRow] = []
             let (folderToken, promptRest) = splitKeywordArg(kw.arg)
@@ -1222,6 +1215,7 @@ struct PanelView: View {
             for st in ["waiting", "input", "finished", "running", "done", "gone"] {
                 out += filtered.filter { $0.status == st }.map { .session($0, indented: false) }
             }
+            out += commandRows
             let liveIds = Set(model.sessions.map { $0.session_id })
             let archived = model.archive.filter { !liveIds.contains($0.session_id) }
             if model.archiveSearching {
@@ -1619,7 +1613,7 @@ struct PanelView: View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
                 PixelMascot(pixel: 2.2)
-                TextField("Search…  (> commands, / skills)", text: $query)
+                TextField("Search…  (/ skills)", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
                     .focused($searchFocused)
@@ -1921,20 +1915,17 @@ struct PanelView: View {
                     }
                     return
                 }
-                // command/skill palette: Tab types the selected command into
-                // the field (custom commands land in keyword mode so
-                // arguments can follow)
-                if query.hasPrefix(">") || query.hasPrefix("/") {
-                    if case .command(let id, let title, _)? = rows[safe: selected] {
-                        if id.hasPrefix("custom:") {
-                            query = "\(String(id.dropFirst(7))) "
-                        } else if id.hasPrefix("skill:") {
-                            query = "/\(String(id.dropFirst(6))) "
-                        } else {
-                            query = ">\(title)"
-                        }
-                        selected = 0
+                // a command row selected: Tab types it into the field
+                // (custom commands land in keyword mode so arguments follow)
+                if case .command(let id, let title, _)? = rows[safe: selected] {
+                    if id.hasPrefix("custom:") {
+                        query = "\(String(id.dropFirst(7))) "
+                    } else if id.hasPrefix("skill:") {
+                        query = "/\(String(id.dropFirst(6))) "
+                    } else {
+                        query = title
                     }
+                    selected = 0
                     return
                 }
                 if case .session(let s, _)? = rows[safe: selected], s.status != "archived" {
