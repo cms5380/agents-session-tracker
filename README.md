@@ -1,87 +1,76 @@
 # claude-session-tracker
 
-터미널 무관하게 Claude Code 세션을 추적하고, 클릭 한 번으로 해당 터미널 세션으로 점프하는 도구.
+macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패널로 모든 터미널의
+AI 코딩 세션을 한눈에 보고, 키 하나로 해당 터미널 탭으로 점프한다.
 
-cmux처럼 터미널 레이어가 아니라 **Claude Code hook 레이어**에서 추적하므로 어떤 터미널을 쓰든 동작한다.
-점프(포커스)는 터미널별 드라이버로 처리: **cmux → iTerm2 → tmux → Terminal.app** 순으로 시도.
+터미널 레이어(cmux 등)가 아니라 **에이전트 훅 레이어**에서 추적하므로 어떤 터미널을
+쓰든 동작한다. iTerm2, Terminal.app, VS Code, cmux, tmux 지원.
 
-## 구성
+## 기능
 
-```
-hooks/track.sh                 # Claude Code 훅 — 세션 상태 + 터미널 식별자 기록
-bin/cst                        # CLI — list / jump / clean
-swiftbar/claude-sessions.5s.sh # SwiftBar menubar 플러그인 (선택)
-```
+- **⌥Space 플로팅 패널** — 상태별 섹션(NEEDS INPUT / REPLY WAITING / FINISHED / RUNNING / IDLE)으로 세션 정리
+- **원클릭 점프** — 세션이 열린 터미널 탭/윈도우로 포커스 이동 (죽은 세션은 resume 탭 자동 오픈)
+- **상태 추적** — 실행 중 / 승인 대기 / 입력 대기 / 완료 / 유휴, 픽셀 마스코트 애니메이션으로 표시
+- **알림** — 승인 필요·작업 완료 시 macOS 알림, 클릭하면 해당 세션으로 점프
+- **그룹 + 핀** — 드래그로 그룹핑·정렬, 그룹 칩 필터, 그룹별 핀 고정
+- **키보드 우선** — 방향키 탐색, ⌘1–9 점프, ⌃X 중지/종료, ⌃R 이름 변경, ⌘R 새로고침
+- **커맨드 팔레트** — 키워드 커스텀 명령(`{query}`/`{prompt}` 치환), `/` 스킬 팔레트, 폴더 자동완성
+- **아카이브 검색** — 종료된 세션 검색 후 resume
+- **Codex 지원** — OpenAI Codex CLI(0.147+) 세션도 동일하게 추적 (파란 원형 `>_` 아이콘)
+- **메뉴바** — 승인 대기 카운트 + 마스코트 (running이면 바운스, 우클릭으로 Claude/Codex 선택)
 
-상태 저장: `~/.local/state/claude-session-tracker/sessions/<session_id>.json`
+## 요구 사항
+
+- macOS (Apple Silicon/Intel), Xcode Command Line Tools (`xcode-select --install`)
+- `jq` (`brew install jq`)
+- [Claude Code](https://claude.com/claude-code) — Codex는 선택
+- 점프 기능은 iTerm2에서 가장 완전함 (Terminal.app / VS Code / cmux / tmux도 지원)
 
 ## 설치
 
-### 1. 훅 등록
-
-`~/.claude/settings.json`의 `hooks`에 추가:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "$HOME/Documents/GitHub/claude-session-tracker/hooks/track.sh" }] }
-    ],
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "$HOME/Documents/GitHub/claude-session-tracker/hooks/track.sh" }] }
-    ],
-    "Notification": [
-      { "hooks": [{ "type": "command", "command": "$HOME/Documents/GitHub/claude-session-tracker/hooks/track.sh" }] }
-    ],
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "$HOME/Documents/GitHub/claude-session-tracker/hooks/track.sh" }] }
-    ],
-    "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "$HOME/Documents/GitHub/claude-session-tracker/hooks/track.sh" }] }
-    ]
-  }
-}
+```sh
+git clone https://github.com/cms5380/claude-session-tracker.git
+cd claude-session-tracker
+./install.sh          # Codex도 쓰면: ./install.sh --codex
 ```
 
-### 2. CLI
+설치 내용:
 
-```bash
-ln -s "$PWD/bin/cst" /usr/local/bin/cst
+1. `~/.claude/session-tracker/`에 CLI(`cst`)와 훅 스크립트 복사
+2. `~/.claude/settings.json`에 훅 5개 등록 (기존 설정은 `.bak-cst`로 백업)
+3. 메뉴바 앱을 소스에서 빌드 (`ClaudeSessions.app`)
+4. 로그인 시 자동 시작 LaunchAgent 등록
+5. `--codex`: `~/.codex/hooks.json` 생성 — 이후 codex를 한 번 실행해 훅 신뢰 프롬프트를 승인해야 함
+
+첫 실행 시 알림 권한과 iTerm2 자동화(Automation) 권한을 승인하면 된다.
+
+## 단축키
+
+| 키 | 동작 |
+|---|---|
+| ⌥Space | 패널 열기/닫기 |
+| ↑↓ / Enter | 세션 선택 / 점프 |
+| ⌘1–9 | n번째 세션으로 점프 |
+| ⌃X | 세션 중지 (두 번 누르면 종료 + 탭 닫기) |
+| ⌃R / ⌃P / ⌃C | 이름 변경 / 핀 / resume 명령 복사 |
+| ⌘R | 새로고침 |
+| `>` / `/` | 커맨드 팔레트 / 스킬 팔레트 |
+
+## 구조
+
+```
+hooks/track.sh   # Claude/Codex 훅 — 세션 상태 + 터미널 식별자 기록
+bin/cst          # CLI — jump/stop/end/그룹/핀/아카이브 등 전부
+menubar/         # SwiftUI 메뉴바 앱 (단일 파일, swiftc로 빌드)
+install.sh       # 설치 스크립트
 ```
 
-### 3. SwiftBar (menubar UI, 선택)
+상태 저장: `~/.local/state/claude-session-tracker/`
 
-```bash
-brew install --cask swiftbar
-ln -s "$PWD/swiftbar/claude-sessions.5s.sh" "<SwiftBar plugin folder>/"
+## 제거
+
+```sh
+pkill -f MacOS/ClaudeSessions
+rm -rf ~/.claude/session-tracker ~/Library/LaunchAgents/com.dean.claude-sessions.plist
+# ~/.claude/settings.json 의 hooks에서 track.sh 항목 제거 (백업: settings.json.bak-cst)
 ```
-
-menubar 표시: `🟡 N` = 입력 대기 중인 세션 N개(최우선), `🟢 N` = 실행 중 N개.
-항목 클릭 → 해당 터미널 세션으로 점프.
-
-## 사용
-
-```bash
-cst list          # 세션 목록 (🟢 running / 🟡 waiting / ⚪ done)
-cst jump <id>     # 세션으로 점프 (id 프리픽스 매칭 지원)
-cst clean [hours] # ended + N시간(기본 24) 이상 방치된 세션 정리
-```
-
-## 점프 드라이버
-
-| 우선순위 | 대상 | 식별자 | 방법 |
-|---|---|---|---|
-| 1 | cmux | `CMUX_WORKSPACE_ID` | `cmux workspace-action --action focus` (실패 시 `cmux rpc workspace.focus`) |
-| 2 | iTerm2 | `ITERM_SESSION_ID` | AppleScript로 세션 UUID 매칭 → select |
-| 3 | tmux | `TMUX_PANE` | `tmux switch-client -t <pane>` + 터미널 앱 activate |
-| 4 | Terminal.app | claude 프로세스 tty | AppleScript로 tty 매칭해 탭 선택 |
-| 폴백 | — | cwd | 알림으로 cwd 표시, `claude --resume` 안내 |
-
-식별자는 훅 실행 시점의 환경변수에서 수집한다 (훅은 claude 프로세스의 자식이라 터미널이 심은 env를 상속).
-
-## 알려진 한계
-
-- cmux `focus` 명령 시그니처는 cmux-tips 문서 기반 추정 — cmux 설치 환경에서 `cmux workspace-action --help`로 확인 후 필요 시 `bin/cst`의 `jump_cmux` 수정.
-- cmux는 surface(탭) 단위 포커스 미구현 — workspace까지만 점프.
-- Terminal.app tty 매칭은 재부팅 후 stale 가능 → 폴백 알림으로 처리.
-- 헤드리스/백그라운드 세션(`claude -p`, bg job)은 점프 대상 터미널이 없으므로 폴백 경로로 감.

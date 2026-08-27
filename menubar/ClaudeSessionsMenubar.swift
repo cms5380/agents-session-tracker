@@ -38,19 +38,6 @@ func namedColor(_ name: String?) -> Color {
 
 let cstPath = ("~/.claude/session-tracker/cst" as NSString).expandingTildeInPath
 
-// temporary diagnostics for hotkey debugging
-func dbg(_ msg: String) {
-    let line = "\(Date()) \(msg)\n"
-    if let d = line.data(using: .utf8) {
-        let path = "/tmp/claude-sessions-debug.log"
-        if let h = FileHandle(forWritingAtPath: path) {
-            h.seekToEndOfFile(); h.write(d); try? h.close()
-        } else {
-            FileManager.default.createFile(atPath: path, contents: d)
-        }
-    }
-}
-
 @discardableResult
 func runCST(_ args: [String], capture: Bool = false) -> String {
     let p = Process()
@@ -1823,7 +1810,6 @@ struct PanelView: View {
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
             model.actionKey = { action in
-                dbg("actionKey \(action) selectedRow=\(String(describing: rows[safe: selected]?.id)) count=\(rows.count)")
                 if case .label? = rows[safe: selected] { selected = firstSelectable() }
                 // on a group header: expand it and step into the first member,
                 // so a second press acts on an actual session
@@ -1999,7 +1985,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                         return nil
                     }
                 }
-                dbg("key=\(event.keyCode) ctrl=\(event.modifierFlags.contains(.control)) cmd=\(event.modifierFlags.contains(.command))")
                 if event.modifierFlags.contains(.control), !event.modifierFlags.contains(.command) {
                     // ⌃ actions on the selected session (less conflict-prone)
                     let shift = event.modifierFlags.contains(.shift)
@@ -2013,7 +1998,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     default: action = nil
                     }
                     let handled = action.flatMap { self.model.actionKey?($0) }
-                    dbg("action=\(action ?? "nil") handled=\(String(describing: handled))")
                     if handled == true { return nil }
                 }
                 return event
