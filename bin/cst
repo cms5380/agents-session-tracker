@@ -331,11 +331,16 @@ APPLESCRIPT
 # clients all show as 'claude agents', so match by tab title = agent name),
 # else open a new tab attaching directly by id
 jump_bg() { # $1=session id
-  local name
+  local short="${1:0:8}" pid name
+  # exact: a live 'claude attach <short-id>' client owns the tab
+  for pid in $(pgrep -f "claude attach $short" 2>/dev/null); do
+    if read_pid_env "$pid" && jump_resolved; then return 0; fi
+  done
+  # fallback: attach tabs opened via the agents view carry the agent name
   name=$(fetch_agents \
     | jq -r --arg sid "$1" '[.[] | select(.sessionId == $sid)] | (first // {}).name // empty')
   if [ -n "$name" ] && jump_iterm_by_title "$name" >/dev/null 2>&1; then return 0; fi
-  open_tab_with "claude attach ${1:0:8}"
+  open_tab_with "claude attach $short"
 }
 
 bg_agent_status() { # $1=session id → busy|idle|empty (background kind only —
@@ -399,6 +404,9 @@ cmd_jump() {
 
   # background agent: focus an attached tab by title, else attach in a new tab
   if [ "$kind" = "background" ]; then
+    for apid in $(pgrep -f "claude attach ${sid:0:8}" 2>/dev/null); do
+      if read_pid_env "$apid" && jump_resolved; then exit 0; fi
+    done
     if [ -n "$agent_name" ] && jump_iterm_by_title "$agent_name" >/dev/null 2>&1; then exit 0; fi
     open_tab_with "claude attach ${sid:0:8}" >/dev/null 2>&1 && exit 0
   fi
