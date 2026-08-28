@@ -1,5 +1,5 @@
 // Claude Sessions — Raycast-style floating session switcher.
-// Build: swiftc -O -o claude-sessions-menubar ClaudeSessionsMenubar.swift
+// Build: swiftc -O -o AgentsSessionTracker AgentsSessionTracker.swift
 import AppKit
 import Carbon.HIToolbox
 import SwiftUI

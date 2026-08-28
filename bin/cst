@@ -903,7 +903,7 @@ case "${1:-list}" in
         | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
     fi
     if [ -z "$iterm_id" ]; then
-      osascript -e 'display notification "터미널 핸들이 없어 입력 불가 (헤드리스 전송을 쓰세요)" with title "Claude Sessions"' 2>/dev/null || true
+      osascript -e 'display notification "터미널 핸들이 없어 입력 불가 (헤드리스 전송을 쓰세요)" with title "Agents Session Tracker"' 2>/dev/null || true
       exit 1
     fi
     uuid="${iterm_id##*:}"
@@ -1143,7 +1143,7 @@ APPLESCRIPT
                 -(.updated_at // 0))
       | (first // {}).session_id // empty')
     if [ -z "$sid" ]; then
-      osascript -e 'display notification "지금 주의 필요한 세션 없음" with title "Claude Sessions"' 2>/dev/null || true
+      osascript -e 'display notification "지금 주의 필요한 세션 없음" with title "Agents Session Tracker"' 2>/dev/null || true
       exit 0
     fi
     cmd_jump "$sid"

@@ -1,4 +1,4 @@
-# claude-session-tracker
+# agents-session-tracker
 
 macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패널(⌥Space)로 모든
 터미널의 AI 코딩 세션을 한눈에 보고, 키 하나로 해당 터미널 탭으로 점프한다.
@@ -53,8 +53,8 @@ macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패�
 ## 설치
 
 ```sh
-git clone https://github.com/cms5380/claude-session-tracker.git
-cd claude-session-tracker
+git clone https://github.com/cms5380/agents-session-tracker.git
+cd agents-session-tracker
 ./install.sh          # Codex도 쓰면: ./install.sh --codex
 ```
 
@@ -62,7 +62,7 @@ cd claude-session-tracker
 
 1. `~/.claude/session-tracker/`에 CLI(`cst`)와 훅 스크립트 복사
 2. `~/.claude/settings.json`에 훅 6개 등록 (기존 설정은 `.bak-cst`로 백업)
-3. 메뉴바 앱을 소스에서 빌드 (`ClaudeSessions.app`) + 로그인 자동 시작 등록
+3. 메뉴바 앱을 소스에서 빌드 (`AgentsSessionTracker.app`) + 로그인 자동 시작 등록
 4. 시작용 커스텀 커맨드 시드 (`commands.json` 없을 때만)
 5. `--codex`: `~/.codex/hooks.json` 생성 — 이후 codex를 한 번 실행해 훅 신뢰
    프롬프트를 승인해야 추적이 시작된다
@@ -124,7 +124,7 @@ install.sh       # 설치 스크립트
 ## 제거
 
 ```sh
-pkill -f MacOS/ClaudeSessions
+pkill -f MacOS/AgentsSessionTracker
 rm -rf ~/.claude/session-tracker ~/Library/LaunchAgents/com.dean.claude-sessions.plist
 # ~/.claude/settings.json 의 hooks에서 track.sh 항목 제거 (백업: settings.json.bak-cst)
 # Codex를 연결했다면 ~/.codex/hooks.json 도 제거

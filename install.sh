@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HOME/.claude/session-tracker"
-APP="$DEST/ClaudeSessions.app"
+APP="$DEST/AgentsSessionTracker.app"
 SETTINGS="$HOME/.claude/settings.json"
 TRACK="$DEST/track.sh"
 
@@ -40,8 +40,8 @@ echo "registered claude hooks (backup: $SETTINGS.bak-cst)"
 # ── menubar app ──────────────────────────────────────────────────
 mkdir -p "$APP/Contents/MacOS"
 cp "$REPO_DIR/menubar/Info.plist" "$APP/Contents/Info.plist"
-echo "building ClaudeSessions.app (first build takes ~30s)…"
-swiftc -O -o "$APP/Contents/MacOS/ClaudeSessions" "$REPO_DIR/menubar/ClaudeSessionsMenubar.swift"
+echo "building AgentsSessionTracker.app (first build takes ~30s)…"
+swiftc -O -o "$APP/Contents/MacOS/AgentsSessionTracker" "$REPO_DIR/menubar/AgentsSessionTracker.swift"
 echo "built: $APP"
 
 # ── starter custom commands (kept if one already exists) ─────────
@@ -86,7 +86,7 @@ if [ "${1:-}" = "--codex" ]; then
 fi
 
 # ── launch ───────────────────────────────────────────────────────
-pkill -f "MacOS/ClaudeSessions" 2>/dev/null || true
+pkill -f "MacOS/AgentsSessionTracker" 2>/dev/null || true
 sleep 0.5
 open "$APP"
 
