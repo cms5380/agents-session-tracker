@@ -775,11 +775,17 @@ cmd_sessions_json() {
     done <<<"$lineage"
   fi
 
-  # fork parents hidden above must not resurface as untracked daemon rows
-  local fork_parents_json
+  # fork parents hidden above — and sessions the user explicitly ended
+  # (their record says so) — must not resurface as untracked daemon rows
+  local fork_parents_json ended_json hidden_json
   fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
+  ended_json=$({ for rf in "$STATE_DIR"/*.json; do
+      [ -e "$rf" ] || continue
+      jq -r 'select(.status == "ended") | .session_id' "$rf" 2>/dev/null
+    done; } | jq -R . | jq -sc 'map(select(length > 0))' 2>/dev/null || echo '[]')
+  hidden_json=$(jq -c -n --argjson a "$fork_parents_json" --argjson b "$ended_json" '$a + $b')
   extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
-             --argjson forked "$fork_parents_json" '
+             --argjson forked "$hidden_json" '
     [.[] | select([.sessionId] | inside($tracked) | not)
          | select([.sessionId] | inside($forked) | not) | {
       session_id: .sessionId,
