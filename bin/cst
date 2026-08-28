@@ -675,7 +675,7 @@ cmd_sessions_json() {
       [ -e "$rf" ] || continue
       jq -e '.continuation == true' "$rf" >/dev/null 2>&1 || continue
       cst_st=$(jq -r '.status' "$rf")
-      case "$cst_st" in running|waiting|input|finished) ;; *) continue ;; esac
+      case "$cst_st" in (running|waiting|input|finished) ;; (*) continue ;; esac
       par=$(jq -r '.parent // ""' "$rf")
       [ -n "$par" ] && [ -f "$STATE_DIR/$par.json" ] || continue
       pp=$(jq -r '.pid // empty' "$STATE_DIR/$par.json")
