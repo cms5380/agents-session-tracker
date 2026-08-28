@@ -1145,10 +1145,13 @@ APPLESCRIPT
             title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
           fi
           if [ -z "$title" ]; then
+            # compaction summaries are one giant message — drop them whole,
+            # or their body lines ("1. Primary Request…") become titles
             title=$( (head -n 80 "$t" 2>/dev/null \
               | jq -r 'select(.type=="user") | .message.content
-                       | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
-              | grep -vE '^\s*(<|$)' | grep -v '^This session is being continued' \
+                       | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end
+                       | select(test("This session is being continued|Primary Request and Intent|^(Summary|Analysis):") | not)' 2>/dev/null \
+              | grep -vE '^\s*(<|$)' \
               | head -n 1 | cut -c1-60) || true)
           fi
           ;;
