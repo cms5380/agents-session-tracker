@@ -569,6 +569,41 @@ func iconChoice(_ key: String) -> (key: String, label: String, map: [String], ti
     iconChoices.first { $0.key == key } ?? iconChoices[0]
 }
 
+// card-grid icon picker shown under the status item on right-click
+struct IconPickerView: View {
+    let current: String
+    let onPick: (String) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("아이콘")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .tracking(1.4)
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(66), spacing: 8), count: 4),
+                      spacing: 8) {
+                ForEach(iconChoices, id: \.key) { c in
+                    let selected = current == c.key
+                    VStack(spacing: 5) {
+                        PixelAppIcon(choice: c.key, pixel: 2.4)
+                        Text(c.label)
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .foregroundStyle(selected ? .primary : .secondary)
+                    }
+                    .frame(width: 66, height: 58)
+                    .background(RoundedRectangle(cornerRadius: 9)
+                        .fill(selected ? claudeOrange.opacity(0.22) : Color.primary.opacity(0.05)))
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(selected ? claudeOrange.opacity(0.8) : Color.clear, lineWidth: 1))
+                    .contentShape(RoundedRectangle(cornerRadius: 9))
+                    .onTapGesture { onPick(c.key) }
+                }
+            }
+        }
+        .padding(12)
+        .background(VisualEffect().clipShape(RoundedRectangle(cornerRadius: 12)))
+    }
+}
+
 struct PixelAppIcon: View {
     var choice: String = "generic"
     var pixel: CGFloat = 3
@@ -2475,7 +2510,11 @@ final class FloatingPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { // esc
-            appDelegate?.hidePanel(restoreFocus: true)
+            if self === appDelegate?.iconPanel {
+                orderOut(nil)
+            } else {
+                appDelegate?.hidePanel(restoreFocus: true)
+            }
             return
         }
         super.keyDown(with: event)
@@ -2626,7 +2665,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func windowDidResignKey(_ notification: Notification) {
         // Raycast behavior: clicking elsewhere dismisses the panel
-        hidePanel()
+        if (notification.object as? NSWindow) === iconPanel {
+            iconPanel?.orderOut(nil)
+        } else {
+            hidePanel()
+        }
     }
 
     // Global hotkeys via Carbon — no accessibility permission needed.
@@ -2761,9 +2804,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
-    @objc func chooseMenubarIcon(_ sender: NSMenuItem) {
-        setMenubarAgent(sender.representedObject as? String ?? "generic")
-    }
     func setMenubarAgent(_ agent: String) {
         menubarAgent = agent
         UserDefaults.standard.set(agent, forKey: "menubarAgent")
@@ -2773,19 +2813,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         model.iconChoiceKey = agent  // the search-field icon follows
     }
 
+    // right-click: a card grid of the pixel characters, under the status item
+    var iconPanel: FloatingPanel?
     func showMenubarMenu() {
-        let menu = NSMenu()
-        for c in iconChoices {
-            let item = NSMenuItem(title: "아이콘: \(c.label)",
-                                  action: #selector(chooseMenubarIcon(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = c.key
-            item.state = menubarAgent == c.key ? .on : .off
-            menu.addItem(item)
+        if let p = iconPanel, p.isVisible { p.orderOut(nil); return }
+        let p = iconPanel ?? {
+            let p = FloatingPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 320, height: 160),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered, defer: false)
+            p.level = .floating
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = true
+            p.delegate = self
+            iconPanel = p
+            return p
+        }()
+        p.contentViewController = NSHostingController(rootView:
+            IconPickerView(current: menubarAgent) { [weak self] key in
+                self?.setMenubarAgent(key)
+                self?.iconPanel?.orderOut(nil)
+            })
+        p.layoutIfNeeded()
+        if let btn = statusItem.button, let win = btn.window {
+            let f = win.frame
+            p.setFrameTopLeftPoint(NSPoint(x: f.midX - p.frame.width / 2,
+                                           y: f.minY - 4))
         }
-        statusItem.menu = menu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil // left-clicks keep toggling the panel
+        p.makeKeyAndOrderFront(nil)
     }
 
     func updateTitle(sessions: [Session]) {
