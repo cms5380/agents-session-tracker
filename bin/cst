@@ -1018,7 +1018,9 @@ case "${1:-list}" in
     # cst type-into <session-id> <text…> — type text straight into the
     # session's terminal (submits). Lets TUI-only slash commands (/resume…)
     # work from the panel, unlike the headless `send`.
-    [ $# -ge 3 ] || { echo "usage: cst type-into <session-id> <text>" >&2; exit 1; }
+    QUIET=""
+    if [ "${2:-}" = "--quiet" ]; then QUIET=1; shift; fi
+    [ $# -ge 3 ] || { echo "usage: cst type-into [--quiet] <session-id> <text>" >&2; exit 1; }
     sid="$2"; shift 2; msg="$*"
     f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
     iterm_id=""
@@ -1033,20 +1035,23 @@ case "${1:-list}" in
       exit 1
     fi
     uuid="${iterm_id##*:}"
-    osascript - "$uuid" "$msg" <<'APPLESCRIPT' >/dev/null 2>&1
+    osascript - "$uuid" "$msg" "${QUIET:-0}" <<'APPLESCRIPT' >/dev/null 2>&1
 on run argv
   set target to item 1 of argv
   set msg to item 2 of argv
+  set quiet to item 3 of argv
   tell application "iTerm2"
     repeat with w in windows
       repeat with t in tabs of w
         repeat with s in sessions of t
           if id of s is target then
             tell s to write text msg
-            select s
-            select t
-            select w
-            activate
+            if quiet is not "1" then
+              select s
+              select t
+              select w
+              activate
+            end if
             return "ok"
           end if
         end repeat
@@ -1222,6 +1227,22 @@ APPLESCRIPT
       jq --arg sid "$2" --arg t "$3" '.[$sid] = $t' <<<"$existing" >"$NAMES_FILE.tmp"
     fi
     mv "$NAMES_FILE.tmp" "$NAMES_FILE"
+    # sync claude's own session name too (/rename is REPL-only, so it gets
+    # typed into the live tab without stealing focus). Only when the session
+    # is parked at its prompt — mid-turn or awaiting an answer, injected
+    # text would land in the conversation instead.
+    if [ "$3" != "-" ]; then
+      f="$STATE_DIR/$2.json"
+      if [ -f "$f" ]; then
+        IFS=$'\t' read -r r_agent r_pid r_status <<<"$(jq -r \
+          '[(.agent // "claude"), (.pid // 0 | tostring), (.status // "")] | @tsv' "$f")"
+        if [ "$r_agent" = "claude" ] && kill -0 "$r_pid" 2>/dev/null; then
+          case "$r_status" in
+            (done|finished) "$0" type-into --quiet "$2" "/rename $3" >/dev/null 2>&1 || true ;;
+          esac
+        fi
+      fi
+    fi
     ;;
   group-move)
     # cst group-move <name> <before-name|end> — reorder groups
