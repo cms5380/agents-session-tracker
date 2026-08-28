@@ -408,6 +408,13 @@ cmd_jump() {
       # no tracker record — the daemon may still know this session
       if resolve_by_session "$sid" && jump_resolved; then exit 0; fi
       if [ -n "$(bg_agent_status "$sid")" ]; then jump_bg "$sid" && exit 0; fi
+      # completed-but-resumable daemon job (rows synthesized from --all):
+      # reopen it in a resume tab at its recorded cwd
+      acwd=$(claude agents --json --all 2>/dev/null \
+        | jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | (first // {}).cwd // empty')
+      if [ -n "$acwd" ]; then
+        open_resume_tab "$acwd" "$sid" >/dev/null 2>&1 && exit 0
+      fi
       echo "unknown session: $sid" >&2; exit 1
     fi
   fi
