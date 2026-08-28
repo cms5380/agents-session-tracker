@@ -677,13 +677,19 @@ struct SettingsView: View {
     @AppStorage("notifyInput") private var notifyInput = true
     @AppStorage("notifyFinished") private var notifyFinished = true
 
+    @State private var panelKeyLabels: [String: String] = [:]
+
     func hotkeyButton(_ id: String, _ label: String, apply: @escaping (Int, Int) -> Void,
                       refresh: @escaping () -> String) -> some View {
         Button {
             recording = id
             appDelegate?.beginKeyCapture { k, m in
                 if k >= 0 { apply(k, m) }
-                if id == "panel" { panelHK = refresh() } else { attnHK = refresh() }
+                switch id {
+                case "panel": panelHK = refresh()
+                case "attn": attnHK = refresh()
+                default: panelKeyLabels[id] = refresh()
+                }
                 recording = nil
             }
         } label: {
@@ -758,12 +764,21 @@ struct SettingsView: View {
                                              refresh: { appDelegate?.currentAttentionLabel() ?? "" })
                             }
                         }
-                        Section("패널 안에서") {
-                            keyRow("↩ / ⌘1–9", "세션 점프")
+                        Section("패널 안 — 세션 액션 (변경 가능)") {
+                            ForEach(AppDelegate.panelActions, id: \.id) { a in
+                                LabeledContent(a.label) {
+                                    hotkeyButton(a.id,
+                                                 panelKeyLabels[a.id]
+                                                     ?? appDelegate?.panelBindingLabel(a.id) ?? "",
+                                                 apply: { appDelegate?.setPanelBinding(a.id, keyCode: $0, carbonMods: $1) },
+                                                 refresh: { appDelegate?.panelBindingLabel(a.id) ?? "" })
+                                }
+                            }
+                        }
+                        Section("패널 안 — 고정") {
+                            keyRow("↩ / ⌘1–9", "세션 점프 · ⌘↩ 대체 동작")
                             keyRow("Tab", "퀵 프롬프트 · 커맨드 자동완성")
-                            keyRow("⌃X", "중지 → 한 번 더: 완전 종료")
-                            keyRow("⌃R · ⌃P · ⌃C", "이름 변경 · 핀 · resume 복사")
-                            keyRow("/", "스킬 팔레트")
+                            keyRow("/", "스킬 팔레트 · ⌘R 새로고침")
                         }
                     }
                     .formStyle(.grouped)
@@ -3045,6 +3060,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             case 124: return self.model.arrowLR?(1) == true ? nil : event // right
             case 48: self.model.messageSelected?(); return nil // tab → quick prompt
             default:
+                // user-remappable session actions first — an explicit custom
+                // binding beats the fixed chords below
+                var carbon = 0
+                if event.modifierFlags.contains(.command) { carbon |= cmdKey }
+                if event.modifierFlags.contains(.option) { carbon |= optionKey }
+                if event.modifierFlags.contains(.control) { carbon |= controlKey }
+                if event.modifierFlags.contains(.shift) { carbon |= shiftKey }
+                if carbon != 0 {
+                    for a in Self.panelActions {
+                        let b = self.panelBinding(a.id)
+                        if Int(event.keyCode) == b.code, carbon == b.mods,
+                           self.model.actionKey?(a.id) == true {
+                            return nil
+                        }
+                    }
+                }
                 if event.modifierFlags.contains(.command) {
                     // ⌘1..9 — jump to the badged target
                     let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5,
@@ -3061,21 +3092,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                         self.model.enterKey?(true)
                         return nil
                     }
-                }
-                if event.modifierFlags.contains(.control), !event.modifierFlags.contains(.command) {
-                    // ⌃ actions on the selected session (less conflict-prone)
-                    let shift = event.modifierFlags.contains(.shift)
-                    let action: String?
-                    switch (event.keyCode, shift) {
-                    case (35, _): action = "pin"        // ⌃P
-                    case (15, false): action = "rename" // ⌃R
-                    case (8, _): action = "copyresume"  // ⌃C
-                    case (7, _): action = "end"         // ⌃X
-                    case (51, _): action = "ungroup"    // ⌃⌫
-                    default: action = nil
-                    }
-                    let handled = action.flatMap { self.model.actionKey?($0) }
-                    if handled == true { return nil }
                 }
                 return event
             }
@@ -3223,8 +3239,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         kVK_ANSI_8: "8", kVK_ANSI_9: "9",
         kVK_ANSI_Grave: "`", kVK_ANSI_Minus: "-", kVK_ANSI_Equal: "=",
         kVK_ANSI_Slash: "/", kVK_ANSI_Period: ".", kVK_ANSI_Comma: ",",
-        kVK_ANSI_Semicolon: ";",
+        kVK_ANSI_Semicolon: ";", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
     ]
+
+    // ── remappable in-panel action keys (modifier+key, stored like the
+    // global hotkeys; defaults are the classic ⌃ set) ───────────────
+    static let panelActions: [(id: String, label: String, defCode: Int, defMods: Int)] = [
+        ("end", "세션 중지 → 종료", kVK_ANSI_X, controlKey),
+        ("rename", "이름 변경", kVK_ANSI_R, controlKey),
+        ("pin", "핀 토글", kVK_ANSI_P, controlKey),
+        ("copyresume", "resume 명령 복사", kVK_ANSI_C, controlKey),
+        ("ungroup", "그룹 해제", kVK_Delete, controlKey),
+    ]
+
+    func panelBinding(_ id: String) -> (code: Int, mods: Int) {
+        guard let def = Self.panelActions.first(where: { $0.id == id }) else { return (0, 0) }
+        let d = UserDefaults.standard
+        let k = d.object(forKey: "panelKey.\(id)") as? Int ?? def.defCode
+        let m = d.object(forKey: "panelMods.\(id)") as? Int ?? def.defMods
+        return (k, m)
+    }
+
+    func setPanelBinding(_ id: String, keyCode: Int, carbonMods: Int) {
+        UserDefaults.standard.set(keyCode, forKey: "panelKey.\(id)")
+        UserDefaults.standard.set(carbonMods, forKey: "panelMods.\(id)")
+    }
+
+    func panelBindingLabel(_ id: String) -> String {
+        let b = panelBinding(id)
+        return comboLabel(keyCode: b.code, carbonMods: b.mods)
+    }
 
     func currentHotkeyLabel() -> String {
         let d = UserDefaults(suiteName: "com.dean.claude-sessions")
