@@ -580,6 +580,22 @@ gc_session_assets() {
       'if type == "array" then map(select(. as $s | $live | index($s))) else . end' \
       --argjson live "$live"
   done
+  # a child only ever showed its parent's group through inheritance, so
+  # pruning the parent's entry would silently unset it — materialize the
+  # inherited group onto the child first (same handover idea as the pin slot)
+  local kids
+  kids=$(jq -c -s '[.[] | select((.parent // "") != "")
+                        | {sid: .session_id, parent: .parent}]' \
+    "$STATE_DIR"/*.json 2>/dev/null || echo '[]')
+  if [ "$kids" != "[]" ] && [ -n "$kids" ]; then
+    write_json_file "$GROUPS_FILE" '
+      if type == "object" then
+        reduce $kids[] as $k (.;
+          if (.[$k.sid] // "") == "" and (.[$k.parent] // "") != ""
+             and (($live | index($k.parent)) | not)
+          then .[$k.sid] = .[$k.parent] else . end)
+      else . end' --argjson kids "$kids" --argjson live "$live"
+  fi
   for f in "$NAMES_FILE" "$GROUPS_FILE"; do
     write_json_file "$f" \
       'if type == "object" then with_entries(select(.key as $s | $live | index($s))) else . end' \
