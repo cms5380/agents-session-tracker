@@ -627,14 +627,6 @@ func emojiNSImage(_ emoji: String, height: CGFloat) -> NSImage {
 struct IconPickerView: View {
     let current: String
     let onPick: (String) -> Void
-    @State private var emojiDraft = savedEmojiIcon
-
-    func applyEmoji() {
-        let e = emojiDraft.trimmingCharacters(in: .whitespaces)
-        guard !e.isEmpty else { return }
-        UserDefaults.standard.set(String(e.prefix(2)), forKey: "menubarEmoji")
-        onPick("emoji")
-    }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("아이콘")
@@ -664,22 +656,6 @@ struct IconPickerView: View {
                 }
             }
             Divider().padding(.vertical, 2)
-            HStack {
-                Text("이모지 아이콘")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                TextField("🐣", text: $emojiDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 13))
-                    .frame(width: 52)
-                    .multilineTextAlignment(.center)
-                    .onSubmit { applyEmoji() }
-                Button("적용") { applyEmoji() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(claudeOrange)
-            }
             HStack {
                 Spacer()
                 Button {
