@@ -392,11 +392,22 @@ cmd_jump() {
       echo "unknown session: $sid" >&2; exit 1
     fi
   fi
-  # jumping to a finished/input-waiting session acknowledges it
+  # jumping to a finished/input-waiting session acknowledges it — including
+  # folded continuation children, whose status bubbles up to this row
   case "$(jq -r '.status' "$file")" in
     finished|input)
       jq '.status = "done"' "$file" >"$file.tmp.$$" && mv "$file.tmp.$$" "$file" ;;
   esac
+  ack_sid=$(jq -r '.session_id' "$file")
+  for cf in "$STATE_DIR"/*.json; do
+    [ -e "$cf" ] || continue
+    [ "$(jq -r '.parent // ""' "$cf" 2>/dev/null)" = "$ack_sid" ] || continue
+    jq -e '.continuation == true' "$cf" >/dev/null 2>&1 || continue
+    case "$(jq -r '.status' "$cf")" in
+      (finished|input)
+        jq '.status = "done"' "$cf" >"$cf.tmp.$$" && mv "$cf.tmp.$$" "$cf" ;;
+    esac
+  done
 
   local cmux_ws iterm_id tmux_pane tty term_program app pid cwd
   cmux_ws=$(jq -r '.terminal.cmux_workspace_id // empty' "$file")
