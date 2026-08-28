@@ -1291,7 +1291,11 @@ APPLESCRIPT
     ;;
   usage-json)
     # cst usage-json — quota snapshot for the panel footer.
-    #   codex: official rate_limits from the newest rollout event
+    #   codex: official rate_limits from the newest rollout event.
+    #   NOTE: rollout files are undocumented and slated for migration to
+    #   thread_history_1.sqlite (background_paginated_rollout_migration
+    #   flag) — all reads here degrade gracefully; add a sqlite fallback
+    #   when that flag flips
     #   claude: local estimate — tokens in the last 5h across transcripts
     USAGE_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/usage-cache.json"
     if [ -f "$USAGE_CACHE" ]; then

@@ -79,6 +79,8 @@ if [ "${1:-}" = "--codex" ]; then
   CODEX_HOOKS="$HOME/.codex/hooks.json"
   mkdir -p "$HOME/.codex"
   [ -f "$CODEX_HOOKS" ] && cp "$CODEX_HOOKS" "$CODEX_HOOKS.bak-cst"
+  # NOTE: codex trust keys embed positional indices — never REORDER this
+  # event list (append only), or every user gets re-prompted to trust
   jq -n --arg cmd "/bin/bash $TRACK" '
     {hooks: (reduce ("SessionStart","UserPromptSubmit","PreToolUse","PermissionRequest","Stop","SessionEnd") as $ev ({};
       .[$ev] = [{hooks: [{type: "command", command: $cmd}]}]))}
