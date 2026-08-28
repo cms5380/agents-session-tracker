@@ -649,7 +649,13 @@ cmd_sessions_json() {
       # agents-view TUIs and spare-pool processes register phantom sessions.
       pcmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
       case "$pcmd" in
-        (*bg-spare*|*bg-pty-host*|*"claude agents"*|"") : ;; # phantom — drop
+        (*bg-spare*|*bg-pty-host*|*"claude agents"*|"")
+          # pool-hosted but with a title = a real conversation claimed a
+          # spare (e.g. a fresh bg-job fork the daemon hasn't listed yet);
+          # titleless pool records are pre-warm phantoms — drop those
+          if [ -n "$(jq -r '.title // ""' <<<"$s")" ]; then
+            printf '%s\n' "$s"
+          fi ;;
         (*) printf '%s\n' "$s" ;;
       esac
     fi
