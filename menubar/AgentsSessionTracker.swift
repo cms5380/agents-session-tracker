@@ -60,6 +60,20 @@ func runCST(_ args: [String], capture: Bool = false) -> String {
 
 final class Model: ObservableObject {
     @Published var sessions: [Session] = []
+    // transient in-panel feedback for commands whose CLI output would
+    // otherwise be swallowed (tidy, …)
+    @Published var toast: String? = nil
+    private var toastGen = 0
+    func showToast(_ s: String) {
+        DispatchQueue.main.async {
+            self.toast = s
+            self.toastGen += 1
+            let gen = self.toastGen
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                if self.toastGen == gen { self.toast = nil }
+            }
+        }
+    }
     @Published var focusTick = 0
     @Published var panelVisible = false
     @Published var refreshing = false
@@ -272,9 +286,15 @@ final class Model: ObservableObject {
     // Arc Tidy — auto-group ungrouped sessions. The ai pass calls claude -p,
     // which can take a few seconds; both run off the main thread.
     func tidy(ai: Bool) {
+        if ai { showToast("AI가 세션 분류 중…") }
         DispatchQueue.global().async {
-            runCST(ai ? ["tidy", "ai"] : ["tidy"])
+            let out = runCST(ai ? ["tidy", "ai"] : ["tidy"], capture: true)
             self.refresh()
+            if out.hasPrefix("no ungrouped") {
+                self.showToast("미분류 세션 없음 — 이미 다 정리됨")
+            } else if let n = out.split(separator: " ").dropFirst().first {
+                self.showToast("세션 \(n)개 그룹화 완료")
+            }
         }
     }
 
@@ -2484,6 +2504,15 @@ struct PanelView: View {
                 }
             }
             .padding(.horizontal, 16).padding(.top, 14)
+
+            if let toast = model.toast {
+                Text(toast)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                    .foregroundStyle(Color.accentColor)
+                    .transition(.opacity)
+            }
 
             Divider().padding(.horizontal, 10)
 
