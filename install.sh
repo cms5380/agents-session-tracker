@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HOME/.claude/session-tracker"
-APP="$DEST/AgentsSessionTracker.app"
+APP="/Applications/Agents Session Tracker.app"
 SETTINGS="$HOME/.claude/settings.json"
 TRACK="$DEST/track.sh"
 
@@ -76,9 +76,7 @@ cat >"$LA" <<PLIST
 PLIST
 echo "login autostart: $LA"
 
-# ── /Applications symlink (Spotlight / Launchpad discovery) ──────
-ln -sfn "$APP" "/Applications/Agents Session Tracker.app" 2>/dev/null \
-  && echo "applications link: /Applications/Agents Session Tracker.app" || true
+
 
 # ── codex hooks (optional) ───────────────────────────────────────
 if [ "${1:-}" = "--codex" ]; then

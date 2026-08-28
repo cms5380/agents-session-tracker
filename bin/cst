@@ -1403,7 +1403,7 @@ APPLESCRIPT
     # apply by restarting the app (one-shot — no polling in the app)
     pkill -f "MacOS/AgentsSessionTracker" 2>/dev/null || true
     sleep 0.4
-    open "$HOME/.claude/session-tracker/AgentsSessionTracker.app" 2>/dev/null || true
+    open "/Applications/Agents Session Tracker.app" 2>/dev/null || true
     ;;
   stats-json)
     # cst stats-json — fun usage stats for the panel (1h cache).
