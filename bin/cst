@@ -1203,6 +1203,13 @@ APPLESCRIPT
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     cpid=""
     [ -n "$f" ] && cpid=$(jq -r '.pid // empty' "$f")
+    # grab the tab handle from the LIVE process before killing it — the
+    # recorded handle can be stale or missing, which left tabs open
+    live_it=""
+    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+      live_it=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
+        | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+    fi
     if [ -n "$cpid" ] && [ "$(jq -r '.owner // empty' "$f")" = "client" ] \
        && kill -0 "$cpid" 2>/dev/null; then
       kill -TERM "$cpid" 2>/dev/null || true
@@ -1210,11 +1217,14 @@ APPLESCRIPT
       entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
       dpid=$(jq -r '.pid // empty' <<<"$entry")
       if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ] && [ -n "$dpid" ]; then
+        [ -z "$live_it" ] && live_it=$(ps eww -o command= -p "$dpid" 2>/dev/null | tr ' ' '\n' \
+          | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
         kill -TERM "$dpid" 2>/dev/null || true
       else
         claude stop "${2:0:8}" >/dev/null 2>&1 &
       fi
     fi
+    [ -n "$live_it" ] && close_iterm_by_id "$live_it" >/dev/null 2>&1 &
     # attach/resume client tabs aren't in the record (pool forks have no
     # terminal env) — find them by process and close their exact tabs
     for apid in $(pgrep -f "claude attach ${2:0:8}" 2>/dev/null; pgrep -f "claude --resume $2" 2>/dev/null); do
