@@ -1805,10 +1805,6 @@ struct PanelView: View {
     // chips layout: pinned, then the chip-filtered pool in status sections
     var chipRows: [PanelRow] {
         var out: [PanelRow] = []
-        if !pinnedSessions.isEmpty {
-            out.append(.label("PINNED"))
-            out += pinnedSessions.map { .session($0, indented: false) }
-        }
         let pool = filtered.filter { !$0.pinned }
             .filter { selectedChip == nil || $0.group == selectedChip }
         // hybrid layout: only attention-worthy sessions get pulled to the
@@ -1833,28 +1829,36 @@ struct PanelView: View {
                 if oa != ob { return oa < ob }
                 return (a.updated_at ?? 0) > (b.updated_at ?? 0)
             }
+        // purely visual nesting: a child renders indented under its parent —
+        // the parent can be pinned or in the stable list. Status/ack stay
+        // independent (a child in ATTENTION stays in ATTENTION), and a
+        // manually placed child (drag → sort_order) escapes the nest
+        let parentIds = Set(rest.map { $0.session_id })
+            .union(pinnedSessions.map { $0.session_id })
+        let children = Dictionary(grouping: rest.filter {
+            guard $0.sort_order == nil, let p = $0.parent else { return false }
+            return parentIds.contains(p)
+        }, by: { $0.parent! })
+        let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
+        func appendWithChildren(_ s: Session) {
+            out.append(.session(s, indented: false))
+            for c in (children[s.session_id] ?? [])
+                .sorted(by: { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }) {
+                out.append(.session(c, indented: true))
+            }
+        }
+        if !pinnedSessions.isEmpty {
+            out.append(.label("PINNED"))
+            pinnedSessions.forEach(appendWithChildren)
+        }
         if !attn.isEmpty {
             out.append(.label("ATTENTION"))
             out += attn.map { .session($0, indented: false) }
         }
         if !rest.isEmpty {
             if !attn.isEmpty || !pinnedSessions.isEmpty { out.append(.label("SESSIONS")) }
-            // purely visual nesting: a child renders indented under its
-            // parent when both live in this list — status/ack stay
-            // independent (a child in ATTENTION stays in ATTENTION), and a
-            // manually placed child (drag → sort_order) escapes the nest
-            let restIds = Set(rest.map { $0.session_id })
-            let children = Dictionary(grouping: rest.filter {
-                guard $0.sort_order == nil, let p = $0.parent else { return false }
-                return restIds.contains(p)
-            }, by: { $0.parent! })
-            let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
             for m in rest where !nestedIds.contains(m.session_id) {
-                out.append(.session(m, indented: false))
-                for c in (children[m.session_id] ?? [])
-                    .sorted(by: { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }) {
-                    out.append(.session(c, indented: true))
-                }
+                appendWithChildren(m)
             }
         }
         return out
