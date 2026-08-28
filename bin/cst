@@ -721,7 +721,7 @@ cmd_sessions_json() {
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
       | .parent = ($s.parent // ([$pairs[] | select(.f == $s.session_id) | .p] | first) // null)
-      # a hidden continuation child is still working on the parent's behalf
+      # a hidden continuation child is still working for this parent
       | if ($frp | index(.session_id)) != null and (.status | IN("done", "gone"))
         then .status = "running" else . end
       # daemon status corrects stale hook state (permission waits stay
