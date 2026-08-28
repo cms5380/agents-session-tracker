@@ -1133,6 +1133,14 @@ struct SessionRow: View {
                             .padding(.horizontal, 4).padding(.vertical, 1)
                             .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.07)))
                     }
+                    // fork lineage rides in the meta line instead of nesting
+                    if let p = s.parent,
+                       let pt = model.sessions.first(where: { $0.session_id == p }) {
+                        Text("⑂ \((pt.title ?? "부모").prefix(12))")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                     Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
@@ -1803,15 +1811,6 @@ struct PanelView: View {
         }
         let pool = filtered.filter { !$0.pinned }
             .filter { selectedChip == nil || $0.group == selectedChip }
-        // fork children nest under their parent's row only while idle —
-        // running or attention-worthy children surface in their own status
-        // section so nothing urgent hides inside a nest
-        let poolIds = Set(pool.map { $0.session_id })
-        let children = Dictionary(grouping: pool.filter {
-            guard let p = $0.parent, poolIds.contains(p) else { return false }
-            return $0.status == "done"
-        }, by: { $0.parent! })
-        let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
         // everything that needs the user folds into one ATTENTION section,
         // ordered by urgency: approval ask > reply wait > finished
         let sections: [(statuses: [String], label: String)] = [
@@ -1821,7 +1820,7 @@ struct PanelView: View {
             (["gone"], "ENDED"),
         ]
         for (sts, label) in sections {
-            let members = pool.filter { sts.contains($0.status) && !nestedIds.contains($0.session_id) }
+            let members = pool.filter { sts.contains($0.status) }
                 .sorted { a, b in
                     let ua = sts.firstIndex(of: a.status) ?? 9
                     let ub = sts.firstIndex(of: b.status) ?? 9
@@ -1836,13 +1835,7 @@ struct PanelView: View {
                 }
             if members.isEmpty { continue }
             out.append(.label(label))
-            for m in members {
-                out.append(.session(m, indented: false))
-                for c in (children[m.session_id] ?? [])
-                    .sorted(by: { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }) {
-                    out.append(.session(c, indented: true))
-                }
-            }
+            out += members.map { .session($0, indented: false) }
         }
         return out
     }
