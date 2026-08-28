@@ -2888,11 +2888,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        // Raycast behavior: clicking elsewhere dismisses the panel
+        // Raycast behavior: clicking elsewhere dismisses the panel — but a
+        // macOS permission/security dialog stealing focus must not
         if (notification.object as? NSWindow) === iconPanel {
             iconPanel?.orderOut(nil)
-        } else {
-            hidePanel()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+            let systemDialogs = [
+                "com.apple.SecurityAgent",
+                "com.apple.UserNotificationCenter",
+                "com.apple.coreservices.uiagent",
+                "com.apple.universalaccessAuthWarn",
+            ]
+            if systemDialogs.contains(front) { return }
+            self.hidePanel()
         }
     }
 
