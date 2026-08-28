@@ -1030,6 +1030,16 @@ case "${1:-list}" in
       [ -n "$tpid" ] && iterm_id=$(ps eww -o command= -p "$tpid" 2>/dev/null | tr ' ' '\n' \
         | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
     fi
+    # daemon-hosted session (bg-spare has no terminal env) — the live attach
+    # client's tab forwards keystrokes through the pty, so type there
+    if [ -z "$iterm_id" ]; then
+      for apid in $(pgrep -f "claude attach ${sid:0:8}" 2>/dev/null); do
+        if read_pid_env "$apid" && [ -n "$R_ITERM" ]; then
+          iterm_id="$R_ITERM"
+          break
+        fi
+      done
+    fi
     if [ -z "$iterm_id" ]; then
       osascript -e 'display notification "터미널 핸들이 없어 입력 불가 (헤드리스 전송을 쓰세요)" with title "Agents Session Tracker"' 2>/dev/null || true
       exit 1
