@@ -104,7 +104,7 @@ jq '.hooks | keys' ~/.claude/settings.json                 # 훅 6종 등록 확
 2. 첫 점프 시 **iTerm2 자동화(Automation)** 권한 허용
 3. `--codex` 사용 시: `codex`를 한 번 실행해 **훅 신뢰(trust) 프롬프트** 승인
 
-문제 해결: 패널이 안 뜨면 `open ~/.claude/session-tracker/AgentsSessionTracker.app`,
+문제 해결: 패널이 안 뜨면 `open "/Applications/Agents Session Tracker.app"`,
 세션이 안 보이면 새 claude 세션을 하나 시작해 훅이 레코드를 쓰는지
 `ls ~/.local/state/claude-session-tracker/sessions/`로 확인.
 
