@@ -621,6 +621,11 @@ cmd_clean() {
 cmd_sessions_json() {
   local now sessions agents_json extra
   now=$(date +%s)
+  # the daemon query is the single slowest child (~300ms) and independent of
+  # everything until the busy/idle merge — fetch it concurrently
+  local agents_fetch="$AGENTS_CACHE.fetch.$$" agents_bgpid
+  { claude agents --json --all 2>/dev/null || printf '[]'; } >"$agents_fetch" &
+  agents_bgpid=$!
   # ended tombstones exist only so the dying client's SessionEnd can't
   # resurrect the record — after an hour they're pure garbage; reap them
   # so explicit ⌃X⌃X deletes don't pile up in the state dir forever
@@ -640,18 +645,24 @@ cmd_sessions_json() {
   [ -n "$reaped" ] && gc_session_assets >/dev/null 2>&1
   # tmp files a crashed writer never mv'd into place — orphans after an hour
   find "$STATE_DIR" -name '*.tmp.*' -mmin +60 -delete 2>/dev/null || true
-  # read records one by one so a single corrupt file (e.g. a torn write)
-  # can't blank the whole list
-  sessions=$({ for rf in "$STATE_DIR"/*.json; do
-      [ -e "$rf" ] || continue
-      jq -c . "$rf" 2>/dev/null || true
-    done; } | jq -s --argjson now "$now" '
-    [.[] | select(.status != "ended")]
-    | sort_by(-.updated_at)')
+  # fast path: every record in one jq pass. A single corrupt file (torn
+  # write) fails the batch — fall back to one-by-one so it can't blank the
+  # whole list.
+  local all_records
+  all_records=$(jq -c -s '.' "$STATE_DIR"/*.json 2>/dev/null) || all_records=""
+  if [ -z "$all_records" ]; then
+    all_records=$({ for rf in "$STATE_DIR"/*.json; do
+        [ -e "$rf" ] || continue
+        jq -c . "$rf" 2>/dev/null || true
+      done; } | jq -sc '.')
+  fi
+  sessions=$(jq -c '[.[] | select(.status != "ended")] | sort_by(-.updated_at)' <<<"$all_records")
   # --all also returns completed (resumable) background sessions — status ""
   # marks them. Live entries come first so unique_by keeps the live one.
   local agents_all
-  agents_all=$(claude agents --json --all 2>/dev/null || echo '[]')
+  wait "$agents_bgpid" 2>/dev/null || true
+  agents_all=$(cat "$agents_fetch" 2>/dev/null || echo '[]')
+  rm -f "$agents_fetch"
   jq -e . >/dev/null 2>&1 <<<"$agents_all" || agents_all='[]'
   agents_all=$(jq -c 'sort_by(if (.status // "") == "" then 1 else 0 end) | unique_by(.sessionId)' <<<"$agents_all")
   agents_json=$(jq -c 'map(select((.status // "") != ""))' <<<"$agents_all")
@@ -665,23 +676,41 @@ cmd_sessions_json() {
   fork_pairs=$(ps -axo command= 2>/dev/null \
     | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*--fork-session.*--resume [^ ]*\/\([0-9a-f-]\{36\}\)\.jsonl.*/\2:\1/p' || true)
 
+  # one jq per record extracts every scalar the shell logic needs — the
+  # previous field-at-a-time reads were ~8 jq spawns per record and dominated
+  # the whole command's latency. Tab-separated with "-" standing in for empty
+  # fields: bash 3.2's read only splits reliably on whitespace, and
+  # whitespace IFS collapses adjacent separators (empty fields would shift).
+  local agents_sids
+  agents_sids=$(jq -r '[.[].sessionId] | join(" ")' <<<"$agents_json")
   sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
-    local sid pid bg pcmd
-    sid=$(jq -r '.session_id' <<<"$s")
-    pid=$(jq -r '.pid // empty' <<<"$s")
+    local sid pid agent status owner has_title presolved tpath tu pcmd
+    IFS=$'\t' read -r sid pid agent status owner has_title presolved tu tpath <<<"$(jq -r \
+      '[.session_id, (.pid // "" | tostring), (.agent // "claude"), (.status // ""),
+        (.owner // ""), (if (.title // "") != "" then "1" else "" end),
+        (if .parent_resolved == true then "1" else "" end),
+        (.updated_at // 0 | tostring), (.transcript_path // "")]
+       | map(if . == "" then "-" else . end) | @tsv' <<<"$s")"
+    if [ "$pid" = "-" ]; then pid=""; fi
+    if [ "$owner" = "-" ]; then owner=""; fi
+    if [ "$has_title" = "-" ]; then has_title=""; fi
+    if [ "$presolved" = "-" ]; then presolved=""; fi
+    if [ "$status" = "-" ]; then status=""; fi
+    if [ "$tpath" = "-" ]; then tpath=""; fi
     # conversation continued by a live fork → show the fork, not the parent
     # (unless the parent has newer activity again)
-    local fork_sid
-    fork_sid=$(printf '%s\n' "$fork_pairs" | sed -n "s/^$sid://p" | head -1)
+    local fork_sid=""
+    case "$fork_pairs" in (*"$sid:"*)
+      fork_sid=$(printf '%s\n' "$fork_pairs" | sed -n "s/^$sid://p" | head -1) ;;
+    esac
     if [ -n "$fork_sid" ]; then
       # skip the parent when the fork is newer — or when the parent's own
       # client is dead (forwarded notifications keep bumping its timestamp)
       if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
         continue
       fi
-      local fu tu
+      local fu
       fu=$(jq -r '.updated_at // 0' "$STATE_DIR/$fork_sid.json" 2>/dev/null || echo 0)
-      tu=$(jq -r '.updated_at // 0' <<<"$s")
       if [ ! -f "$STATE_DIR/$fork_sid.json" ] || [ "$fu" -ge "$tu" ] 2>/dev/null; then
         continue
       fi
@@ -689,11 +718,10 @@ cmd_sessions_json() {
     # claude forks carry logicalParentUuid (a message uuid inside the parent
     # transcript) — resolve it to a parent session id once and cache it on
     # the record; spare-pool forks have no --fork-session cmdline to read
-    if [ "$(jq -r '.parent_resolved // empty' <<<"$s")" != "true" ] \
-       && [ "$(jq -r '.agent // "claude"' <<<"$s")" = "claude" ]; then
+    if [ -z "$presolved" ] && [ "$agent" = "claude" ]; then
       local tpath0 lp parent_sid pf psid pt is_continuation jstate jparent
       is_continuation=""
-      tpath0=$(jq -r '.transcript_path // ""' <<<"$s")
+      tpath0="$tpath"
       parent_sid=""
       # best-available source first: the daemon's job state records the fork
       # parent directly (spare-pool /fork sessions). NOTE: this file is an
@@ -763,28 +791,26 @@ cmd_sessions_json() {
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
     # turn fires no Stop hook) — a rollout file untouched for 5 minutes
     # means the turn is over
-    if [ "$(jq -r '.agent // ""' <<<"$s")" = "codex" ] \
-       && [ "$(jq -r '.status' <<<"$s")" = "running" ]; then
-      local tpath tmtime
-      tpath=$(jq -r '.transcript_path // ""' <<<"$s")
+    if [ "$agent" = "codex" ] && [ "$status" = "running" ]; then
+      local tmtime
       if [ -n "$tpath" ] && [ -f "$tpath" ]; then
         tmtime=$(stat -f %m "$tpath" 2>/dev/null || echo 0)
         [ $((now - tmtime)) -gt 300 ] && s=$(jq -c '.status = "done"' <<<"$s")
       fi
     fi
-    bg=$(jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | length' <<<"$agents_json")
-    if [ "$bg" != "0" ]; then
+    if case " $agents_sids " in (*" $sid "*) true ;; (*) false ;; esac; then
       # daemon-listed → real session
       printf '%s\n' "$s"
     elif [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
       # dead pool-owned sessions were never real terminals — drop, don't
       # revive. Legacy records (no owner recorded) count as real only if
       # they at least earned a title.
-      local owner title
-      owner=$(jq -r '.owner // ""' <<<"$s")
-      title=$(jq -r '.title // ""' <<<"$s")
-      if [ "$owner" = "client" ] || { [ -z "$owner" ] && [ -n "$title" ]; }; then
-        jq -c '.status = "gone"' <<<"$s"
+      if [ "$owner" = "client" ] || { [ -z "$owner" ] && [ -n "$has_title" ]; }; then
+        if [ "$status" = "gone" ]; then
+          printf '%s\n' "$s"
+        else
+          jq -c '.status = "gone"' <<<"$s"
+        fi
       fi
     else
       # alive but unknown to the daemon: real only if owned by a real client.
@@ -829,10 +855,8 @@ cmd_sessions_json() {
   # (their record says so) — must not resurface as untracked daemon rows
   local fork_parents_json ended_json hidden_json
   fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
-  ended_json=$({ for rf in "$STATE_DIR"/*.json; do
-      [ -e "$rf" ] || continue
-      jq -r 'select(.status == "ended") | .session_id' "$rf" 2>/dev/null
-    done; } | jq -R . | jq -sc 'map(select(length > 0))' 2>/dev/null || echo '[]')
+  ended_json=$(jq -c '[.[] | select(.status == "ended") | .session_id]' \
+    <<<"$all_records" 2>/dev/null || echo '[]')
   hidden_json=$(jq -c -n --argjson a "$fork_parents_json" --argjson b "$ended_json" '$a + $b')
   extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
              --argjson forked "$hidden_json" '

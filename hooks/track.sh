@@ -31,10 +31,21 @@ if [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ ! -f "$transcript" ]; th
   [ -n "$alt" ] && transcript="$alt"
 fi
 
+# the record is read early so the expensive transcript digs below can be
+# skipped once title/model are already known — this script runs on every
+# tool call, so the common case must stay cheap
+file="$STATE_DIR/$session_id.json"
+existing="{}"
+[ -f "$file" ] && existing=$(cat "$file")
+# a torn record (crashed writer) must not wedge the hook — start fresh
+jq -e . >/dev/null 2>&1 <<<"$existing" || existing="{}"
+have=$(jq -r '(if (.title // "") != "" then "t" else "" end)
+              + (if (.model // "") != "" then "m" else "" end)' <<<"$existing")
+
 # human-readable session title: first user prompt (immutable), else the
 # transcript summary — summaries evolve every few turns and made names churn
 title=""
-if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+if [ -n "$transcript" ] && [ -f "$transcript" ] && [ "${have#*t}" = "$have" ]; then
   if [ "$agent" = "codex" ]; then
     # skip injected context messages (they start with an <xml-ish> tag) at the
     # message level — their bodies span lines that a line filter would keep
@@ -63,8 +74,10 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
 fi
 
 # claude hooks don't carry the model — read it from the transcript's most
-# recent assistant message (cheap: tail keeps it current after /model swaps)
-if [ -z "$model" ] && [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+# recent assistant message. Once known it's only re-read at turn start, so
+# /model swaps still land on the next prompt without a tail per tool call.
+if [ -z "$model" ] && [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ -f "$transcript" ] \
+   && { [ "${have#*m}" = "$have" ] || [ "$event" = "UserPromptSubmit" ]; }; then
   model=$( (tail -n 40 "$transcript" 2>/dev/null \
     | jq -r 'select(.type=="assistant") | .message.model // empty
              | select(startswith("<") | not)' 2>/dev/null \
@@ -126,12 +139,6 @@ app=""
 if [ "${TERM_PROGRAM:-}" = "vscode" ] || [ -n "${VSCODE_GIT_ASKPASS_MAIN:-}" ] || [ "${__CFBundleIdentifier:-}" = "com.microsoft.VSCode" ]; then
   app="vscode"
 fi
-
-file="$STATE_DIR/$session_id.json"
-existing="{}"
-[ -f "$file" ] && existing=$(cat "$file")
-# a torn record (crashed writer) must not wedge the hook — start fresh
-jq -e . >/dev/null 2>&1 <<<"$existing" || existing="{}"
 
 jq -n \
   --argjson prev "$existing" \
