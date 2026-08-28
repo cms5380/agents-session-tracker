@@ -510,7 +510,13 @@ cmd_sessions_json() {
     done; } | jq -s --argjson now "$now" '
     [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
     | sort_by(-.updated_at)')
-  agents_json=$(claude agents --json 2>/dev/null || echo '[]')
+  # --all also returns completed (resumable) background sessions — status ""
+  # marks them. Live entries come first so unique_by keeps the live one.
+  local agents_all
+  agents_all=$(claude agents --json --all 2>/dev/null || echo '[]')
+  jq -e . >/dev/null 2>&1 <<<"$agents_all" || agents_all='[]'
+  agents_all=$(jq -c 'sort_by(if (.status // "") == "" then 1 else 0 end) | unique_by(.sessionId)' <<<"$agents_all")
+  agents_json=$(jq -c 'map(select((.status // "") != ""))' <<<"$agents_all")
   # this is the cache producer for fetch_agents (runs every 5s via the app)
   printf '%s' "$agents_json" >"$AGENTS_CACHE.tmp" 2>/dev/null && mv "$AGENTS_CACHE.tmp" "$AGENTS_CACHE" 2>/dev/null || true
 
@@ -657,13 +663,16 @@ cmd_sessions_json() {
     [.[] | select([.sessionId] | inside($tracked) | not)
          | select([.sessionId] | inside($forked) | not) | {
       session_id: .sessionId,
-      status: (if .status == "busy" then "running" else "done" end),
+      # "" status = completed-but-resumable (claude agents --all) → ENDED row
+      status: (if .status == "busy" then "running"
+               elif (.status // "") == "" then "gone"
+               else "done" end),
       cwd: .cwd,
       title: (if (.name // "") != "" then .name else null end),
       updated_at: 0,
       bg: true,
       kind: .kind
-    }]' <<<"$agents_json")
+    }]' <<<"$agents_all")
 
   # annotate tracked rows with the daemon's kind + name so UIs can label
   # daemon-hosted sessions correctly; attach user-defined group names
