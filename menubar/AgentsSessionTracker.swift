@@ -2092,8 +2092,7 @@ struct PanelView: View {
             }
         // purely visual nesting: a child renders indented under its parent —
         // the parent can be pinned or in the stable list. Status/ack stay
-        // independent (a child in ATTENTION stays in ATTENTION), and a
-        // manually placed child (drag → sort_order) escapes the nest
+        // independent (a child in ATTENTION stays in ATTENTION)
         let parentIds = Set(rest.map { $0.session_id })
             .union(pinnedSessions.map { $0.session_id })
         // a hidden parent (dead original) is represented by its live
@@ -2108,8 +2107,10 @@ struct PanelView: View {
             }
             return nil
         }
+        // a visible parent always claims its child — a drag slot only orders
+        // top-level rows, it no longer knocks the child out of the nest
         let children = Dictionary(grouping: rest.filter {
-            $0.sort_order == nil && displayParent($0) != nil
+            displayParent($0) != nil
         }, by: { displayParent($0)! })
         let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
         func appendWithChildren(_ s: Session) {
