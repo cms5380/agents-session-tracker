@@ -558,6 +558,18 @@ cmd_sessions_json() {
       if [ -n "$tpath0" ] && [ -f "$tpath0" ]; then
         lp=$(head -n 12 "$tpath0" 2>/dev/null \
           | jq -r 'select(.logicalParentUuid) | .logicalParentUuid' 2>/dev/null | head -1 || true)
+        if [ -z "$lp" ]; then
+          # continuation sessions (bg jobs after compaction) carry no
+          # logicalParentUuid — but their first prompt cites the original
+          # transcript path ("read the full transcript at: …/<uuid>.jsonl")
+          local cited
+          cited=$(head -n 80 "$tpath0" 2>/dev/null \
+            | grep -m1 -oE '/projects/[^" ]*[0-9a-f-]{36}\.jsonl' \
+            | grep -oE '[0-9a-f-]{36}' | tail -1 || true)
+          if [ -n "$cited" ] && [ "$cited" != "$sid" ] && [ -f "$STATE_DIR/$cited.json" ]; then
+            parent_sid="$cited"
+          fi
+        fi
         if [ -n "$lp" ]; then
           # forks copy the parent's full history (and rewrite sessionId on
           # every line), so the uuid appears in every sibling fork too — the

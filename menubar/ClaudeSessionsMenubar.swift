@@ -662,7 +662,9 @@ struct PixelAppIcon: View {
     @Environment(\.displayScale) private var scale
     var body: some View {
         let px = quantizedPixel(pixel, scale: scale)
-        if choice == "custom", !customIconFrames(height: px * 10).isEmpty {
+        if choice == "codex" {
+            CodexLogoIcon().frame(width: px * 10, height: px * 10)
+        } else if choice == "custom", !customIconFrames(height: px * 10).isEmpty {
             let frames = customIconFrames(height: px * 10)
             if frames.count > 1 {
                 TimelineView(.periodic(from: .now, by: 0.12)) { tl in
@@ -829,6 +831,125 @@ let codexMap: [String] = [
     "......oooo......",
 ]
 
+// vector rendition of the Codex logo: gradient flower blob + white >_
+// (crisp at any size, transparent background)
+struct CodexLogoIcon: View {
+    var body: some View {
+        Canvas { ctx, size in
+            let s = min(size.width, size.height)
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            var blob = Path()
+            let R = s * 0.30
+            blob.addEllipse(in: CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R))
+            for i in 0..<8 {
+                let a = CGFloat(i) * .pi / 4
+                let px = c.x + cos(a) * s * 0.22
+                let py = c.y + sin(a) * s * 0.22
+                let r = s * 0.21
+                blob.addEllipse(in: CGRect(x: px - r, y: py - r, width: 2 * r, height: 2 * r))
+            }
+            ctx.fill(blob, with: .linearGradient(
+                Gradient(colors: [Color(red: 0.57, green: 0.55, blue: 0.98),
+                                  Color(red: 0.22, green: 0.22, blue: 0.94)]),
+                startPoint: CGPoint(x: c.x, y: c.y - s * 0.5),
+                endPoint: CGPoint(x: c.x, y: c.y + s * 0.5)))
+            let stroke = StrokeStyle(lineWidth: s * 0.08, lineCap: .round, lineJoin: .round)
+            var ch = Path()
+            ch.move(to: CGPoint(x: c.x - s * 0.17, y: c.y - s * 0.13))
+            ch.addLine(to: CGPoint(x: c.x - s * 0.05, y: c.y))
+            ch.addLine(to: CGPoint(x: c.x - s * 0.17, y: c.y + s * 0.13))
+            ctx.stroke(ch, with: .color(.white), style: stroke)
+            var us = Path()
+            us.move(to: CGPoint(x: c.x + 0.03 * s, y: c.y + s * 0.13))
+            us.addLine(to: CGPoint(x: c.x + 0.19 * s, y: c.y + s * 0.13))
+            ctx.stroke(us, with: .color(.white), style: stroke)
+        }
+    }
+}
+
+// AppKit twin of CodexLogoIcon for menubar NSImages (no SwiftUI renderer —
+// ImageRenderer is main-actor-isolated and this must stay callable anywhere)
+func codexLogoNSImage(size s: CGFloat) -> NSImage {
+    let out = NSImage(size: NSSize(width: s, height: s))
+    out.lockFocus()
+    if let cg = NSGraphicsContext.current?.cgContext {
+        let c = CGPoint(x: s / 2, y: s / 2)
+        let path = CGMutablePath()
+        let R = s * 0.30
+        path.addEllipse(in: CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R))
+        for i in 0..<8 {
+            let a = CGFloat(i) * .pi / 4
+            let r = s * 0.21
+            path.addEllipse(in: CGRect(x: c.x + cos(a) * s * 0.22 - r,
+                                       y: c.y + sin(a) * s * 0.22 - r,
+                                       width: 2 * r, height: 2 * r))
+        }
+        cg.saveGState()
+        cg.addPath(path)
+        cg.clip()
+        let colors = [NSColor(red: 0.22, green: 0.22, blue: 0.94, alpha: 1).cgColor,
+                      NSColor(red: 0.57, green: 0.55, blue: 0.98, alpha: 1).cgColor]
+        if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                 colors: colors as CFArray, locations: [0, 1]) {
+            cg.drawLinearGradient(grad, start: CGPoint(x: c.x, y: 0),
+                                  end: CGPoint(x: c.x, y: s), options: [])
+        }
+        cg.restoreGState()
+        cg.setStrokeColor(.white)
+        cg.setLineWidth(s * 0.08)
+        cg.setLineCap(.round)
+        cg.setLineJoin(.round)
+        cg.beginPath()
+        cg.move(to: CGPoint(x: c.x - s * 0.17, y: c.y + s * 0.13))
+        cg.addLine(to: CGPoint(x: c.x - s * 0.05, y: c.y))
+        cg.addLine(to: CGPoint(x: c.x - s * 0.17, y: c.y - s * 0.13))
+        cg.strokePath()
+        cg.beginPath()
+        cg.move(to: CGPoint(x: c.x + 0.03 * s, y: c.y - s * 0.13))
+        cg.addLine(to: CGPoint(x: c.x + 0.19 * s, y: c.y - s * 0.13))
+        cg.strokePath()
+    }
+    out.unlockFocus()
+    return out
+}
+
+// image-based codex row mascot: bounce while running, badges for asks
+struct CodexMascot: View {
+    let status: String
+    var animate: Bool = true
+    var body: some View {
+        let dim: Double = status == "gone" ? 0.45 : status == "done" ? 0.8 : 1
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if animate && status == "running" {
+                    TimelineView(.periodic(from: .now, by: 0.35)) { tl in
+                        let up = Int(tl.date.timeIntervalSince1970 / 0.35) % 2 == 0
+                        CodexLogoIcon().frame(width: 17, height: 17)
+                            .offset(y: up ? -1.5 : 1.5)
+                    }
+                } else {
+                    CodexLogoIcon().frame(width: 17, height: 17)
+                }
+            }
+            .opacity(dim)
+            switch status {
+            case "waiting": mascotBadge("!!", .orange)
+            case "input": mascotBadge("??", .blue)
+            case "finished": mascotBadge("✓", .green)
+            default: EmptyView()
+            }
+        }
+        .frame(width: 24, height: 18)
+    }
+
+    func mascotBadge(_ t: String, _ c: Color) -> some View {
+        Text(t)
+            .font(.system(size: 7, weight: .heavy))
+            .foregroundStyle(c)
+            .offset(x: 2, y: -3)
+    }
+}
+
 func codexFrames(_ status: String) -> (frames: [[String]], interval: Double, tint: Color) {
     let empty = String(repeating: ".", count: 16)
     let body = codexMap
@@ -899,7 +1020,11 @@ struct StatusMascot: View {
 
 @ViewBuilder
 func statusGlyph(_ status: String, agent: String = "claude", animate: Bool = true) -> some View {
-    StatusMascot(status: status, agent: agent, animate: animate)
+    if agent == "codex" {
+        CodexMascot(status: status, animate: animate)
+    } else {
+        StatusMascot(status: status, agent: agent, animate: animate)
+    }
 }
 
 func statusColor(_ status: String) -> Color {
@@ -1039,7 +1164,9 @@ struct SessionRow: View {
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Capsule().fill(Color(nsColor: .systemGray).opacity(0.18)))
                     .foregroundStyle(.secondary)
-            } else if !ageString(s.updated_at).isEmpty {
+            } else if s.status != "running", !ageString(s.updated_at).isEmpty {
+                // running rows skip the age capsule — it reflects the last
+                // hook event, which reads oddly mid-turn ("running · 41m")
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
@@ -2863,6 +2990,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     let out = NSImage(size: NSSize(width: img.size.width, height: 18))
                     out.lockFocus()
                     img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: 16),
+                             from: .zero, operation: .sourceOver, fraction: 1)
+                    out.unlockFocus()
+                    return out
+                }
+                menubarStaticImage = offsetFrame(1)
+                menubarStatusFrames = [
+                    "running": [offsetFrame(2), offsetFrame(0)],
+                    "waiting": [offsetFrame(2), offsetFrame(0)],
+                ]
+                return
+            }
+        }
+        // codex: render the vector logo (colored) with a bounce
+        if menubarAgent == "codex" {
+            if let img = Optional(codexLogoNSImage(size: 17)) {
+                func offsetFrame(_ dy: CGFloat) -> NSImage {
+                    let out = NSImage(size: NSSize(width: 17, height: 19))
+                    out.lockFocus()
+                    img.draw(in: NSRect(x: 0, y: dy, width: 17, height: 17),
                              from: .zero, operation: .sourceOver, fraction: 1)
                     out.unlockFocus()
                     return out
