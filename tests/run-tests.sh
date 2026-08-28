@@ -152,6 +152,7 @@ SJ=$("$CST" sessions-json 2>/dev/null)
 t "T21 old sessions stay (no expiry)" "done" "$(sjq '.[] | select(.session_id=="s-old") | .status')"
 t "T22 dead client → gone" "gone"    "$(sjq '.[] | select(.session_id=="s-deadcli") | .status')"
 t "T23 dead pool dropped"  ""        "$(sjq '.[] | select(.session_id=="s-deadpool") | .session_id')"
+t "T23b dead pool record deleted" "" "$([ -f "$STATE/s-deadpool.json" ] && echo yes)"
 t "T24 legacy titled → gone" "gone"  "$(sjq '.[] | select(.session_id=="s-legacy-titled") | .status')"
 t "T25 legacy untitled dropped" ""   "$(sjq '.[] | select(.session_id=="s-legacy-untitled") | .session_id')"
 t "T26 alive kept running" "running" "$(sjq '.[] | select(.session_id=="s-alive") | .status')"

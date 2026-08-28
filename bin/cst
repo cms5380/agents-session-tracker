@@ -629,6 +629,14 @@ cmd_sessions_json() {
     tm=$(stat -f %m "$tf" 2>/dev/null || echo "$now")
     if [ $((now - tm)) -gt 3600 ]; then rm -f "$tf"; reaped=1; fi
   done
+  # dead spare-pool records are permanently hidden — delete on sight. A
+  # false positive is harmless: the next hook event rewrites the file.
+  local tpid
+  for tf in $(grep -El '"owner": ?"pool"' "$STATE_DIR"/*.json 2>/dev/null || true); do
+    tpid=$(jq -r '.pid // 0' "$tf" 2>/dev/null || echo 0)
+    kill -0 "$tpid" 2>/dev/null && continue
+    rm -f "$tf"; reaped=1
+  done
   [ -n "$reaped" ] && gc_session_assets >/dev/null 2>&1
   # tmp files a crashed writer never mv'd into place — orphans after an hour
   find "$STATE_DIR" -name '*.tmp.*' -mmin +60 -delete 2>/dev/null || true
