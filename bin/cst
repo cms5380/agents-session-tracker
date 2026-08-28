@@ -630,6 +630,8 @@ cmd_sessions_json() {
     if [ $((now - tm)) -gt 3600 ]; then rm -f "$tf"; reaped=1; fi
   done
   [ -n "$reaped" ] && gc_session_assets >/dev/null 2>&1
+  # tmp files a crashed writer never mv'd into place — orphans after an hour
+  find "$STATE_DIR" -name '*.tmp.*' -mmin +60 -delete 2>/dev/null || true
   # read records one by one so a single corrupt file (e.g. a torn write)
   # can't blank the whole list
   sessions=$({ for rf in "$STATE_DIR"/*.json; do
