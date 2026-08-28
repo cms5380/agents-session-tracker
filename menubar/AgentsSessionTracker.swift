@@ -3225,34 +3225,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             let e = Int(Date().timeIntervalSince(start))
             title += e >= 60 ? " (\(e / 60)m \(e % 60)s)" : " (\(e)s)"
         }
-        let status = s.status
-        let sid = s.session_id
-        let hookMsg = (s.message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        // the body says what actually happened — last reply line for
-        // finished/input, the permission ask itself for waiting
-        DispatchQueue.global().async {
-            var body: String
-            switch status {
-            case "waiting":
-                body = hookMsg.isEmpty ? "승인이 필요해요" : String(hookMsg.prefix(140))
-            default:
-                let peek = runCST(["peek", sid], capture: true)
-                let line = peek.split(separator: "\n")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .last { !$0.isEmpty } ?? ""
-                if status == "input" {
-                    body = line.isEmpty ? "답을 기다리고 있어요" : "질문: \(line.prefix(140))"
-                } else {
-                    body = line.isEmpty ? "작업 완료 — 결과를 확인하세요" : String(line.prefix(140))
-                }
-            }
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            content.userInfo = ["sid": sid]
-            let req = UNNotificationRequest(identifier: sid, content: content, trigger: nil)
-            UNUserNotificationCenter.current().add(req)
+        // body = the session state, plain English
+        let body: String
+        switch s.status {
+        case "waiting": body = "Needs approval"
+        case "input": body = "Waiting for your reply"
+        default: body = "Finished"
         }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = ["sid": s.session_id]
+        let req = UNNotificationRequest(identifier: s.session_id, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
