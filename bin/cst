@@ -1306,8 +1306,7 @@ case "${1:-list}" in
       {name: "fork",           description: "현재 세션 포크 (백그라운드)"},
       {name: "compact",        description: "컨텍스트 압축"},
       {name: "usage",          description: "플랜 사용량 확인"},
-      {name: "model",          description: "모델 변경"},
-      {name: "resume",         description: "세션 재개 선택"}
+      {name: "model",          description: "모델 변경 (예: /model opus)"}
     ]')
     while IFS= read -r f; do
       [ -n "$f" ] || continue
