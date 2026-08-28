@@ -1073,6 +1073,17 @@ case "${1:-list}" in
       fi
       jq '.status = "ended"' "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
     fi
+    # the daemon keeps completed jobs as "resumable" forever — drop the job
+    # registry entry too, unless the session is still live. The transcript
+    # stays in ~/.claude/projects, so archive search / --resume still work.
+    jobdir="$HOME/.claude/jobs/${2:0:8}"
+    if [ -d "$jobdir" ]; then
+      sleep 0.5  # let a just-killed client die before the liveness check
+      if ! claude agents --json 2>/dev/null \
+           | jq -e --arg sid "$2" '.[] | select(.sessionId == $sid)' >/dev/null 2>&1; then
+        rm -rf "$jobdir"
+      fi
+    fi
     rm -f "$AGENTS_CACHE"
     ;;
   usage-json)
