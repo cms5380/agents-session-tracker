@@ -706,6 +706,14 @@ struct SettingsView: View {
     @AppStorage("notifyWaiting") private var notifyWaiting = true
     @AppStorage("notifyInput") private var notifyInput = true
     @AppStorage("notifyFinished") private var notifyFinished = true
+    @State private var emojiDraft = savedEmojiIcon
+
+    func applyEmoji() {
+        let e = emojiDraft.trimmingCharacters(in: .whitespaces)
+        guard !e.isEmpty else { return }
+        UserDefaults.standard.set(String(e.prefix(2)), forKey: "menubarEmoji")
+        appDelegate?.setMenubarAgent("emoji")
+    }
 
     func hotkeyButton(_ id: String, _ label: String, apply: @escaping (Int, Int) -> Void,
                       refresh: @escaping () -> String) -> some View {
@@ -740,6 +748,21 @@ struct SettingsView: View {
                                  refresh: { appDelegate?.currentAttentionLabel() ?? "" })
                 }
                 Text("패널 안: ⌘1–9 점프 · ⌃X 중지/종료 · ⌃R 이름 · ⌃P 핀 · Tab 프롬프트")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Section("아이콘") {
+                LabeledContent("이모지 아이콘") {
+                    HStack(spacing: 6) {
+                        TextField("🐣", text: $emojiDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 56)
+                            .multilineTextAlignment(.center)
+                            .onSubmit { applyEmoji() }
+                        Button("적용") { applyEmoji() }
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+                Text("픽셀 캐릭터·이미지 아이콘은 메뉴바 우클릭 픽커에서 선택")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             Section("일반") {
