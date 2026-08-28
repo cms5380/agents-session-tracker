@@ -607,12 +607,36 @@ func customIconFrames(height: CGFloat) -> [NSImage] {
 
 func customIconImage(height: CGFloat) -> NSImage? { customIconFrames(height: height).first }
 
+// any emoji as the icon — rendered into an NSImage for the menubar
+var savedEmojiIcon: String {
+    UserDefaults.standard.string(forKey: "menubarEmoji") ?? ""
+}
+func emojiNSImage(_ emoji: String, height: CGFloat) -> NSImage {
+    let size = NSSize(width: height + 2, height: height + 2)
+    let out = NSImage(size: size)
+    out.lockFocus()
+    let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: height * 0.86)]
+    let str = NSAttributedString(string: emoji, attributes: attrs)
+    let b = str.size()
+    str.draw(at: NSPoint(x: (size.width - b.width) / 2, y: (size.height - b.height) / 2))
+    out.unlockFocus()
+    return out
+}
+
 // card-grid icon picker shown under the status item on right-click
 struct IconPickerView: View {
     let current: String
     let onPick: (String) -> Void
     @State private var hotkeyLabel = appDelegate?.currentHotkeyLabel() ?? "⌥Space"
     @State private var recordingHotkey = false
+    @State private var emojiDraft = savedEmojiIcon
+
+    func applyEmoji() {
+        let e = emojiDraft.trimmingCharacters(in: .whitespaces)
+        guard !e.isEmpty else { return }
+        UserDefaults.standard.set(String(e.prefix(2)), forKey: "menubarEmoji")
+        onPick("emoji")
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("아이콘")
@@ -621,6 +645,7 @@ struct IconPickerView: View {
                 .tracking(1.4)
             let choices = iconChoices
                 + (customIconExists ? [("custom", "이미지", appIconMap, NSColor.clear)] : [])
+                + (savedEmojiIcon.isEmpty ? [] : [("emoji", "이모지", appIconMap, NSColor.clear)])
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(66), spacing: 8), count: 4),
                       spacing: 8) {
                 ForEach(choices, id: \.key) { c in
@@ -641,6 +666,22 @@ struct IconPickerView: View {
                 }
             }
             Divider().padding(.vertical, 2)
+            HStack {
+                Text("이모지 아이콘")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                TextField("🐣", text: $emojiDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13))
+                    .frame(width: 52)
+                    .multilineTextAlignment(.center)
+                    .onSubmit { applyEmoji() }
+                Button("적용") { applyEmoji() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(claudeOrange)
+            }
             HStack {
                 Text("전역 단축키")
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
@@ -676,6 +717,10 @@ struct PixelAppIcon: View {
         let px = quantizedPixel(pixel, scale: scale)
         if choice == "codex" {
             CodexLogoIcon().frame(width: px * 10, height: px * 10)
+        } else if choice == "emoji", !savedEmojiIcon.isEmpty {
+            Text(savedEmojiIcon)
+                .font(.system(size: px * 9))
+                .frame(height: px * 10)
         } else if choice == "custom", !customIconFrames(height: px * 10).isEmpty {
             let frames = customIconFrames(height: px * 10)
             if frames.count > 1 {
@@ -3107,6 +3152,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func buildMenubarImages() {
         let empty = String(repeating: ".", count: 16)
+        // emoji icon: bounce between two vertical offsets like the mascots
+        if menubarAgent == "emoji", !savedEmojiIcon.isEmpty {
+            let img = emojiNSImage(savedEmojiIcon, height: 16)
+            func offsetFrame(_ dy: CGFloat) -> NSImage {
+                let out = NSImage(size: NSSize(width: img.size.width, height: 20))
+                out.lockFocus()
+                img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: img.size.height),
+                         from: .zero, operation: .sourceOver, fraction: 1)
+                out.unlockFocus()
+                return out
+            }
+            menubarStaticImage = offsetFrame(1)
+            menubarStatusFrames = [
+                "running": [offsetFrame(2), offsetFrame(0)],
+                "waiting": [offsetFrame(2), offsetFrame(0)],
+            ]
+            return
+        }
         // custom image: a GIF animates with its own frames, a PNG bounces
         if menubarAgent == "custom" {
             let frames = customIconFrames(height: 16)
