@@ -353,7 +353,7 @@ t "T91 send routes codex"  "1" "$(grep -c 'codex exec resume s-send-cx' "$SANDBO
 
 # ══ exception layers: ended dismissal · continuation lineage ·
 # ══ codex stale decay (the newest special-case rules) ════════════
-rm -f "$STATE"/*.json "$CST_STATE_DIR/agents-cache.json"
+rm -f "$STATE"/*.json "$CST_STATE_DIR/agents-cache.json" "$CST_STATE_DIR/agents-all-cache.json"
 
 # stub daemon now returns an --all list including a completed session
 cat >"$SANDBOX/.local/bin/claude" <<EOF

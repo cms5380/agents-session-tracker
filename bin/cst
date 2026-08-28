@@ -28,6 +28,9 @@ STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.json"
 NAMES_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/names.json"
 AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-cache.json"
+# full `claude agents --json --all` result, reused for 10s — the CLI is a
+# ~300ms Node boot and event-driven refreshes can arrive in bursts
+AGENTS_ALL_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-all-cache.json"
 PINS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/pins.json"
 SORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json"
 COLORS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json"
@@ -622,10 +625,13 @@ cmd_sessions_json() {
   local now sessions agents_json extra
   now=$(date +%s)
   # the daemon query is the single slowest child (~300ms) and independent of
-  # everything until the busy/idle merge — fetch it concurrently
-  local agents_fetch="$AGENTS_CACHE.fetch.$$" agents_bgpid
-  { claude agents --json --all 2>/dev/null || printf '[]'; } >"$agents_fetch" &
-  agents_bgpid=$!
+  # everything until the busy/idle merge — fetch it concurrently, and skip it
+  # entirely while the 10s cache is fresh (busy/idle may lag by that much)
+  local agents_fetch="$AGENTS_CACHE.fetch.$$" agents_bgpid=""
+  if [ $((now - $(stat -f %m "$AGENTS_ALL_CACHE" 2>/dev/null || echo 0))) -ge 10 ]; then
+    { claude agents --json --all 2>/dev/null || printf '[]'; } >"$agents_fetch" &
+    agents_bgpid=$!
+  fi
   # ended tombstones exist only so the dying client's SessionEnd can't
   # resurrect the record — after an hour they're pure garbage; reap them
   # so explicit ⌃X⌃X deletes don't pile up in the state dir forever
@@ -660,9 +666,15 @@ cmd_sessions_json() {
   # --all also returns completed (resumable) background sessions — status ""
   # marks them. Live entries come first so unique_by keeps the live one.
   local agents_all
-  wait "$agents_bgpid" 2>/dev/null || true
-  agents_all=$(cat "$agents_fetch" 2>/dev/null || echo '[]')
-  rm -f "$agents_fetch"
+  if [ -n "$agents_bgpid" ]; then
+    wait "$agents_bgpid" 2>/dev/null || true
+    agents_all=$(cat "$agents_fetch" 2>/dev/null || echo '[]')
+    rm -f "$agents_fetch"
+    printf '%s' "$agents_all" >"$AGENTS_ALL_CACHE.tmp.$$" 2>/dev/null \
+      && mv "$AGENTS_ALL_CACHE.tmp.$$" "$AGENTS_ALL_CACHE" 2>/dev/null || true
+  else
+    agents_all=$(cat "$AGENTS_ALL_CACHE" 2>/dev/null || echo '[]')
+  fi
   jq -e . >/dev/null 2>&1 <<<"$agents_all" || agents_all='[]'
   agents_all=$(jq -c 'sort_by(if (.status // "") == "" then 1 else 0 end) | unique_by(.sessionId)' <<<"$agents_all")
   agents_json=$(jq -c 'map(select((.status // "") != ""))' <<<"$agents_all")

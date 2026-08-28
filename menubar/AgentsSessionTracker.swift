@@ -90,13 +90,40 @@ final class Model: ObservableObject {
     func start() {
         refresh()
         loadSkills()
+        startDirWatch()
+        // hooks push changes through the kqueue watcher, so the timer is only
+        // a fallback for what leaves no file event: process death, decay
         var tick = 0
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             guard let self else { return }
             tick += 1
-            // panel hidden → refresh every 15s (menubar badge only)
-            if self.panelVisible || tick % 3 == 0 { self.refresh() }
+            if (self.panelVisible && tick % 3 == 0) || tick % 12 == 0 { self.refresh() }
         }
+    }
+
+    // kqueue watch on the sessions dir — every record update lands via
+    // tmp+mv (a rename), which raises a directory write event
+    private var dirWatchFD: Int32 = -1
+    private var dirWatchSource: DispatchSourceFileSystemObject?
+    private var watchDebounce: DispatchWorkItem?
+    private func startDirWatch() {
+        let dir = NSHomeDirectory() + "/.local/state/claude-session-tracker/sessions"
+        dirWatchFD = open(dir, O_EVTONLY)
+        guard dirWatchFD >= 0 else { return }
+        let src = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: dirWatchFD, eventMask: .write, queue: .main)
+        src.setEventHandler { [weak self] in
+            guard let self else { return }
+            // hook bursts (one write per tool call) collapse into one refresh
+            self.watchDebounce?.cancel()
+            let w = DispatchWorkItem { [weak self] in self?.refresh() }
+            self.watchDebounce = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: w)
+        }
+        let fd = dirWatchFD
+        src.setCancelHandler { close(fd) }
+        src.resume()
+        dirWatchSource = src
     }
 
     private var prevStatuses: [String: String] = [:]
@@ -363,7 +390,12 @@ final class Model: ObservableObject {
     @Published var modelUsage: [ModelUsage] = []
     @Published var usageText = ""
 
+    // gauges move slowly and cst caches upstream for 5 minutes anyway — one
+    // spawn a minute is plenty (event-driven refreshes arrive in bursts)
+    private var lastUsageFetch = Date.distantPast
     func fetchUsage() {
+        guard Date().timeIntervalSince(lastUsageFetch) > 60 else { return }
+        lastUsageFetch = Date()
         DispatchQueue.global().async {
             let out = runCST(["usage-json"], capture: true)
             guard let data = out.data(using: .utf8),
