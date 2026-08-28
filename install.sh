@@ -42,6 +42,8 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$REPO_DIR/menubar/Info.plist" "$APP/Contents/Info.plist"
 echo "building AgentsSessionTracker.app (first build takes ~30s)…"
 swiftc -O -o "$APP/Contents/MacOS/AgentsSessionTracker" "$REPO_DIR/menubar/AgentsSessionTracker.swift"
+# ad-hoc signature — notification registration doesn't stick without one
+codesign --force --deep -s - "$APP" 2>/dev/null || true
 echo "built: $APP"
 
 # ── starter custom commands (kept if one already exists) ─────────
