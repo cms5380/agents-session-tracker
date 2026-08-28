@@ -1238,9 +1238,10 @@ APPLESCRIPT
     fi
     mv "$NAMES_FILE.tmp" "$NAMES_FILE"
     # sync claude's own session name too (/rename is REPL-only, so it gets
-    # typed into the live tab without stealing focus). Only when the session
-    # is parked at its prompt — mid-turn or awaiting an answer, injected
-    # text would land in the conversation instead.
+    # typed into the live tab without stealing focus). Slash commands are
+    # processed locally even mid-turn, so running is fine — but not while a
+    # dialog owns the keyboard (waiting = permission prompt, input = option
+    # picker), where injected keys would operate the dialog.
     if [ "$3" != "-" ]; then
       f="$STATE_DIR/$2.json"
       if [ -f "$f" ]; then
@@ -1248,7 +1249,7 @@ APPLESCRIPT
           '[(.agent // "claude"), (.pid // 0 | tostring), (.status // "")] | @tsv' "$f")"
         if [ "$r_agent" = "claude" ] && kill -0 "$r_pid" 2>/dev/null; then
           case "$r_status" in
-            (done|finished) "$0" type-into --quiet "$2" "/rename $3" >/dev/null 2>&1 || true ;;
+            (done|finished|running) "$0" type-into --quiet "$2" "/rename $3" >/dev/null 2>&1 || true ;;
           esac
         fi
       fi
