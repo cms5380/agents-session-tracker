@@ -40,8 +40,13 @@ macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패�
 - **픽셀 캐릭터 아이콘** — 메뉴바·검색창 아이콘을 우클릭 카드 픽커에서 선택
   (터미널/Claude/Codex/고양이/고스트/로봇/슬라임). 메뉴바는 세션 상태 따라
   바운스·`!!` 애니메이션
-- **커스텀 이미지** — `~/.local/state/claude-session-tracker/icon.png`(바운스) 또는
-  `icon.gif`(프레임 애니메이션)를 넣으면 "이미지" 카드가 생긴다
+- **아이콘은 CLI로도** — AI 에이전트에게 시키기 좋게 한 줄이면 됨 (앱이 자동 감지):
+
+  ```sh
+  cst icon ghost          # 픽셀 캐릭터
+  cst icon 🦖             # 아무 이모지
+  cst icon ~/pikachu.gif  # 이미지 — gif는 프레임 애니메이션, png는 바운스
+  ```
 
 ## 요구 사항
 

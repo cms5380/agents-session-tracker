@@ -1316,6 +1316,37 @@ APPLESCRIPT
       | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
     cat "$USAGE_CACHE"
     ;;
+  icon)
+    # cst icon <key|emoji|image-path> — set the menubar/search icon.
+    #   keys: generic claude codex cat ghost robot slime
+    #   image: png/gif path (gif animates) · anything else: treated as emoji
+    [ $# -ge 2 ] || { echo "usage: cst icon <key|emoji|image.png|image.gif>" >&2; exit 1; }
+    APPID="com.dean.agents-session-tracker"
+    ICON_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}"
+    arg="$2"
+    if [ -f "$arg" ]; then
+      case "$arg" in
+        (*.gif|*.GIF)
+          cp "$arg" "$ICON_DIR/icon.gif" && rm -f "$ICON_DIR/icon.png" ;;
+        (*)
+          sips -s format png "$arg" --out "$ICON_DIR/icon.png" >/dev/null 2>&1 \
+            || cp "$arg" "$ICON_DIR/icon.png"
+          rm -f "$ICON_DIR/icon.gif" ;;
+      esac
+      defaults write "$APPID" menubarAgent custom
+      echo "icon: custom image ($arg)"
+    else
+      case "$arg" in
+        (generic|claude|codex|cat|ghost|robot|slime)
+          defaults write "$APPID" menubarAgent "$arg"
+          echo "icon: $arg" ;;
+        (*)
+          defaults write "$APPID" menubarEmoji "$arg"
+          defaults write "$APPID" menubarAgent emoji
+          echo "icon: emoji $arg" ;;
+      esac
+    fi
+    ;;
   stats-json)
     # cst stats-json — fun usage stats for the panel (1h cache).
     # Daily counts bucket transcripts by mtime (= sessions active that day).
