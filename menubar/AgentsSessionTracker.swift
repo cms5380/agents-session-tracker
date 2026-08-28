@@ -627,8 +627,6 @@ func emojiNSImage(_ emoji: String, height: CGFloat) -> NSImage {
 struct IconPickerView: View {
     let current: String
     let onPick: (String) -> Void
-    @State private var hotkeyLabel = appDelegate?.currentHotkeyLabel() ?? "⌥Space"
-    @State private var recordingHotkey = false
     @State private var emojiDraft = savedEmojiIcon
 
     func applyEmoji() {
@@ -683,29 +681,80 @@ struct IconPickerView: View {
                     .foregroundStyle(claudeOrange)
             }
             HStack {
-                Text("전역 단축키")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    recordingHotkey = true
-                    appDelegate?.beginHotkeyCapture { label in
-                        hotkeyLabel = label
-                        recordingHotkey = false
-                    }
+                    appDelegate?.showSettings()
                 } label: {
-                    Text(recordingHotkey ? "새 조합을 누르세요… (Esc 취소)" : hotkeyLabel)
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(RoundedRectangle(cornerRadius: 6)
-                            .fill(recordingHotkey ? claudeOrange.opacity(0.25)
-                                : Color.primary.opacity(0.07)))
+                    Label("설정…", systemImage: "gearshape")
+                        .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
             }
         }
         .padding(12)
         .background(VisualEffect().clipShape(RoundedRectangle(cornerRadius: 12)))
+    }
+}
+
+// dedicated settings window: hotkeys + general toggles
+struct SettingsView: View {
+    @ObservedObject var model: Model
+    @State private var panelHK = appDelegate?.currentHotkeyLabel() ?? "⌥Space"
+    @State private var attnHK = appDelegate?.currentAttentionLabel() ?? "⌘⌥A"
+    @State private var recording: String? = nil  // "panel" | "attn"
+    @AppStorage("notifyWaiting") private var notifyWaiting = true
+    @AppStorage("notifyInput") private var notifyInput = true
+    @AppStorage("notifyFinished") private var notifyFinished = true
+
+    func hotkeyButton(_ id: String, _ label: String, apply: @escaping (Int, Int) -> Void,
+                      refresh: @escaping () -> String) -> some View {
+        Button {
+            recording = id
+            appDelegate?.beginKeyCapture { k, m in
+                if k >= 0 { apply(k, m) }
+                if id == "panel" { panelHK = refresh() } else { attnHK = refresh() }
+                recording = nil
+            }
+        } label: {
+            Text(recording == id ? "새 조합을 누르세요… (Esc 취소)" : label)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6)
+                    .fill(recording == id ? claudeOrange.opacity(0.25) : Color.primary.opacity(0.07)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    var body: some View {
+        Form {
+            Section("단축키") {
+                LabeledContent("패널 열기/닫기") {
+                    hotkeyButton("panel", panelHK,
+                                 apply: { appDelegate?.setHotkey(keyCode: $0, carbonMods: $1) },
+                                 refresh: { appDelegate?.currentHotkeyLabel() ?? "" })
+                }
+                LabeledContent("어텐션 세션으로 점프") {
+                    hotkeyButton("attn", attnHK,
+                                 apply: { appDelegate?.setAttentionHotkey(keyCode: $0, carbonMods: $1) },
+                                 refresh: { appDelegate?.currentAttentionLabel() ?? "" })
+                }
+                Text("패널 안: ⌘1–9 점프 · ⌃X 중지/종료 · ⌃R 이름 · ⌃P 핀 · Tab 프롬프트")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Section("일반") {
+                Picker("새 세션 기본 에이전트", selection: $model.mainAgent) {
+                    Text("claude").tag("claude")
+                    Text("codex").tag("codex")
+                }
+                .pickerStyle(.segmented)
+                Toggle("알림: 승인 필요", isOn: $notifyWaiting)
+                Toggle("알림: 답변 대기", isOn: $notifyInput)
+                Toggle("알림: 작업 완료", isOn: $notifyFinished)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 400, height: 330)
     }
 }
 
@@ -3009,9 +3058,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID,
                             GetEventDispatcherTarget(), 0, &hotKeyRef)
 
-        // ⌘⌥A — jump straight to the top attention session
+        // attention jump — default ⌘⌥A, user-configurable in settings
+        let aKey = defaults?.object(forKey: "attentionKeyCode") as? Int ?? kVK_ANSI_A
+        let aMods = defaults?.object(forKey: "attentionModifiers") as? Int ?? (cmdKey | optionKey)
         let attentionID = EventHotKeyID(signature: OSType(0x43535453), id: 2)
-        RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(cmdKey | optionKey), attentionID,
+        RegisterEventHotKey(UInt32(aKey), UInt32(aMods), attentionID,
                             GetEventDispatcherTarget(), 0, &attentionHotKeyRef)
 
         // number jumps are panel-local (handled by the key monitor while the
@@ -3020,6 +3071,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     var attentionHotKeyRef: EventHotKeyRef?
     var digitHotKeyRefs: [EventHotKeyRef?] = []
+
+    // ── settings window ──────────────────────────────────────────
+    var settingsWindow: NSWindow?
+    func showSettings() {
+        iconPanel?.orderOut(nil)
+        hidePanel()
+        if settingsWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 320),
+                             styleMask: [.titled, .closable],
+                             backing: .buffered, defer: false)
+            w.title = "설정"
+            w.isReleasedWhenClosed = false
+            w.contentViewController = NSHostingController(rootView: SettingsView(model: model))
+            settingsWindow = w
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.center()
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
 
     // ── user-configurable panel hotkey ───────────────────────────
     static let keyNames: [Int: String] = [
@@ -3062,25 +3132,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     var recordMonitor: Any?
-    func beginHotkeyCapture(_ done: @escaping (String) -> Void) {
+    // capture one modifier+key combo; esc → (-1, 0)
+    func beginKeyCapture(_ done: @escaping (Int, Int) -> Void) {
         if let m = recordMonitor { NSEvent.removeMonitor(m); recordMonitor = nil }
         recordMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] ev in
             guard let self else { return ev }
-            func finish() {
-                if let m = self.recordMonitor { NSEvent.removeMonitor(m); self.recordMonitor = nil }
-                done(self.currentHotkeyLabel())
+            func finish(_ k: Int, _ m: Int) {
+                if let mon = self.recordMonitor { NSEvent.removeMonitor(mon); self.recordMonitor = nil }
+                done(k, m)
             }
-            if ev.keyCode == 53 { finish(); return nil } // esc = cancel
+            if ev.keyCode == 53 { finish(-1, 0); return nil } // esc = cancel
             var carbon = 0
             if ev.modifierFlags.contains(.command) { carbon |= cmdKey }
             if ev.modifierFlags.contains(.option) { carbon |= optionKey }
             if ev.modifierFlags.contains(.control) { carbon |= controlKey }
             if ev.modifierFlags.contains(.shift) { carbon |= shiftKey }
             guard carbon != 0 else { return ev } // a bare key can't be global
-            self.setHotkey(keyCode: Int(ev.keyCode), carbonMods: carbon)
-            finish()
+            finish(Int(ev.keyCode), carbon)
             return nil
         }
+    }
+
+    func beginHotkeyCapture(_ done: @escaping (String) -> Void) {
+        beginKeyCapture { [weak self] k, m in
+            guard let self else { return }
+            if k >= 0 { self.setHotkey(keyCode: k, carbonMods: m) }
+            done(self.currentHotkeyLabel())
+        }
+    }
+
+    // ── attention-jump hotkey (default ⌘⌥A) ─────────────────────
+    func comboLabel(keyCode: Int, carbonMods: Int) -> String {
+        var s = ""
+        if carbonMods & controlKey != 0 { s += "⌃" }
+        if carbonMods & optionKey != 0 { s += "⌥" }
+        if carbonMods & shiftKey != 0 { s += "⇧" }
+        if carbonMods & cmdKey != 0 { s += "⌘" }
+        return s + (Self.keyNames[keyCode] ?? "key\(keyCode)")
+    }
+
+    func currentAttentionLabel() -> String {
+        let d = UserDefaults(suiteName: "com.dean.claude-sessions")
+        let key = d?.object(forKey: "attentionKeyCode") as? Int ?? kVK_ANSI_A
+        let mods = d?.object(forKey: "attentionModifiers") as? Int ?? (cmdKey | optionKey)
+        return comboLabel(keyCode: key, carbonMods: mods)
+    }
+
+    func setAttentionHotkey(keyCode: Int, carbonMods: Int) {
+        let d = UserDefaults(suiteName: "com.dean.claude-sessions")
+        d?.set(keyCode, forKey: "attentionKeyCode")
+        d?.set(carbonMods, forKey: "attentionModifiers")
+        if let r = attentionHotKeyRef { UnregisterEventHotKey(r); attentionHotKeyRef = nil }
+        let id = EventHotKeyID(signature: OSType(0x43535453), id: 2)
+        RegisterEventHotKey(UInt32(keyCode), UInt32(carbonMods), id,
+                            GetEventDispatcherTarget(), 0, &attentionHotKeyRef)
     }
 
     func jumpIndex(_ n: Int) {
@@ -3110,11 +3215,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func notify(session s: Session) {
         guard notificationsReady else { return }
+        let d = UserDefaults.standard
         let body: String
         switch s.status {
-        case "waiting": body = "승인이 필요해요"
-        case "input": body = "답을 기다리고 있어요"
-        default: body = "작업 완료 — 결과를 확인하세요"
+        case "waiting":
+            guard d.object(forKey: "notifyWaiting") as? Bool ?? true else { return }
+            body = "승인이 필요해요"
+        case "input":
+            guard d.object(forKey: "notifyInput") as? Bool ?? true else { return }
+            body = "답을 기다리고 있어요"
+        default:
+            guard d.object(forKey: "notifyFinished") as? Bool ?? true else { return }
+            body = "작업 완료 — 결과를 확인하세요"
         }
         let content = UNMutableNotificationContent()
         content.title = s.title ?? ((s.cwd ?? "session") as NSString).lastPathComponent
