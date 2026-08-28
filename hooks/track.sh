@@ -56,13 +56,14 @@ if [ -n "$transcript" ] && [ -f "$transcript" ] && [ "${have#*t}" = "$have" ]; t
                | select(length > 0) | select(startswith("<") | not)' 2>/dev/null \
       | head -n 1 | cut -c1-80) || true)
   else
-    # continuation boilerplate is not a name — skip it and fall back to the
-    # ai-title claude itself assigned, then the rolling summary
+    # continuation boilerplate is not a name — a compaction summary is one
+    # giant message, so it must be dropped whole (line filters let its body
+    # through: "Summary:" → next line "1. Primary Request and Intent:" …)
     title=$( (head -n 80 "$transcript" 2>/dev/null \
       | jq -r 'select(.type=="user") | .message.content
-               | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
+               | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end
+               | select(test("This session is being continued|Primary Request and Intent|^(Summary|Analysis):") | not)' 2>/dev/null \
       | grep -vE '^\s*(<|$)' \
-      | grep -vE '^(This session is being continued|Summary:|Analysis:|Please continue)' \
       | head -n 1 | cut -c1-80) || true)
     if [ -z "$title" ]; then
       title=$( (head -n 5 "$transcript" 2>/dev/null \
