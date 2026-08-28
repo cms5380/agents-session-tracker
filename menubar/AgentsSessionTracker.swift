@@ -2279,8 +2279,13 @@ struct PanelView: View {
                                   renameCommit: { newName in
                                       model.renameSession(s.session_id, to: newName)
                                       renamingSession = nil
+                                      // hand the keyboard back so ↩ jumps again
+                                      searchFocused = true
                                   },
-                                  renameCancel: { renamingSession = nil })
+                                  renameCancel: {
+                                      renamingSession = nil
+                                      searchFocused = true
+                                  })
                 .padding(.leading, indented ? 16 : 0)
                 .id(r.id)
             if s.pinned && !searching {
