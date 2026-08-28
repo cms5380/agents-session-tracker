@@ -1371,12 +1371,16 @@ APPLESCRIPT
     cat "$USAGE_CACHE"
     ;;
   tidy)
-    # cst tidy [ai] — auto-group ungrouped sessions (Arc Tidy style).
-    #   default: by repo/folder from cwd · ai: semantic clusters via claude -p
-    MODE="${2:-}"
+    # cst tidy [ai] [all] — auto-group sessions (Arc Tidy style).
+    #   default: ungrouped only, by repo/folder from cwd
+    #   ai:  semantic clusters via claude -p
+    #   all: regroup everything — existing (manual) assignments overwritten
+    MODE=""; ALL=""
+    for a in "${@:2}"; do case "$a" in (ai) MODE=ai ;; (all) ALL=1 ;; esac; done
     list=$(cmd_sessions_json 2>/dev/null \
-      | jq -c '[.[] | select((.group // "") == "" and .status != "archived")
-                    | {sid: .session_id, title: (.title // ""), cwd: (.cwd // "")}]')
+      | jq -c --arg all "$ALL" \
+          '[.[] | select($all != "" or (.group // "") == "")
+                | {sid: .session_id, title: (.title // ""), cwd: (.cwd // "")}]')
     cnt=$(jq 'length' <<<"$list")
     if [ "$cnt" = "0" ]; then echo "no ungrouped sessions"; exit 0; fi
     existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')

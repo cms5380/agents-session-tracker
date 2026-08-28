@@ -28,7 +28,8 @@ macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패�
   ↩ = 헤드리스 턴, **⌘↩ = 해당 세션 터미널에 직접 타이핑** (TUI 명령 `/resume` 등도 동작)
 - **New Session** — 최근 폴더별로 ↩(메인 에이전트) / ⌘↩(다른 에이전트) 새 세션
 - **Tidy (Arc식 자동 그룹)** — `tidy`: 미분류 세션을 저장소/폴더별로 그룹,
-  `tidy ai`: claude가 주제별로 묶고 한국어 그룹명 생성 (수동 그룹은 안 건드림)
+  `tidy ai`: claude가 주제별로 묶고 한국어 그룹명 생성. 기본은 미분류만
+  (수동 그룹 보호), ⌘↩ 또는 `cst tidy ai all`은 전체 재그룹
 
 ### 사용량·통계
 - **쿼터 게이지 (CodexBar식)** — Claude는 공식 OAuth usage API의 5시간/주간 사용률,

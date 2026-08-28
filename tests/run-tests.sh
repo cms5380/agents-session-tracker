@@ -189,6 +189,9 @@ SJ=$("$CST" sessions-json 2>/dev/null)
 t "T36 tidy repo group"   "myrepo"  "$(sjq '.[] | select(.session_id=="s-tidy-gh") | .group')"
 t "T37 tidy dir fallback" "projx"   "$(sjq '.[] | select(.session_id=="s-tidy-dir") | .group')"
 t "T38 tidy keeps manual" "수동그룹" "$(sjq '.[] | select(.session_id=="s-alive") | .group')"
+"$CST" tidy all >/dev/null 2>&1
+SJ=$("$CST" sessions-json 2>/dev/null)
+t "T39 tidy all regroups manual" "기타" "$(sjq '.[] | select(.session_id=="s-alive") | .group')"
 "$CST" group s-alive - >/dev/null 2>&1
 rm -f "$STATE/s-tidy-gh.json" "$STATE/s-tidy-dir.json"
 
