@@ -143,7 +143,7 @@ printf 'not json' >"$STATE/s-corrupt.json"
 SJ=$("$CST" sessions-json 2>/dev/null)
 sjq() { jq -r "$1" <<<"$SJ"; }
 t "T20 ended excluded"     ""        "$(sjq '.[] | select(.session_id=="s-ended") | .session_id')"
-t "T21 24h+ old excluded"  ""        "$(sjq '.[] | select(.session_id=="s-old") | .session_id')"
+t "T21 old sessions stay (no expiry)" "done" "$(sjq '.[] | select(.session_id=="s-old") | .status')"
 t "T22 dead client → gone" "gone"    "$(sjq '.[] | select(.session_id=="s-deadcli") | .status')"
 t "T23 dead pool dropped"  ""        "$(sjq '.[] | select(.session_id=="s-deadpool") | .session_id')"
 t "T24 legacy titled → gone" "gone"  "$(sjq '.[] | select(.session_id=="s-legacy-titled") | .status')"

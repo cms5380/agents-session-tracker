@@ -606,7 +606,7 @@ cmd_sessions_json() {
       [ -e "$rf" ] || continue
       jq -c . "$rf" 2>/dev/null || true
     done; } | jq -s --argjson now "$now" '
-    [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
+    [.[] | select(.status != "ended")]
     | sort_by(-.updated_at)')
   # --all also returns completed (resumable) background sessions — status ""
   # marks them. Live entries come first so unique_by keeps the live one.
