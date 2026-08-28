@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HOME/.claude/session-tracker"
-APP="$DEST/ClaudeSessions.app"
+APP="$DEST/AgentsSessionTracker.app"
 SETTINGS="$HOME/.claude/settings.json"
 TRACK="$DEST/track.sh"
 
@@ -30,7 +30,7 @@ mkdir -p "$(dirname "$SETTINGS")"
 cp "$SETTINGS" "$SETTINGS.bak-cst"
 jq --arg cmd "/bin/bash $TRACK" '
   .hooks = (.hooks // {})
-  | reduce ("SessionStart","UserPromptSubmit","Notification","Stop","SessionEnd") as $ev (.;
+  | reduce ("SessionStart","UserPromptSubmit","PreToolUse","Notification","Stop","SessionEnd") as $ev (.;
       .hooks[$ev] = (
         ((.hooks[$ev] // []) | map(select((.hooks // []) | any(.command == $cmd) | not)))
         + [{hooks: [{type: "command", command: $cmd}]}]))
@@ -40,9 +40,22 @@ echo "registered claude hooks (backup: $SETTINGS.bak-cst)"
 # ── menubar app ──────────────────────────────────────────────────
 mkdir -p "$APP/Contents/MacOS"
 cp "$REPO_DIR/menubar/Info.plist" "$APP/Contents/Info.plist"
-echo "building ClaudeSessions.app (first build takes ~30s)…"
-swiftc -O -o "$APP/Contents/MacOS/ClaudeSessions" "$REPO_DIR/menubar/ClaudeSessionsMenubar.swift"
+echo "building AgentsSessionTracker.app (first build takes ~30s)…"
+swiftc -O -o "$APP/Contents/MacOS/AgentsSessionTracker" "$REPO_DIR/menubar/AgentsSessionTracker.swift"
 echo "built: $APP"
+
+# ── starter custom commands (kept if one already exists) ─────────
+CMDS="$HOME/.local/state/claude-session-tracker/commands.json"
+if [ ! -f "$CMDS" ]; then
+  mkdir -p "$(dirname "$CMDS")"
+  cat >"$CMDS" <<'JSON'
+{
+  "g": "@open 'https://www.google.com/search?q={query}'",
+  "c": "cd ~/Documents/GitHub/{query} && claude {prompt}"
+}
+JSON
+  echo "starter commands: $CMDS"
+fi
 
 # ── login autostart ──────────────────────────────────────────────
 LA="$HOME/Library/LaunchAgents/com.dean.claude-sessions.plist"
@@ -73,7 +86,7 @@ if [ "${1:-}" = "--codex" ]; then
 fi
 
 # ── launch ───────────────────────────────────────────────────────
-pkill -f "MacOS/ClaudeSessions" 2>/dev/null || true
+pkill -f "MacOS/AgentsSessionTracker" 2>/dev/null || true
 sleep 0.5
 open "$APP"
 

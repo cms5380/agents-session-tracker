@@ -14,11 +14,19 @@ event=$(jq -r '.hook_event_name // empty' <<<"$input")
 cwd=$(jq -r '.cwd // empty' <<<"$input")
 message=$(jq -r '.message // empty' <<<"$input")
 transcript=$(jq -r '.transcript_path // empty' <<<"$input")
+model=$(jq -r '.model // empty' <<<"$input")
 
 # which agent produced this session — codex writes rollout files under
 # ~/.codex/sessions and speaks the same hook protocol
 agent="claude"
 case "$transcript" in */.codex/*) agent="codex" ;; esac
+
+# the payload's transcript path can be stale (forks/worktrees land in a
+# different per-project dir) — relocate by session id
+if [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ ! -f "$transcript" ]; then
+  alt=$(ls "$HOME/.claude/projects"/*/"$session_id.jsonl" 2>/dev/null | head -1 || true)
+  [ -n "$alt" ] && transcript="$alt"
+fi
 
 # human-readable session title: first user prompt (immutable), else the
 # transcript summary — summaries evolve every few turns and made names churn
@@ -34,14 +42,30 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
                | select(length > 0) | select(startswith("<") | not)' 2>/dev/null \
       | head -n 1 | cut -c1-80) || true)
   else
+    # continuation boilerplate is not a name — skip it and fall back to the
+    # ai-title claude itself assigned, then the rolling summary
     title=$( (head -n 80 "$transcript" 2>/dev/null \
       | jq -r 'select(.type=="user") | .message.content
                | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
-      | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-80) || true)
+      | grep -vE '^\s*(<|$)' | grep -v '^This session is being continued' \
+      | head -n 1 | cut -c1-80) || true)
+    if [ -z "$title" ]; then
+      title=$( (head -n 5 "$transcript" 2>/dev/null \
+        | jq -r 'select(.type=="ai-title") | .aiTitle // empty' 2>/dev/null | head -n 1) || true)
+    fi
     if [ -z "$title" ]; then
       title=$( (grep '"type":"summary"' "$transcript" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
     fi
   fi
+fi
+
+# claude hooks don't carry the model — read it from the transcript's most
+# recent assistant message (cheap: tail keeps it current after /model swaps)
+if [ -z "$model" ] && [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+  model=$( (tail -n 40 "$transcript" 2>/dev/null \
+    | jq -r 'select(.type=="assistant") | .message.model // empty
+             | select(startswith("<") | not)' 2>/dev/null \
+    | tail -n 1) || true)
 fi
 
 case "$event" in
@@ -101,6 +125,8 @@ fi
 file="$STATE_DIR/$session_id.json"
 existing="{}"
 [ -f "$file" ] && existing=$(cat "$file")
+# a torn record (crashed writer) must not wedge the hook — start fresh
+jq -e . >/dev/null 2>&1 <<<"$existing" || existing="{}"
 
 jq -n \
   --argjson prev "$existing" \
@@ -122,6 +148,7 @@ jq -n \
   --arg title "$title" \
   --arg transcript "$transcript" \
   --arg agent "$agent" \
+  --arg model "$model" \
   '$prev * {
     session_id: $session_id,
     last_event: $event,
@@ -136,6 +163,7 @@ jq -n \
   | if $message != "" then .message = $message else . end
   | if $title != "" and ((.title // "") == "") then .title = $title else . end
   | if $transcript != "" then .transcript_path = $transcript else . end
+  | if $model != "" then .model = $model else . end
   | .terminal = ((.terminal // {}) * ({
       term_program: $term_program,
       iterm_session_id: $iterm_session_id,
@@ -145,6 +173,6 @@ jq -n \
       tty: $tty,
       app: $app
     } | with_entries(select(.value != ""))))
-  ' >"$file.tmp" && mv "$file.tmp" "$file"
+  ' >"$file.tmp.$$" && mv "$file.tmp.$$" "$file"
 
 exit 0

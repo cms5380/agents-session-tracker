@@ -1,5 +1,5 @@
 // Claude Sessions — Raycast-style floating session switcher.
-// Build: swiftc -O -o claude-sessions-menubar ClaudeSessionsMenubar.swift
+// Build: swiftc -O -o AgentsSessionTracker AgentsSessionTracker.swift
 import AppKit
 import Carbon.HIToolbox
 import SwiftUI
@@ -21,6 +21,8 @@ struct Session: Decodable, Identifiable, Equatable {
     let group_order: Int?
     let sort_order: Int?
     let agent: String?
+    let model: String?
+    let parent: String?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
 }
@@ -63,6 +65,9 @@ final class Model: ObservableObject {
     var moveSelection: ((Int) -> Void)?
     var arrowLR: ((Int) -> Bool)?
     var hotkeyNumber: ((Int) -> Void)?
+    var enterKey: ((Bool) -> Void)?  // arg: ⌘ held (alternate agent)
+    var isTextEditing: (() -> Bool)?  // an inline editor owns the keyboard
+    var cmdEnterInEditor: (() -> Bool)?  // ⌘↩ inside the quick-prompt bar
     var messageSelected: (() -> Void)?
     var actionKey: ((String) -> Bool)?
     var timer: Timer?
@@ -84,6 +89,7 @@ final class Model: ObservableObject {
 
     func refresh() {
         DispatchQueue.main.async { self.refreshing = true }
+        fetchUsage()
         DispatchQueue.global(qos: .utility).async {
             let out = runCST(["sessions-json"], capture: true)
             let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
@@ -130,7 +136,7 @@ final class Model: ObservableObject {
     func searchArchive(_ query: String) {
         archiveTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 2, !q.hasPrefix(">"), !q.hasPrefix("/") else {
+        guard q.count >= 2, !q.hasPrefix("/") else {
             archive = []
             archiveSearching = false
             return
@@ -148,8 +154,8 @@ final class Model: ObservableObject {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
-    func sendMessage(_ sid: String, _ text: String) {
-        DispatchQueue.global().async { runCST(["send", sid, text]) }
+    func sendMessage(_ sid: String, _ text: String, viaTerminal: Bool = false) {
+        DispatchQueue.global().async { runCST([viaTerminal ? "type-into" : "send", sid, text]) }
     }
 
     func openAll(_ members: [Session]) {
@@ -264,9 +270,143 @@ final class Model: ObservableObject {
         DispatchQueue.global().async { runCST(["hub"]) }
     }
 
-    func newSession(in dir: String) {
+    // which agent a plain "New Session" opens; the other stays one row away
+    @Published var mainAgent: String = UserDefaults.standard.string(forKey: "mainAgent") ?? "claude" {
+        didSet { UserDefaults.standard.set(mainAgent, forKey: "mainAgent") }
+    }
+    var otherAgent: String { mainAgent == "claude" ? "codex" : "claude" }
+
+    // which pixel character fronts the app (menubar + search field)
+    @Published var iconChoiceKey = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
+
+    // fun usage stats (cst stats-json, cached 1h on disk)
+    struct DailyStat: Decodable, Equatable { let date: String; let count: Int }
+    struct Stats: Decodable, Equatable {
+        let claude_total: Int
+        let codex_total: Int
+        let daily: [DailyStat]
+    }
+    @Published var stats: Stats? = nil
+    func fetchStats() {
+        DispatchQueue.global().async {
+            let out = runCST(["stats-json"], capture: true)
+            let parsed = try? JSONDecoder().decode(Stats.self, from: Data(out.utf8))
+            DispatchQueue.main.async { self.stats = parsed }
+        }
+    }
+
+    // quota snapshot — official percentages where available (CodexBar-style)
+    struct Gauge: Identifiable, Equatable {
+        let id: String       // "claude-5h" …
+        let provider: String // CLAUDE / CODEX
+        let window: String   // 5h / 7d
+        let pct: Double      // 0-100
+        let reset: String    // "↺ 3h" / ""
+    }
+    struct ModelUsage: Identifiable, Equatable {
+        let model: String
+        let tokens: Int
+        var id: String { model }
+    }
+    @Published var gauges: [Gauge] = []
+    @Published var modelUsage: [ModelUsage] = []
+    @Published var usageText = ""
+
+    func fetchUsage() {
+        DispatchQueue.global().async {
+            let out = runCST(["usage-json"], capture: true)
+            guard let data = out.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { return }
+            func resetText(secondsLeft d: Double) -> String {
+                guard d > 0 else { return "" }
+                if d >= 86400 { return "↺ \(Int(d / 86400))d" }
+                if d >= 3600 { return "↺ \(Int(d / 3600))h" }
+                return "↺ \(Int(d / 60))m"
+            }
+            let isoFrac = ISO8601DateFormatter()
+            isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let iso = ISO8601DateFormatter()
+            func resetFromISO(_ s: Any?) -> String {
+                guard let s = s as? String,
+                      let d = isoFrac.date(from: s) ?? iso.date(from: s) else { return "" }
+                return resetText(secondsLeft: d.timeIntervalSinceNow)
+            }
+            var g: [Gauge] = []
+            if let off = obj["claude_official"] as? [String: Any] {
+                if let w = off["five_hour"] as? [String: Any], let p = w["utilization"] as? Double {
+                    g.append(Gauge(id: "claude-5h", provider: "CLAUDE", window: "5h",
+                                   pct: p, reset: resetFromISO(w["resets_at"])))
+                }
+                if let w = off["seven_day"] as? [String: Any], let p = w["utilization"] as? Double {
+                    g.append(Gauge(id: "claude-7d", provider: "CLAUDE", window: "7d",
+                                   pct: p, reset: resetFromISO(w["resets_at"])))
+                }
+            }
+            if let x = obj["codex"] as? [String: Any] {
+                for (key, name) in [("secondary", "5h"), ("primary", "7d")] {
+                    if let w = x[key] as? [String: Any], let p = w["used_percent"] as? Double {
+                        var reset = ""
+                        if let r = w["resets_at"] as? Double {
+                            reset = resetText(secondsLeft: r - Date().timeIntervalSince1970)
+                        }
+                        // window_minutes tells the truth better than our label guess
+                        let win = (w["window_minutes"] as? Double).map {
+                            $0 >= 10080 ? "7d" : $0 >= 240 ? "5h" : "\(Int($0))m"
+                        } ?? name
+                        g.append(Gauge(id: "codex-\(key)", provider: "CODEX", window: win,
+                                       pct: p, reset: reset))
+                    }
+                }
+            }
+            // footer summary + local-estimate fallback when no official data
+            var parts: [String] = []
+            for gg in g where gg.window != "5h" || gg.pct > 0 {
+                if !parts.contains(where: { $0.hasPrefix(gg.provider.lowercased()) }) {
+                    parts.append("\(gg.provider.lowercased()) \(Int(gg.pct.rounded()))%/\(gg.window)")
+                }
+            }
+            if g.isEmpty, let c = obj["claude"] as? [String: Any] {
+                let tok = (c["input"] as? Int ?? 0) + (c["output"] as? Int ?? 0)
+                func fmtTok(_ n: Int) -> String {
+                    n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000)
+                        : n >= 1_000 ? "\(n / 1_000)k" : "\(n)"
+                }
+                if tok > 0 { parts.append("claude \(fmtTok(tok))/5h") }
+            }
+            var models: [ModelUsage] = []
+            if let c = obj["claude"] as? [String: Any],
+               let bym = c["by_model"] as? [[String: Any]] {
+                models = bym.compactMap { m in
+                    guard let name = m["model"] as? String else { return nil }
+                    let tok = (m["input"] as? Int ?? 0) + (m["output"] as? Int ?? 0)
+                    return tok > 0 ? ModelUsage(model: name, tokens: tok) : nil
+                }
+            }
+            let text = parts.joined(separator: "  ")
+            DispatchQueue.main.async {
+                self.gauges = g
+                self.modelUsage = models
+                self.usageText = text
+            }
+        }
+    }
+
+    func newSession(in dir: String, agent: String? = nil) {
         appDelegate?.hidePanel()
-        DispatchQueue.global().async { runCST(["new-session", dir]) }
+        let a = agent ?? mainAgent
+        DispatchQueue.global().async { runCST(["new-session", dir, a]) }
+    }
+
+    func saveCommand(name: String, command: String) {
+        let path = ("~/.local/state/claude-session-tracker/commands.json" as NSString).expandingTildeInPath
+        var map = customCommands
+        map[name] = command
+        if let data = try? JSONSerialization.data(withJSONObject: map,
+                                                  options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+        objectWillChange.send()
     }
 
     // user commands from commands.json (name → shell; '@' prefix = silent)
@@ -332,6 +472,207 @@ func drawPixelMap(_ cg: CGContext, map: [String], pixel: CGFloat,
             cg.setFillColor(c.cgColor)
             cg.fill(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
                            width: pixel, height: pixel))
+        }
+    }
+}
+
+// agent-neutral app icon: a terminal window outline with a >_ prompt —
+// the menubar and search field use this; session rows keep agent mascots
+let appIconMap: [String] = [
+    ".oooooooooooooo.",
+    "o..............o",
+    "o..............o",
+    "o..o...........o",
+    "o...o..........o",
+    "o..o...........o",
+    "o......oooo....o",
+    "o..............o",
+    "o..............o",
+    ".oooooooooooooo.",
+]
+
+// ── selectable icon set (original pixel characters) ──────────────
+let catMap: [String] = [
+    "..oo........oo..",
+    "..ooo......ooo..",
+    "..oooooooooooo..",
+    ".oooooooooooooo.",
+    ".ooo.oooooo.ooo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    "..oooooooooooo..",
+    "...o.o....o.o...",
+]
+let ghostMap: [String] = [
+    "....oooooooo....",
+    "..oooooooooooo..",
+    ".oooooooooooooo.",
+    ".oo..oooooo..oo.",
+    ".oo..oooooo..oo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    ".oooooooooooooo.",
+    ".oo..oo..oo..oo.",
+]
+let robotMap: [String] = [
+    ".......oo.......",
+    "....oooooooo....",
+    "...oooooooooo...",
+    "...o.oooooo.o...",
+    "...oooooooooo...",
+    "....oooooooo....",
+    "..oooooooooooo..",
+    "..oooooooooooo..",
+    "...oo......oo...",
+    "...oo......oo...",
+]
+let slimeMap: [String] = [
+    "................",
+    ".....oooooo.....",
+    "...oooooooooo...",
+    "..oooooooooooo..",
+    ".ooo.oooooo.ooo.",
+    ".oooooooooooooo.",
+    "oooooooooooooooo",
+    "oooooooooooooooo",
+    ".oooooooooooooo.",
+    "..oooooooooooo..",
+]
+
+// icon registry: key → (map, panel tint). claude/codex use their mascots.
+// computed, not stored: top-level globals init in source order, and this
+// references maps declared later in the file (codexMap segfaulted as let)
+var iconChoices: [(key: String, label: String, map: [String], tint: NSColor)] { [
+    ("generic", "터미널", appIconMap, NSColor.textColor.withAlphaComponent(0.75)),
+    ("claude", "Claude", mascotMap, claudeOrangeNS),
+    ("codex", "Codex", codexMap, NSColor(codexBlue)),
+    ("cat", "고양이", catMap, NSColor.systemBrown),
+    ("ghost", "고스트", ghostMap, NSColor.systemPurple),
+    ("robot", "로봇", robotMap, NSColor.systemGray),
+    ("slime", "슬라임", slimeMap, NSColor.systemGreen),
+] }
+func iconChoice(_ key: String) -> (key: String, label: String, map: [String], tint: NSColor) {
+    iconChoices.first { $0.key == key } ?? iconChoices[0]
+}
+
+// drop a PNG (static, gets a bounce) or GIF (frame animation) here — the
+// "이미지" card appears in the picker when either exists
+let customIconPath = ("~/.local/state/claude-session-tracker/icon.png" as NSString).expandingTildeInPath
+let customIconGIFPath = ("~/.local/state/claude-session-tracker/icon.gif" as NSString).expandingTildeInPath
+var customIconExists: Bool {
+    FileManager.default.fileExists(atPath: customIconGIFPath)
+        || FileManager.default.fileExists(atPath: customIconPath)
+}
+var _customIconCache: (key: String, frames: [NSImage])? = nil
+
+func resizedIcon(_ img: NSImage, height: CGFloat) -> NSImage {
+    let w = img.size.height > 0 ? img.size.width * height / img.size.height : height
+    let out = NSImage(size: NSSize(width: w, height: height))
+    out.lockFocus()
+    img.draw(in: NSRect(x: 0, y: 0, width: w, height: height),
+             from: .zero, operation: .sourceOver, fraction: 1)
+    out.unlockFocus()
+    return out
+}
+
+// all frames at the given height: n frames for a GIF, 1 for a PNG, [] if none
+func customIconFrames(height: CGFloat) -> [NSImage] {
+    let fm = FileManager.default
+    let path = fm.fileExists(atPath: customIconGIFPath) ? customIconGIFPath : customIconPath
+    guard fm.fileExists(atPath: path) else { return [] }
+    let mtime = ((try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?
+        .timeIntervalSince1970 ?? 0
+    let key = "\(path):\(mtime):\(height)"
+    if let c = _customIconCache, c.key == key { return c.frames }
+    var frames: [NSImage] = []
+    if let img = NSImage(contentsOfFile: path) {
+        if let rep = img.representations.first as? NSBitmapImageRep,
+           let n = rep.value(forProperty: .frameCount) as? Int, n > 1 {
+            for i in 0..<min(n, 24) {
+                rep.setProperty(.currentFrame, withValue: i)
+                if let data = rep.representation(using: .png, properties: [:]),
+                   let f = NSImage(data: data) {
+                    frames.append(resizedIcon(f, height: height))
+                }
+            }
+        } else {
+            frames = [resizedIcon(img, height: height)]
+        }
+    }
+    _customIconCache = (key, frames)
+    return frames
+}
+
+func customIconImage(height: CGFloat) -> NSImage? { customIconFrames(height: height).first }
+
+// card-grid icon picker shown under the status item on right-click
+struct IconPickerView: View {
+    let current: String
+    let onPick: (String) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("아이콘")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .tracking(1.4)
+            let choices = iconChoices
+                + (customIconExists ? [("custom", "이미지", appIconMap, NSColor.clear)] : [])
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(66), spacing: 8), count: 4),
+                      spacing: 8) {
+                ForEach(choices, id: \.key) { c in
+                    let selected = current == c.key
+                    VStack(spacing: 5) {
+                        PixelAppIcon(choice: c.key, pixel: 2.4)
+                        Text(c.label)
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .foregroundStyle(selected ? .primary : .secondary)
+                    }
+                    .frame(width: 66, height: 58)
+                    .background(RoundedRectangle(cornerRadius: 9)
+                        .fill(selected ? claudeOrange.opacity(0.22) : Color.primary.opacity(0.05)))
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(selected ? claudeOrange.opacity(0.8) : Color.clear, lineWidth: 1))
+                    .contentShape(RoundedRectangle(cornerRadius: 9))
+                    .onTapGesture { onPick(c.key) }
+                }
+            }
+        }
+        .padding(12)
+        .background(VisualEffect().clipShape(RoundedRectangle(cornerRadius: 12)))
+    }
+}
+
+struct PixelAppIcon: View {
+    var choice: String = "generic"
+    var pixel: CGFloat = 3
+    @Environment(\.displayScale) private var scale
+    var body: some View {
+        let px = quantizedPixel(pixel, scale: scale)
+        if choice == "codex" {
+            CodexLogoIcon().frame(width: px * 10, height: px * 10)
+        } else if choice == "custom", !customIconFrames(height: px * 10).isEmpty {
+            let frames = customIconFrames(height: px * 10)
+            if frames.count > 1 {
+                TimelineView(.periodic(from: .now, by: 0.12)) { tl in
+                    let i = Int(tl.date.timeIntervalSince1970 / 0.12) % frames.count
+                    Image(nsImage: frames[i])
+                }
+                .frame(height: px * 10)
+            } else {
+                Image(nsImage: frames[0]).frame(height: px * 10)
+            }
+        } else {
+            let c = iconChoice(choice)
+            Canvas { ctx, _ in
+                ctx.withCGContext { cg in
+                    drawPixelMap(cg, map: c.map, pixel: px) {
+                        $0 == "o" ? c.tint : ($0 == "w" ? .white : nil)
+                    }
+                }
+            }
+            .frame(width: px * 16, height: px * 10)
         }
     }
 }
@@ -478,6 +819,125 @@ let codexMap: [String] = [
     "......oooo......",
 ]
 
+// vector rendition of the Codex logo: gradient flower blob + white >_
+// (crisp at any size, transparent background)
+struct CodexLogoIcon: View {
+    var body: some View {
+        Canvas { ctx, size in
+            let s = min(size.width, size.height)
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            var blob = Path()
+            let R = s * 0.30
+            blob.addEllipse(in: CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R))
+            for i in 0..<8 {
+                let a = CGFloat(i) * .pi / 4
+                let px = c.x + cos(a) * s * 0.22
+                let py = c.y + sin(a) * s * 0.22
+                let r = s * 0.21
+                blob.addEllipse(in: CGRect(x: px - r, y: py - r, width: 2 * r, height: 2 * r))
+            }
+            ctx.fill(blob, with: .linearGradient(
+                Gradient(colors: [Color(red: 0.57, green: 0.55, blue: 0.98),
+                                  Color(red: 0.22, green: 0.22, blue: 0.94)]),
+                startPoint: CGPoint(x: c.x, y: c.y - s * 0.5),
+                endPoint: CGPoint(x: c.x, y: c.y + s * 0.5)))
+            let stroke = StrokeStyle(lineWidth: s * 0.08, lineCap: .round, lineJoin: .round)
+            var ch = Path()
+            ch.move(to: CGPoint(x: c.x - s * 0.17, y: c.y - s * 0.13))
+            ch.addLine(to: CGPoint(x: c.x - s * 0.05, y: c.y))
+            ch.addLine(to: CGPoint(x: c.x - s * 0.17, y: c.y + s * 0.13))
+            ctx.stroke(ch, with: .color(.white), style: stroke)
+            var us = Path()
+            us.move(to: CGPoint(x: c.x + 0.03 * s, y: c.y + s * 0.13))
+            us.addLine(to: CGPoint(x: c.x + 0.19 * s, y: c.y + s * 0.13))
+            ctx.stroke(us, with: .color(.white), style: stroke)
+        }
+    }
+}
+
+// AppKit twin of CodexLogoIcon for menubar NSImages (no SwiftUI renderer —
+// ImageRenderer is main-actor-isolated and this must stay callable anywhere)
+func codexLogoNSImage(size s: CGFloat) -> NSImage {
+    let out = NSImage(size: NSSize(width: s, height: s))
+    out.lockFocus()
+    if let cg = NSGraphicsContext.current?.cgContext {
+        let c = CGPoint(x: s / 2, y: s / 2)
+        let path = CGMutablePath()
+        let R = s * 0.30
+        path.addEllipse(in: CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R))
+        for i in 0..<8 {
+            let a = CGFloat(i) * .pi / 4
+            let r = s * 0.21
+            path.addEllipse(in: CGRect(x: c.x + cos(a) * s * 0.22 - r,
+                                       y: c.y + sin(a) * s * 0.22 - r,
+                                       width: 2 * r, height: 2 * r))
+        }
+        cg.saveGState()
+        cg.addPath(path)
+        cg.clip()
+        let colors = [NSColor(red: 0.22, green: 0.22, blue: 0.94, alpha: 1).cgColor,
+                      NSColor(red: 0.57, green: 0.55, blue: 0.98, alpha: 1).cgColor]
+        if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                 colors: colors as CFArray, locations: [0, 1]) {
+            cg.drawLinearGradient(grad, start: CGPoint(x: c.x, y: 0),
+                                  end: CGPoint(x: c.x, y: s), options: [])
+        }
+        cg.restoreGState()
+        cg.setStrokeColor(.white)
+        cg.setLineWidth(s * 0.08)
+        cg.setLineCap(.round)
+        cg.setLineJoin(.round)
+        cg.beginPath()
+        cg.move(to: CGPoint(x: c.x - s * 0.17, y: c.y + s * 0.13))
+        cg.addLine(to: CGPoint(x: c.x - s * 0.05, y: c.y))
+        cg.addLine(to: CGPoint(x: c.x - s * 0.17, y: c.y - s * 0.13))
+        cg.strokePath()
+        cg.beginPath()
+        cg.move(to: CGPoint(x: c.x + 0.03 * s, y: c.y - s * 0.13))
+        cg.addLine(to: CGPoint(x: c.x + 0.19 * s, y: c.y - s * 0.13))
+        cg.strokePath()
+    }
+    out.unlockFocus()
+    return out
+}
+
+// image-based codex row mascot: bounce while running, badges for asks
+struct CodexMascot: View {
+    let status: String
+    var animate: Bool = true
+    var body: some View {
+        let dim: Double = status == "gone" ? 0.45 : status == "done" ? 0.8 : 1
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if animate && status == "running" {
+                    TimelineView(.periodic(from: .now, by: 0.35)) { tl in
+                        let up = Int(tl.date.timeIntervalSince1970 / 0.35) % 2 == 0
+                        CodexLogoIcon().frame(width: 17, height: 17)
+                            .offset(y: up ? -1.5 : 1.5)
+                    }
+                } else {
+                    CodexLogoIcon().frame(width: 17, height: 17)
+                }
+            }
+            .opacity(dim)
+            switch status {
+            case "waiting": mascotBadge("!!", .orange)
+            case "input": mascotBadge("??", .blue)
+            case "finished": mascotBadge("✓", .green)
+            default: EmptyView()
+            }
+        }
+        .frame(width: 24, height: 18)
+    }
+
+    func mascotBadge(_ t: String, _ c: Color) -> some View {
+        Text(t)
+            .font(.system(size: 7, weight: .heavy))
+            .foregroundStyle(c)
+            .offset(x: 2, y: -3)
+    }
+}
+
 func codexFrames(_ status: String) -> (frames: [[String]], interval: Double, tint: Color) {
     let empty = String(repeating: ".", count: 16)
     let body = codexMap
@@ -548,7 +1008,11 @@ struct StatusMascot: View {
 
 @ViewBuilder
 func statusGlyph(_ status: String, agent: String = "claude", animate: Bool = true) -> some View {
-    StatusMascot(status: status, agent: agent, animate: animate)
+    if agent == "codex" {
+        CodexMascot(status: status, animate: animate)
+    } else {
+        StatusMascot(status: status, agent: agent, animate: animate)
+    }
 }
 
 func statusColor(_ status: String) -> Color {
@@ -560,6 +1024,17 @@ func statusColor(_ status: String) -> Color {
     case "gone": return Color(nsColor: .systemGray).opacity(0.5)
     default: return Color(nsColor: .systemGray)
     }
+}
+
+// "claude-opus-5" → "opus 5", "gpt-5.6-sol" → "gpt-5.6", "claude-haiku-4-5-…" → "haiku 4.5"
+func shortModel(_ model: String?) -> String {
+    guard var m = model, !m.isEmpty, !m.hasPrefix("<") else { return "" }
+    if m.hasPrefix("claude-") { m = String(m.dropFirst(7)) }
+    let parts = m.split(separator: "-").map(String.init)
+    guard let name = parts.first else { return m }
+    let nums = parts.dropFirst().prefix(while: { $0.allSatisfy { $0.isNumber || $0 == "." } })
+    if name.hasPrefix("gpt") { return nums.isEmpty ? name : "\(name)-\(nums.first!)" }
+    return nums.isEmpty ? name : "\(name) \(nums.joined(separator: "."))"
 }
 
 func ageString(_ updated: Double?) -> String {
@@ -648,13 +1123,30 @@ struct SessionRow: View {
                         }
                 } else {
                     Text(name)
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .lineLimit(1)
                 }
-                Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    if !shortModel(s.model).isEmpty {
+                        Text(shortModel(s.model))
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.07)))
+                    }
+                    // fork lineage rides in the meta line instead of nesting
+                    if let p = s.parent,
+                       let pt = model.sessions.first(where: { $0.session_id == p }) {
+                        Text("⑂ \((pt.title ?? "부모").prefix(12))")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
             if s.pinned {
@@ -663,17 +1155,19 @@ struct SessionRow: View {
                     .foregroundStyle(claudeOrange.opacity(0.7))
             }
             if isStopping {
-                Text("중지됨")
+                Text("중지됨 · ⌃X 한번 더 = 종료")
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Capsule().fill(Color(nsColor: .systemGray).opacity(0.18)))
                     .foregroundStyle(.secondary)
-            } else if !ageString(s.updated_at).isEmpty {
+            } else if s.status != "running", !ageString(s.updated_at).isEmpty {
+                // running rows skip the age capsule — it reflects the last
+                // hook event, which reads oddly mid-turn ("running · 41m")
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Capsule().fill(statusColor(s.status).opacity(0.18)))
-                    .foregroundStyle(statusColor(s.status))
+                    .background(Capsule().fill(statusColor(s.status).opacity(0.13)))
+                    .foregroundStyle(statusColor(s.status).opacity(0.85))
             }
             if hovering {
                 if s.status != "archived", onMessage != nil {
@@ -736,6 +1230,7 @@ enum PanelRow: Identifiable, Equatable {
     case session(Session, indented: Bool)
     case command(String, String, String) // id, title, subtitle
     case dropzone(String)   // transient drop target (e.g. pin-to-end)
+    case stats              // usage statistics card
 
     var id: String {
         switch self {
@@ -744,13 +1239,144 @@ enum PanelRow: Identifiable, Equatable {
         case .session(let s, _): return s.session_id
         case .command(let id, _, _): return "cmd-\(id)"
         case .dropzone(let s): return "dz-\(s)"
+        case .stats: return "stats-card"
         }
     }
 
     var selectable: Bool {
         switch self {
-        case .label, .dropzone: return false
+        case .label, .dropzone, .stats: return false
         default: return true
+        }
+    }
+}
+
+// CodexBar-style quota gauge: [provider window ███████░░░ 37% ↺4d]
+struct QuotaGauge: View {
+    let g: Model.Gauge
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(g.provider)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(g.provider == "CLAUDE" ? claudeOrange : codexBlue)
+                .frame(width: 46, alignment: .leading)
+            Text(g.window)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule().fill(g.pct >= 85 ? Color(nsColor: .systemRed)
+                                   : g.pct >= 60 ? Color(nsColor: .systemOrange)
+                                   : Color(nsColor: .systemGreen))
+                        .frame(width: max(4, geo.size.width * min(1, g.pct / 100)))
+                }
+            }
+            .frame(height: 7)
+            Text("\(Int(g.pct.rounded()))%")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .frame(width: 36, alignment: .trailing)
+            Text(g.reset)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 44, alignment: .leading)
+        }
+    }
+}
+
+// pixel-flavored 14-day activity card for the "stats" command
+struct StatsCard: View {
+    let stats: Model.Stats
+    let gauges: [Model.Gauge]
+    let modelUsage: [Model.ModelUsage]
+    let usageText: String
+
+    func fmtTok(_ n: Int) -> String {
+        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000)
+            : n >= 1_000 ? "\(n / 1_000)k" : "\(n)"
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                statBlock("\(stats.claude_total + stats.codex_total)", "총 세션")
+                statBlock("\(stats.claude_total)", "claude")
+                statBlock("\(stats.codex_total)", "codex")
+                statBlock("\(stats.daily.last?.count ?? 0)", "오늘")
+                statBlock("\(stats.daily.suffix(7).reduce(0) { $0 + $1.count })", "7일")
+                Spacer()
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("최근 14일 활동")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .tracking(1.2)
+                let maxN = max(1, stats.daily.map { $0.count }.max() ?? 1)
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(stats.daily, id: \.date) { d in
+                        VStack(spacing: 2) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(claudeOrange.opacity(d.count == 0 ? 0.15
+                                    : 0.35 + 0.65 * Double(d.count) / Double(maxN)))
+                                .frame(width: 14, height: max(3, 42 * CGFloat(d.count) / CGFloat(maxN)))
+                            Text(String(d.date.suffix(2)))
+                                .font(.system(size: 7, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .help("\(d.date): \(d.count) 세션")
+                    }
+                }
+            }
+            if !gauges.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("사용량")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .tracking(1.2)
+                    ForEach(gauges) { QuotaGauge(g: $0) }
+                }
+                if !modelUsage.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("모델별 · 최근 5시간")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .tracking(1.2)
+                        let maxTok = max(1, modelUsage.map { $0.tokens }.max() ?? 1)
+                        ForEach(modelUsage) { m in
+                            HStack(spacing: 8) {
+                                Text(shortModel(m.model))
+                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                    .frame(width: 66, alignment: .leading)
+                                GeometryReader { geo in
+                                    Capsule().fill(claudeOrange.opacity(0.75))
+                                        .frame(width: max(4, geo.size.width
+                                            * CGFloat(m.tokens) / CGFloat(maxTok)))
+                                }
+                                .frame(height: 6)
+                                Text(fmtTok(m.tokens))
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 44, alignment: .trailing)
+                            }
+                        }
+                    }
+                }
+            } else if !usageText.isEmpty {
+                Text("⚡ \(usageText)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
+        .padding(.horizontal, 2)
+    }
+
+    func statBlock(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 1) {
+            Text(value).font(.system(size: 15, weight: .bold, design: .rounded))
+            Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
         }
     }
 }
@@ -861,11 +1487,17 @@ struct PanelView: View {
     @State private var renamingSession: Session? = nil
     @State private var renameText = ""
     @State private var messagingSession: Session? = nil
+    @State private var editingCommand = false
+    @State private var showStats = false
+    @State private var cmdDraftName = ""
+    @State private var cmdDraftBody = ""
+    @FocusState private var cmdNameFocused: Bool
     @State private var messageText = ""
     @State private var dropTarget: String? = nil
     @State private var draggingGroup: String? = nil
-    @State private var followSid: String? = nil
     @State private var stoppingSids: Set<String> = []
+    @State private var endingSids: Set<String> = []
+    @State private var followSid: String? = nil
     @State private var lastSessionSid: String? = nil
     @State private var sessionDropTarget: String? = nil
     @State private var draggingSessionSid: String? = nil
@@ -881,13 +1513,14 @@ struct PanelView: View {
     // sessions with an optimistic idle override for in-flight stops, so a
     // stopped row moves to its final place (pin/group) immediately
     var viewSessions: [Session] {
-        model.sessions.map { s in
+        model.sessions.filter { !endingSids.contains($0.session_id) }.map { s in
             guard stoppingSids.contains(s.session_id), s.status == "running" else { return s }
             return Session(session_id: s.session_id, status: "done", cwd: s.cwd,
                            title: s.title, message: s.message, updated_at: s.updated_at,
                            bg: s.bg, kind: s.kind, group: s.group, pin_order: s.pin_order,
                            group_color: s.group_color, group_order: s.group_order,
-                           sort_order: s.sort_order, agent: s.agent)
+                           sort_order: s.sort_order, agent: s.agent, model: s.model,
+                           parent: s.parent)
         }
     }
 
@@ -917,32 +1550,32 @@ struct PanelView: View {
                                               $0.description.isEmpty ? "skill" : $0.description) }
     }
 
-    // Raycast-style command mode: query starting with ">"
-    var commandQuery: String? {
-        guard query.hasPrefix(">") else { return nil }
-        return String(query.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
-    }
-
+    // Raycast-style: typing matches commands right alongside sessions
     var commandRows: [PanelRow] {
-        guard let q = commandQuery else { return [] }
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard searching, !q.isEmpty, !query.hasPrefix("/") else { return [] }
         var cmds: [(String, String, String)] = [
-            ("hub", "Agents Hub", "에이전트 대시보드 탭 열기"),
             ("clean", "Clean Stale Sessions", "오래된 세션 정리"),
             ("quit", "Quit Claude Sessions", "앱 종료"),
+            ("agent-toggle", "Main Agent: \(model.mainAgent) → \(model.otherAgent)",
+             "새 세션 기본 에이전트 전환"),
         ]
         for dir in model.recentDirs {
             let name = (dir as NSString).lastPathComponent
+            let path = dir.replacingOccurrences(of: NSHomeDirectory(), with: "~")
             cmds.append(("new:\(dir)", "New Session: \(name)",
-                         dir.replacingOccurrences(of: NSHomeDirectory(), with: "~")))
+                         "↩ \(model.mainAgent) · ⌘↩ \(model.otherAgent) · \(path)"))
         }
         for (name, cmd) in model.customCommands.sorted(by: { $0.key < $1.key }) {
             let silent = cmd.hasPrefix("@")
             cmds.append(("custom:\(name)", name,
                          (silent ? "⚙︎ " : "⌘ ") + String(cmd.dropFirst(silent ? 1 : 0)).prefix(40)))
         }
-        let filtered = q.isEmpty ? cmds
-            : cmds.filter { $0.1.lowercased().contains(q) || $0.2.lowercased().contains(q) }
-        return filtered.map { .command($0.0, $0.1, $0.2) }
+        cmds.append(("cmd-new", "New Command",
+                     "커스텀 커맨드 만들기 — {query}/{prompt} 치환, @=백그라운드"))
+        cmds.append(("stats", "Stats", "사용 통계 — 14일 활동, 세션 수, 쿼터"))
+        return cmds.filter { $0.1.lowercased().contains(q) || $0.2.lowercased().contains(q) }
+            .prefix(8).map { .command($0.0, $0.1, $0.2) }
     }
 
     // "c biddersvc 광고 로직 봐줘" → folder token + trailing initial prompt
@@ -953,7 +1586,7 @@ struct PanelView: View {
         return (first, rest)
     }
 
-    func runPanelCommand(_ id: String) {
+    func runPanelCommand(_ id: String, alt: Bool = false) {
         if id.hasPrefix("skill:") {
             let name = String(id.dropFirst(6))
             // target: the session selected before entering "/" mode, else the
@@ -992,8 +1625,39 @@ struct PanelView: View {
         if id == "hub" { model.hub() }
         else if id == "clean" { model.clean(); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
-        else if id.hasPrefix("new:") { model.newSession(in: String(id.dropFirst(4))) }
-        else if id.hasPrefix("custom:") { model.runCommand(String(id.dropFirst(7))) }
+        else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
+        else if id == "stats" {
+            model.fetchStats()
+            showStats = true
+            query = ""
+        }
+        else if id == "cmd-new" {
+            editingCommand = true
+            cmdDraftName = ""
+            cmdDraftBody = ""
+        }
+        else if id.hasPrefix("cmd-edit:") {
+            editingCommand = true
+            cmdDraftName = String(id.dropFirst(9))
+            cmdDraftBody = model.customCommands[cmdDraftName] ?? ""
+        }
+        else if id.hasPrefix("new:") {
+            // ⌘↩ (or ⌘click) starts the non-main agent
+            let cmdClick = NSApp.currentEvent?.modifierFlags.contains(.command) ?? false
+            model.newSession(in: String(id.dropFirst(4)),
+                             agent: (alt || cmdClick) ? model.otherAgent : model.mainAgent)
+        }
+        else if id.hasPrefix("custom:") {
+            // ⌘↩ / ⌘click on a custom command opens it in the editor
+            let name = String(id.dropFirst(7))
+            if alt || NSApp.currentEvent?.modifierFlags.contains(.command) == true {
+                editingCommand = true
+                cmdDraftName = name
+                cmdDraftBody = model.customCommands[name] ?? ""
+            } else {
+                model.runCommand(name)
+            }
+        }
     }
 
     static let attentionOrder = ["waiting": 0, "input": 1, "finished": 2, "running": 3]
@@ -1009,7 +1673,7 @@ struct PanelView: View {
         var out: [HotkeyTarget] = []
         for r in rows {
             switch r {
-            case .label, .command, .dropzone: break
+            case .label, .command, .dropzone, .stats: break
             case .session(let s, _): out.append(.session(s))
             case .header(let g):
                 if !searching && !expanded.contains(g) { out.append(.group(g)) }
@@ -1087,7 +1751,7 @@ struct PanelView: View {
     // Raycast keyword: first word matches a commands.json name → run with
     // the rest of the query as {query}
     var keywordMatch: (name: String, arg: String, preview: String, template: String)? {
-        guard commandQuery == nil, searching else { return nil }
+        guard searching else { return nil }
         let parts = query.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
         guard let first = parts.first, !first.isEmpty else { return nil }
         let name = String(first)
@@ -1128,7 +1792,7 @@ struct PanelView: View {
         return sorted.prefix(8).map { ($0, baseExp + "/" + $0) }
     }
 
-    static let statusOrderAll = ["waiting", "input", "finished", "running", "done", "gone"]
+    static let statusOrderAll = ["waiting", "running", "input", "finished", "done", "gone"]
 
     func statusSorted(_ list: [Session]) -> [Session] {
         list.sorted { a, b in
@@ -1142,37 +1806,69 @@ struct PanelView: View {
     // chips layout: pinned, then the chip-filtered pool in status sections
     var chipRows: [PanelRow] {
         var out: [PanelRow] = []
-        if !pinnedSessions.isEmpty {
-            out.append(.label("PINNED"))
-            out += pinnedSessions.map { .session($0, indented: false) }
-        }
         let pool = filtered.filter { !$0.pinned }
             .filter { selectedChip == nil || $0.group == selectedChip }
-        let sections: [(String, String)] = [
-            ("waiting", "NEEDS INPUT"), ("input", "REPLY WAITING"),
-            ("finished", "FINISHED"), ("running", "RUNNING"),
-            ("done", "IDLE"), ("gone", "ENDED"),
-        ]
-        for (st, label) in sections {
-            let members = pool.filter { $0.status == st }
-                .sorted { a, b in
-                    // manual order first, then recency
-                    let oa = a.sort_order ?? Int.max
-                    let ob = b.sort_order ?? Int.max
-                    if oa != ob { return oa < ob }
-                    return (a.updated_at ?? 0) > (b.updated_at ?? 0)
-                }
-            if members.isEmpty { continue }
-            out.append(.label(label))
-            out += members.map { .session($0, indented: false) }
+        // hybrid layout: only attention-worthy sessions get pulled to the
+        // top; everything else stays in one stable list (manual order, then
+        // recency, ended sunk to the bottom) — status reads off the mascot
+        let attnOrder = ["waiting", "input", "finished"]
+        let attn = pool.filter { attnOrder.contains($0.status) }
+            .sorted { a, b in
+                let ua = attnOrder.firstIndex(of: a.status) ?? 9
+                let ub = attnOrder.firstIndex(of: b.status) ?? 9
+                if ua != ub { return ua < ub }
+                let oa = a.sort_order ?? Int.max
+                let ob = b.sort_order ?? Int.max
+                if oa != ob { return oa < ob }
+                return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+            }
+        let rest = pool.filter { !attnOrder.contains($0.status) }
+            .sorted { a, b in
+                if (a.status == "gone") != (b.status == "gone") { return b.status == "gone" }
+                let oa = a.sort_order ?? Int.max
+                let ob = b.sort_order ?? Int.max
+                if oa != ob { return oa < ob }
+                return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+            }
+        // purely visual nesting: a child renders indented under its parent —
+        // the parent can be pinned or in the stable list. Status/ack stay
+        // independent (a child in ATTENTION stays in ATTENTION), and a
+        // manually placed child (drag → sort_order) escapes the nest
+        let parentIds = Set(rest.map { $0.session_id })
+            .union(pinnedSessions.map { $0.session_id })
+        let children = Dictionary(grouping: rest.filter {
+            guard $0.sort_order == nil, let p = $0.parent else { return false }
+            return parentIds.contains(p)
+        }, by: { $0.parent! })
+        let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
+        func appendWithChildren(_ s: Session) {
+            out.append(.session(s, indented: false))
+            for c in (children[s.session_id] ?? [])
+                .sorted(by: { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }) {
+                out.append(.session(c, indented: true))
+            }
+        }
+        if !pinnedSessions.isEmpty {
+            out.append(.label("PINNED"))
+            pinnedSessions.forEach(appendWithChildren)
+        }
+        if !attn.isEmpty {
+            out.append(.label("ATTENTION"))
+            out += attn.map { .session($0, indented: false) }
+        }
+        if !rest.isEmpty {
+            if !attn.isEmpty || !pinnedSessions.isEmpty { out.append(.label("SESSIONS")) }
+            for m in rest where !nestedIds.contains(m.session_id) {
+                appendWithChildren(m)
+            }
         }
         return out
     }
 
     // the navigable list, in display order
     var rows: [PanelRow] {
+        if showStats { return [.stats] }
         if skillQuery != nil { return skillRows }
-        if commandQuery != nil { return commandRows }
         if let kw = keywordMatch {
             var out: [PanelRow] = []
             let (folderToken, promptRest) = splitKeywordArg(kw.arg)
@@ -1201,10 +1897,21 @@ struct PanelView: View {
         }
         if searching {
             var out: [PanelRow] = []
-            for st in ["waiting", "input", "finished", "running", "done", "gone"] {
+            for st in ["waiting", "running", "input", "finished", "done", "gone"] {
                 out += filtered.filter { $0.status == st }.map { .session($0, indented: false) }
             }
+            out += commandRows
             let liveIds = Set(model.sessions.map { $0.session_id })
+            // transcript-content matches on live sessions the title filter missed
+            let titleMatched = Set(filtered.map { $0.session_id })
+            let contentMatches = model.archive.compactMap { a in
+                liveIds.contains(a.session_id) && !titleMatched.contains(a.session_id)
+                    ? viewSessions.first { $0.session_id == a.session_id } : nil
+            }
+            if !contentMatches.isEmpty {
+                out.append(.label("내용 일치"))
+                out += contentMatches.map { .session($0, indented: false) }
+            }
             let archived = model.archive.filter { !liveIds.contains($0.session_id) }
             if model.archiveSearching {
                 out.append(.label("ARCHIVE — 검색 중…"))
@@ -1242,16 +1949,17 @@ struct PanelView: View {
     var listHeight: CGFloat {
         let h = rows.reduce(CGFloat(0)) { acc, r in
             switch r {
-            case .label: return acc + 24
+            case .label: return acc + 28
             case .header: return acc + 34
             case .session: return acc + 47
             case .command: return acc + 42
             case .dropzone: return acc + 10
+            case .stats: return acc + 240 + CGFloat(model.modelUsage.count) * 16
             }
         }
         var extra: CGFloat = 0
         if !searching {
-            if groupLayout == "chips" { extra += 36 }
+            if groupLayout == "chips" { extra += 42 }
         }
         return min(max(h + extra + 16 + (draggingGroup != nil ? 34 : 0), 100), 460)
     }
@@ -1302,13 +2010,13 @@ struct PanelView: View {
         return true
     }
 
-    func activateSelected() {
+    func activateSelected(alt: Bool = false) {
         if case .label? = rows[safe: selected] { selected = firstSelectable() }
         switch rows[safe: selected] ?? rows.first {
         case .session(let s, _): model.jump(s)
         case .header(let g): toggleExpand(g)
-        case .command(let id, _, _): runPanelCommand(id)
-        case .label, .dropzone, nil: break
+        case .command(let id, _, _): runPanelCommand(id, alt: alt)
+        case .label, .dropzone, .stats, nil: break
         }
     }
 
@@ -1379,12 +2087,13 @@ struct PanelView: View {
         case .label(let l):
             HStack(spacing: 5) {
                 Text(l)
-                    .font(.system(size: 10, weight: .heavy, design: .rounded))
-                    .foregroundStyle(l == "ATTENTION" || l == "NEEDS INPUT" ? claudeOrange : Color.secondary)
-                    .tracking(1.2)
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(l == "ATTENTION" || l == "NEEDS INPUT"
+                                     ? claudeOrange.opacity(0.9) : Color.secondary.opacity(0.8))
+                    .tracking(1.4)
                 Spacer()
             }
-            .padding(.horizontal, 12).padding(.top, 4)
+            .padding(.horizontal, 12).padding(.top, 8)
         case .command(let id, let title, let sub):
             HStack(spacing: 9) {
                 Text(">")
@@ -1408,6 +2117,14 @@ struct PanelView: View {
             .contentShape(RoundedRectangle(cornerRadius: 9))
             .onTapGesture { runPanelCommand(id) }
             .id(r.id)
+        case .stats:
+            if let st = model.stats {
+                StatsCard(stats: st, gauges: model.gauges,
+                          modelUsage: model.modelUsage, usageText: model.usageText)
+            } else {
+                ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            }
         case .dropzone(let z):
             // silent drop strip — shows a line only while hovered
             Rectangle()
@@ -1481,7 +2198,7 @@ struct PanelView: View {
                 base.dropDestination(for: String.self) { items, location in
                     if let d = items.first, d != s.session_id, !d.hasPrefix("group:") {
                         let draggedStatus = viewSessions.first(where: { $0.session_id == d })?.status
-                        if draggedStatus == s.status {
+                        if let ds = draggedStatus, dragZone(ds) == dragZone(s.status) {
                             if isLastInSection(s) && location.y > 24 {
                                 model.orderInsert(d, before: "end")
                             } else {
@@ -1510,16 +2227,22 @@ struct PanelView: View {
     }
 
     func isLastInSection(_ s: Session) -> Bool {
-        let pool = filtered.filter { !$0.pinned && $0.status == s.status }
+        let zone = dragZone(s.status)
+        let pool = filtered.filter { !$0.pinned && dragZone($0.status) == zone }
             .filter { selectedChip == nil || $0.group == selectedChip }
             .sorted(by: manualThenRecent)
         return pool.last?.session_id == s.session_id
     }
 
+    // hybrid layout has two drag zones: ATTENTION and the stable SESSIONS
+    // list — reorder applies within a zone, cross-zone drops assign groups
+    func dragZone(_ status: String) -> String {
+        ["waiting", "input", "finished"].contains(status) ? "attn" : "rest"
+    }
     func draggedSameStatus(as s: Session) -> Bool {
         guard let d = draggingSessionSid,
               let dragged = viewSessions.first(where: { $0.session_id == d }) else { return false }
-        return dragged.status == s.status
+        return dragZone(dragged.status) == dragZone(s.status)
     }
 
     // the group a session-onto-session drop would land in — used to co-
@@ -1552,17 +2275,22 @@ struct PanelView: View {
         let tint = g.map(chipColor) ?? claudeOrange
         let chipId = g ?? "__all__"
         let targeted = dropTarget == "chip-\(chipId)"
-        let body = HStack(spacing: 5) {
-            Circle().fill(tint).frame(width: 7, height: 7)
-            Text(label).font(.system(size: 11, weight: .semibold, design: .rounded))
-            Text("\(count)").font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.secondary)
+        let body = VStack(spacing: 3) {
+            HStack(spacing: 5) {
+                Circle().fill(tint.opacity(selectedNow ? 1 : 0.75)).frame(width: 7, height: 7)
+                Text(label).font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(selectedNow ? Color.primary : Color.secondary)
+                Text("\(count)").font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 3)
+            .background(Capsule().fill(targeted ? tint.opacity(0.3) : Color.primary.opacity(0.05)))
+            .overlay(Capsule().strokeBorder(targeted ? tint.opacity(0.7) : Color.clear, lineWidth: 1))
+            // selection = an underline indicator instead of a filled chip
+            Capsule().fill(selectedNow ? tint : Color.clear)
+                .frame(width: 22, height: 2)
         }
-        .padding(.horizontal, 9).padding(.vertical, 4)
-        .background(Capsule().fill(targeted ? tint.opacity(0.35)
-            : selectedNow ? tint.opacity(0.25) : Color.primary.opacity(0.06)))
-        .overlay(Capsule().strokeBorder(targeted || selectedNow ? tint.opacity(0.7) : Color.clear, lineWidth: 1))
-        .contentShape(Capsule())
+        .contentShape(Rectangle())
         .onTapGesture { selectedChip = g }
         .dropDestination(for: String.self) { items, _ in
             if let item = items.first {
@@ -1600,15 +2328,16 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                PixelMascot(pixel: 2.2)
-                TextField("Search…  (> commands, / skills)", text: $query)
+                PixelAppIcon(choice: model.iconChoiceKey, pixel: 2.2)
+                TextField("Search…  (/ skills)", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
                     .focused($searchFocused)
                     .onSubmit { activateSelected() }
-                    .onExitCommand { appDelegate?.hidePanel() }
+                    .onExitCommand { appDelegate?.hidePanel(restoreFocus: true) }
                     .onChange(of: query) { q in
                         selected = 0
+                        if !q.isEmpty { showStats = false }
                         model.searchArchive(q)
                     }
                 let running = model.sessions.filter { $0.status == "running" }.count
@@ -1683,25 +2412,62 @@ struct PanelView: View {
                 }
                 .frame(height: listHeight)
                 .onChange(of: scrollTarget) { t in
-                    if let t { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) } }
+                    guard let t else { return }
+                    withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(t, anchor: .center) }
+                    // reset so setting the same target again still scrolls
+                    DispatchQueue.main.async { scrollTarget = nil }
                 }
             }
 
             if let sess = messagingSession {
                 HStack(spacing: 8) {
                     Text("→ \((sess.title ?? "session").prefix(16))").font(.system(size: 11)).foregroundStyle(.secondary)
-                    TextField("message (headless turn)", text: $messageText)
+                    TextField("message (↩ 헤드리스 · ⌘↩ 터미널에 입력)", text: $messageText)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11))
                         .focused($msgFocused)
                         .onAppear { msgFocused = true }
                         .onSubmit {
                             let text = messageText.trimmingCharacters(in: .whitespaces)
-                            if !text.isEmpty { model.sendMessage(sess.session_id, text) }
+                            let viaTerminal = NSEvent.modifierFlags.contains(.command)
+                            if !text.isEmpty {
+                                model.sendMessage(sess.session_id, text, viaTerminal: viaTerminal)
+                                if viaTerminal { appDelegate?.hidePanel() }
+                            }
                             messagingSession = nil
                             messageText = ""
                         }
+                        .onExitCommand {
+                            messagingSession = nil
+                            messageText = ""
+                            searchFocused = true
+                        }
                     Button("✕") { messagingSession = nil }.buttonStyle(.plain).font(.system(size: 10))
+                }
+                .padding(.horizontal, 14)
+            }
+
+            if editingCommand {
+                HStack(spacing: 8) {
+                    TextField("이름", text: $cmdDraftName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .frame(width: 110)
+                        .focused($cmdNameFocused)
+                        .onAppear { cmdNameFocused = true }
+                    TextField("명령 ({query}/{prompt} 치환, @=백그라운드 실행)", text: $cmdDraftBody)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        .onSubmit {
+                            let n = cmdDraftName.trimmingCharacters(in: .whitespaces)
+                            let c = cmdDraftBody.trimmingCharacters(in: .whitespaces)
+                            if !n.isEmpty, !c.isEmpty {
+                                model.saveCommand(name: n, command: c)
+                                editingCommand = false
+                                query = ""
+                            }
+                        }
+                    Button("✕") { editingCommand = false }.buttonStyle(.plain).font(.system(size: 10))
                 }
                 .padding(.horizontal, 14)
             }
@@ -1751,9 +2517,20 @@ struct PanelView: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     Spacer()
-                    Text("↩ open · →← fold · drag to group")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                    if model.usageText.isEmpty {
+                        Text("↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        HStack(spacing: 4) {
+                            Text("⚡").font(.system(size: 10))
+                                .foregroundStyle(claudeOrange)
+                            Text(model.usageText)
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        .help("claude: 최근 5시간 토큰(로컬 추정) · codex: 공식 주간 사용률\n↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
+                    }
                 }
                 if model.refreshing {
                     ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 16, height: 16)
@@ -1783,16 +2560,22 @@ struct PanelView: View {
             stoppingSids = stoppingSids.filter { sid in
                 model.sessions.first(where: { $0.session_id == sid })?.status == "running"
             }
-            // follow a session whose row moved between sections (e.g. stopped)
-            guard let sid = followSid else { return }
-            if let s = model.sessions.first(where: { $0.session_id == sid }) {
-                expanded.insert(s.group ?? "__ungrouped__")
-                if let idx = rows.firstIndex(where: { $0.id == sid }) {
-                    selected = idx
-                    scrollTarget = sid
-                }
+            // keep hiding ended sessions until the record actually drops out
+            endingSids = endingSids.filter { sid in
+                model.sessions.contains { $0.session_id == sid }
             }
-            followSid = nil
+            // follow a session whose row moved between sections (e.g. stopped)
+            if let sid = followSid {
+                if let s = model.sessions.first(where: { $0.session_id == sid }) {
+                    expanded.insert(s.group ?? "__ungrouped__")
+                    if let idx = rows.firstIndex(where: { $0.id == sid }) {
+                        selected = idx
+                        scrollTarget = sid
+                    }
+                }
+                followSid = nil
+            }
+            if selected >= rows.count { selected = max(0, rows.count - 1) }
         }
         .onChange(of: model.focusTick) { _ in
             query = ""
@@ -1802,13 +2585,38 @@ struct PanelView: View {
             dropTarget = nil
             renamingSession = nil
             messagingSession = nil
+            messageText = ""
             draggingSessionSid = nil
             sessionDropTarget = nil
+            // transient editors don't survive the panel losing focus
+            showStats = false
+            editingCommand = false
+            cmdDraftName = ""
+            cmdDraftBody = ""
+            renaming = nil
+            renameText = ""
+            addingGroup = false
+            newGroupName = ""
         }
         .onAppear {
             model.moveSelection = { move($0) }
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
+            model.enterKey = { activateSelected(alt: $0) }
+            model.isTextEditing = {
+                renamingSession != nil || editingCommand || messagingSession != nil
+                    || renaming != nil || addingGroup
+            }
+            model.cmdEnterInEditor = {
+                guard let sess = messagingSession else { return false }
+                let text = messageText.trimmingCharacters(in: .whitespaces)
+                guard !text.isEmpty else { return false }
+                model.sendMessage(sess.session_id, text, viaTerminal: true)
+                messagingSession = nil
+                messageText = ""
+                appDelegate?.hidePanel()
+                return true
+            }
             model.actionKey = { action in
                 if case .label? = rows[safe: selected] { selected = firstSelectable() }
                 // on a group header: expand it and step into the first member,
@@ -1836,17 +2644,22 @@ struct PanelView: View {
                     // first Ctrl+X stops the session (stays as 💤, resumable);
                     // Ctrl+X on a stopped/gone session removes it from view
                     if stoppingSids.contains(s.session_id) {
-                        // stop already in flight — swallow repeat presses
-                    } else if s.status == "gone" {
+                        // second press while the "^X again = end" capsule is
+                        // up: end right away and drop the row immediately
+                        stoppingSids.remove(s.session_id)
+                        endingSids.insert(s.session_id)
                         model.endSession(s.session_id)
-                    } else if s.kind == "background" || s.kind == "interactive" {
-                        // the row will move out of ATTENTION into its group —
-                        // keep the highlight on it
+                    } else if s.status == "gone" {
+                        endingSids.insert(s.session_id)
+                        model.endSession(s.session_id)
+                    } else {
+                        // any tracked session (claude interactive/background,
+                        // codex — which has no daemon kind) — cst drives it
+                        // from the record. The row relocates immediately;
+                        // selection and scroll follow it there
                         let sid = s.session_id
                         stoppingSids.insert(sid)
                         followSid = sid
-                        // the row jumps to its final spot right away — make
-                        // sure it's visible and stays selected
                         if !s.pinned { expanded.insert(s.group ?? "__ungrouped__") }
                         model.stopSession(sid)
                         DispatchQueue.main.async {
@@ -1859,8 +2672,6 @@ struct PanelView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                             stoppingSids.remove(sid)
                         }
-                    } else {
-                        return false
                     }
                 default: return false
                 }
@@ -1890,6 +2701,19 @@ struct PanelView: View {
                     }
                     return
                 }
+                // a command row selected: Tab types it into the field
+                // (custom commands land in keyword mode so arguments follow)
+                if case .command(let id, let title, _)? = rows[safe: selected] {
+                    if id.hasPrefix("custom:") {
+                        query = "\(String(id.dropFirst(7))) "
+                    } else if id.hasPrefix("skill:") {
+                        query = "/\(String(id.dropFirst(6))) "
+                    } else {
+                        query = title
+                    }
+                    selected = 0
+                    return
+                }
                 if case .session(let s, _)? = rows[safe: selected], s.status != "archived" {
                     messagingSession = s
                     messageText = ""
@@ -1903,7 +2727,11 @@ final class FloatingPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { // esc
-            appDelegate?.hidePanel()
+            if self === appDelegate?.iconPanel {
+                orderOut(nil)
+            } else {
+                appDelegate?.hidePanel(restoreFocus: true)
+            }
             return
         }
         super.keyDown(with: event)
@@ -1965,6 +2793,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         // focus — intercept them at the event level while the panel is key
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel.isKeyWindow else { return event }
+            // an inline editor (rename, command editor, quick prompt…) owns
+            // arrows and tab — don't steal them for list navigation. ⌘↩ is
+            // ours though: send-to-terminal from the quick prompt.
+            if self.model.isTextEditing?() == true {
+                if event.keyCode == 36, event.modifierFlags.contains(.command),
+                   self.model.cmdEnterInEditor?() == true {
+                    return nil
+                }
+                return event
+            }
             switch event.keyCode {
             case 125: self.model.moveSelection?(1); return nil // down
             case 126: self.model.moveSelection?(-1); return nil // up
@@ -1982,6 +2820,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     }
                     if event.keyCode == 15 { // ⌘R — refresh now
                         self.model.refresh()
+                        return nil
+                    }
+                    if event.keyCode == 36 { // ⌘↩ — activate with the alt agent
+                        self.model.enterKey?(true)
                         return nil
                     }
                 }
@@ -2009,10 +2851,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     @objc func togglePanel() {
         if NSApp.currentEvent?.type == .rightMouseUp { showMenubarMenu(); return }
-        if panel.isVisible { hidePanel() } else { showPanel() }
+        if panel.isVisible { hidePanel(restoreFocus: true) } else { showPanel() }
     }
 
+    // whoever had focus before the panel opened — Esc/⌥Space return it
+    var previousApp: NSRunningApplication?
+
     func showPanel() {
+        previousApp = NSWorkspace.shared.frontmostApplication
         model.refresh()
         panel.layoutIfNeeded()
         if let screen = NSScreen.main {
@@ -2030,14 +2876,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         model.focusTick += 1
     }
 
-    func hidePanel() {
+    func hidePanel(restoreFocus: Bool = false) {
         panel.orderOut(nil)
         model.panelVisible = false
+        // dismissals (Esc / ⌥Space) hand focus back to where it was; action
+        // paths (jump, new session…) pick their own target instead
+        if restoreFocus, let p = previousApp,
+           p.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            p.activate(options: [])
+        }
     }
 
     func windowDidResignKey(_ notification: Notification) {
         // Raycast behavior: clicking elsewhere dismisses the panel
-        hidePanel()
+        if (notification.object as? NSWindow) === iconPanel {
+            iconPanel?.orderOut(nil)
+        } else {
+            hidePanel()
+        }
     }
 
     // Global hotkeys via Carbon — no accessibility permission needed.
@@ -2143,7 +2999,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // menubar mascot frames: static idle pose + the running bounce, all
     // 11 rows tall so swapping frames never shifts the icon's baseline.
     // The mascot itself is user-selectable (right-click → Claude / Codex).
-    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
+    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
     var menubarStaticImage = NSImage()
     var menubarStatusFrames: [String: [NSImage]] = [:]
     var menubarStatus: String?
@@ -2153,38 +3009,107 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func buildMenubarImages() {
         let empty = String(repeating: ".", count: 16)
-        let codex = menubarAgent == "codex"
-        menubarStaticImage = mascotNSImage(map: [empty] + (codex ? codexMap : mascotMap), pixel: 1.2)
+        // custom image: a GIF animates with its own frames, a PNG bounces
+        if menubarAgent == "custom" {
+            let frames = customIconFrames(height: 16)
+            if frames.count > 1 {
+                menubarStaticImage = frames[0]
+                menubarStatusFrames = ["running": frames, "waiting": frames]
+                return
+            }
+            if let img = frames.first {
+                func offsetFrame(_ dy: CGFloat) -> NSImage {
+                    let out = NSImage(size: NSSize(width: img.size.width, height: 18))
+                    out.lockFocus()
+                    img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: 16),
+                             from: .zero, operation: .sourceOver, fraction: 1)
+                    out.unlockFocus()
+                    return out
+                }
+                menubarStaticImage = offsetFrame(1)
+                menubarStatusFrames = [
+                    "running": [offsetFrame(2), offsetFrame(0)],
+                    "waiting": [offsetFrame(2), offsetFrame(0)],
+                ]
+                return
+            }
+        }
+        // codex: render the vector logo (colored) with a bounce
+        if menubarAgent == "codex" {
+            if let img = Optional(codexLogoNSImage(size: 17)) {
+                func offsetFrame(_ dy: CGFloat) -> NSImage {
+                    let out = NSImage(size: NSSize(width: 17, height: 19))
+                    out.lockFocus()
+                    img.draw(in: NSRect(x: 0, y: dy, width: 17, height: 17),
+                             from: .zero, operation: .sourceOver, fraction: 1)
+                    out.unlockFocus()
+                    return out
+                }
+                menubarStaticImage = offsetFrame(1)
+                menubarStatusFrames = [
+                    "running": [offsetFrame(2), offsetFrame(0)],
+                    "waiting": [offsetFrame(2), offsetFrame(0)],
+                ]
+                return
+            }
+        }
+        let body = iconChoice(menubarAgent).map
+        menubarStaticImage = mascotNSImage(map: [empty] + body, pixel: 1.2)
         menubarStatusFrames = [:]
         for st in ["running", "waiting"] {
-            let frames = (codex ? codexFrames(st) : mascotFrames(st)).frames
+            let frames: [[String]]
+            switch menubarAgent {
+            case "claude": frames = mascotFrames(st).frames
+            case "codex": frames = codexFrames(st).frames
+            default: // any character: bounce while running, !! while waiting
+                if st == "running" {
+                    frames = [[empty] + body, body + [empty]]
+                } else {
+                    frames = [[".......!!......."] + body, [empty] + body]
+                }
+            }
             menubarStatusFrames[st] = frames.map { mascotNSImage(map: $0, pixel: 1.2) }
         }
     }
 
-    @objc func chooseMenubarClaude() { setMenubarAgent("claude") }
-    @objc func chooseMenubarCodex() { setMenubarAgent("codex") }
     func setMenubarAgent(_ agent: String) {
         menubarAgent = agent
         UserDefaults.standard.set(agent, forKey: "menubarAgent")
         buildMenubarImages()
         menubarStatus = "__rebuild__" // force the timer + image to reset
         updateTitle(sessions: lastSessions)
+        model.iconChoiceKey = agent  // the search-field icon follows
     }
 
+    // right-click: a card grid of the pixel characters, under the status item
+    var iconPanel: FloatingPanel?
     func showMenubarMenu() {
-        let menu = NSMenu()
-        let c = NSMenuItem(title: "메뉴바 아이콘: Claude", action: #selector(chooseMenubarClaude), keyEquivalent: "")
-        c.target = self
-        c.state = menubarAgent == "claude" ? .on : .off
-        let x = NSMenuItem(title: "메뉴바 아이콘: Codex", action: #selector(chooseMenubarCodex), keyEquivalent: "")
-        x.target = self
-        x.state = menubarAgent == "codex" ? .on : .off
-        menu.addItem(c)
-        menu.addItem(x)
-        statusItem.menu = menu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil // left-clicks keep toggling the panel
+        if let p = iconPanel, p.isVisible { p.orderOut(nil); return }
+        let p = iconPanel ?? {
+            let p = FloatingPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 320, height: 160),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered, defer: false)
+            p.level = .floating
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = true
+            p.delegate = self
+            iconPanel = p
+            return p
+        }()
+        p.contentViewController = NSHostingController(rootView:
+            IconPickerView(current: menubarAgent) { [weak self] key in
+                self?.setMenubarAgent(key)
+                self?.iconPanel?.orderOut(nil)
+            })
+        p.layoutIfNeeded()
+        if let btn = statusItem.button, let win = btn.window {
+            let f = win.frame
+            p.setFrameTopLeftPoint(NSPoint(x: f.midX - p.frame.width / 2,
+                                           y: f.minY - 4))
+        }
+        p.makeKeyAndOrderFront(nil)
     }
 
     func updateTitle(sessions: [Session]) {
@@ -2199,7 +3124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             menubarTimer?.invalidate()
             menubarTimer = nil
             if let st = active, let frames = menubarStatusFrames[st], frames.count > 1 {
-                let interval = ["running": 0.35, "waiting": 0.4, "input": 0.6][st] ?? 0.4
+                // many-frame custom GIFs play fast; two-frame mascots stay calm
+                let interval = frames.count > 2 ? 0.12
+                    : ["running": 0.35, "waiting": 0.4, "input": 0.6][st] ?? 0.4
                 menubarTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
                     guard let self, let st = self.menubarStatus,
                           let fr = self.menubarStatusFrames[st] else { return }

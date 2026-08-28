@@ -8,11 +8,30 @@ set -euo pipefail
 # SwiftBar/launchd run with a minimal PATH — make sure claude & friends resolve
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# Swift's Process hands arguments over in NFD (decomposed jamo) — grep can
+# never match NFC transcripts then. Renormalize non-ASCII args to NFC.
+if command -v python3 >/dev/null 2>&1; then
+  _nfc_args=()
+  _nfc_changed=0
+  for _a in "$@"; do
+    case "$_a" in
+      (*[![:ascii:]]*)
+        _nfc_args+=("$(printf '%s' "$_a" | python3 -c 'import sys,unicodedata;sys.stdout.write(unicodedata.normalize("NFC",sys.stdin.read()))' 2>/dev/null || printf '%s' "$_a")")
+        _nfc_changed=1 ;;
+      (*) _nfc_args+=("$_a") ;;
+    esac
+  done
+  [ "$_nfc_changed" = "1" ] && set -- "${_nfc_args[@]}"
+fi
+
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.json"
 NAMES_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/names.json"
 AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-cache.json"
 PINS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/pins.json"
+SORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json"
+COLORS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json"
+GORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json"
 
 # The menubar app refreshes sessions-json every 5s, which keeps this cache
 # warm — jumps then skip the ~0.6s claude CLI startup entirely.
@@ -238,11 +257,15 @@ APPLESCRIPT
 
 resume_command() { # $1=session id → the agent-appropriate resume command
   local f="$STATE_DIR/$1.json"
-  if [ -f "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
-    printf 'codex resume %s' "$1"
-  else
-    printf 'claude --resume %s' "$1"
+  if [ -f "$f" ]; then
+    if [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
+      printf 'codex resume %s' "$1"; return
+    fi
+  elif ls "$HOME/.codex/sessions"/*/*/*/rollout-*-"$1".jsonl >/dev/null 2>&1; then
+    # archived codex session — no tracker record, but a rollout exists
+    printf 'codex resume %s' "$1"; return
   fi
+  printf 'claude --resume %s' "$1"
 }
 
 open_resume_tab() { # $1=cwd, $2=session id
@@ -391,7 +414,7 @@ cmd_jump() {
   # jumping to a finished/input-waiting session acknowledges it
   case "$(jq -r '.status' "$file")" in
     finished|input)
-      jq '.status = "done"' "$file" >"$file.tmp" && mv "$file.tmp" "$file" ;;
+      jq '.status = "done"' "$file" >"$file.tmp.$$" && mv "$file.tmp.$$" "$file" ;;
   esac
 
   local cmux_ws iterm_id tmux_pane tty term_program app pid cwd
@@ -417,8 +440,11 @@ cmd_jump() {
   if [ -n "$tty" ] && [ "$term_program" = "Apple_Terminal" ] && jump_terminal_app "$tty" >/dev/null 2>&1; then exit 0; fi
 
   # recorded handles thin (codex sanitizes hook env) but the client process
-  # is alive — read its environment for the terminal identity
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && read_pid_env "$pid" && jump_resolved; then
+  # is alive — read its environment for the terminal identity. Pool-owned
+  # pids (daemon spare processes) carry the daemon's env, not a terminal's —
+  # trusting them "succeeds" by just raising the app with no tab focus.
+  if [ "$(jq -r '.owner // ""' "$file")" = "client" ] \
+     && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && read_pid_env "$pid" && jump_resolved; then
     exit 0
   fi
 
@@ -476,18 +502,90 @@ cmd_copy_resume() {
   osascript -e "display notification \"cd ${cwd/#$HOME/~} && resume …\" with title \"resume command copied\"" 2>/dev/null || true
 }
 
+# rewrite a sid-keyed state file in place; a jq failure leaves the original
+write_json_file() { # write_json_file <file> <jq-filter> [jq-args…]
+  local f="$1"; shift
+  [ -f "$f" ] || return 0
+  jq "$@" "$f" >"$f.tmp.$$" 2>/dev/null && mv "$f.tmp.$$" "$f" || rm -f "$f.tmp.$$"
+  return 0
+}
+
+# a superseded parent hands its per-session assets to the fork that replaced
+# it. Pin slot / custom name / drag position are 1:1 per session and have
+# toggle + reorder writers, so ownership moves — unlike `group`, which stays
+# an inherited lookup (parent and fork can legitimately share one group).
+migrate_session_assets() { # migrate_session_assets <parent-sid> <fork-sid>
+  local from="$1" to="$2" f
+  for f in "$PINS_FILE" "$SORDER_FILE"; do
+    write_json_file "$f" '
+      if type == "array" and (index($from) != null)
+      then map(if . == $from then $to else . end)
+           # the fork may already hold a slot of its own — keep the first
+           | reduce .[] as $x ([]; if index($x) then . else . + [$x] end)
+      else . end' --arg from "$from" --arg to "$to"
+  done
+  # a fork that was renamed on its own keeps that name; the parent's entry is
+  # left for gc_session_assets to reap once the parent record is gone
+  write_json_file "$NAMES_FILE" '
+    if type == "object" and has($from) and (has($to) | not)
+    then .[$to] = .[$from] | del(.[$from]) else . end' --arg from "$from" --arg to "$to"
+}
+
+# sid-keyed assets outlive the records they point at — pins/names/groups/order
+# entries for sessions that clean removed would otherwise accumulate forever
+# (and keep occupying pin/drag slots). Archived rows can't be pinned or
+# renamed, so a missing record means the session is really gone.
+gc_session_assets() {
+  local live f
+  live=$( { for f in "$STATE_DIR"/*.json; do
+              [ -e "$f" ] || continue
+              basename "$f" .json
+            done; } | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
+  # an empty state dir reads the same as a misconfigured CST_STATE_DIR — never
+  # wipe every assignment on that signal
+  [ "$live" = "[]" ] && return 0
+  for f in "$PINS_FILE" "$SORDER_FILE"; do
+    write_json_file "$f" \
+      'if type == "array" then map(select(. as $s | $live | index($s))) else . end' \
+      --argjson live "$live"
+  done
+  for f in "$NAMES_FILE" "$GROUPS_FILE"; do
+    write_json_file "$f" \
+      'if type == "object" then with_entries(select(.key as $s | $live | index($s))) else . end' \
+      --argjson live "$live"
+  done
+  # group colors/order key off names that exist only through assignments
+  local groups_left
+  groups_left=$(jq -c '[.[]] | unique' "$GROUPS_FILE" 2>/dev/null || echo '[]')
+  [ -n "$groups_left" ] || groups_left='[]'
+  write_json_file "$GORDER_FILE" \
+    'if type == "array" then map(select(. as $g | $groups | index($g))) else . end' \
+    --argjson groups "$groups_left"
+  write_json_file "$COLORS_FILE" \
+    'if type == "object" then with_entries(select(.key as $g | $groups | index($g))) else . end' \
+    --argjson groups "$groups_left"
+}
+
 cmd_clean() {
   local max_h="${1:-24}" now
   now=$(date +%s)
   for f in "$STATE_DIR"/*.json; do
     [ -e "$f" ] || continue
-    local status updated
-    status=$(jq -r '.status' "$f")
-    updated=$(jq -r '.updated_at // 0' "$f")
+    local status updated mtime
+    # a torn record (crashed writer) parses as nothing — under `set -e` that
+    # used to abort the whole sweep. Keep it while fresh in case the write is
+    # still in flight; reap it once it's past the cutoff.
+    if ! status=$(jq -r '.status // ""' "$f" 2>/dev/null); then
+      mtime=$(stat -f %m "$f" 2>/dev/null || echo 0)
+      if [ $((now - mtime)) -gt $((max_h * 3600)) ]; then rm -f "$f"; fi
+      continue
+    fi
+    updated=$(jq -r '.updated_at // 0' "$f" 2>/dev/null || echo 0)
     if [ "$status" = "ended" ] || [ $((now - updated)) -gt $((max_h * 3600)) ]; then
       rm -f "$f"
     fi
   done
+  gc_session_assets
 }
 
 # merged view for UIs: tracked sessions + daemon session list, with dead
@@ -495,17 +593,116 @@ cmd_clean() {
 cmd_sessions_json() {
   local now sessions agents_json extra
   now=$(date +%s)
-  sessions=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s --argjson now "$now" '
+  # read records one by one so a single corrupt file (e.g. a torn write)
+  # can't blank the whole list
+  sessions=$({ for rf in "$STATE_DIR"/*.json; do
+      [ -e "$rf" ] || continue
+      jq -c . "$rf" 2>/dev/null || true
+    done; } | jq -s --argjson now "$now" '
     [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
     | sort_by(-.updated_at)')
-  agents_json=$(claude agents --json 2>/dev/null || echo '[]')
+  # --all also returns completed (resumable) background sessions — status ""
+  # marks them. Live entries come first so unique_by keeps the live one.
+  local agents_all
+  agents_all=$(claude agents --json --all 2>/dev/null || echo '[]')
+  jq -e . >/dev/null 2>&1 <<<"$agents_all" || agents_all='[]'
+  agents_all=$(jq -c 'sort_by(if (.status // "") == "" then 1 else 0 end) | unique_by(.sessionId)' <<<"$agents_all")
+  agents_json=$(jq -c 'map(select((.status // "") != ""))' <<<"$agents_all")
   # this is the cache producer for fetch_agents (runs every 5s via the app)
   printf '%s' "$agents_json" >"$AGENTS_CACHE.tmp" 2>/dev/null && mv "$AGENTS_CACHE.tmp" "$AGENTS_CACHE" 2>/dev/null || true
+
+  # a session moved to the background forks a NEW session id that resumes the
+  # parent transcript (--fork-session --resume …/<parent>.jsonl) — map
+  # parent:fork for live forks so the superseded parent row can be hidden
+  local fork_pairs
+  fork_pairs=$(ps -axo command= 2>/dev/null \
+    | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*--fork-session.*--resume [^ ]*\/\([0-9a-f-]\{36\}\)\.jsonl.*/\2:\1/p' || true)
 
   sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
     local sid pid bg pcmd
     sid=$(jq -r '.session_id' <<<"$s")
     pid=$(jq -r '.pid // empty' <<<"$s")
+    # conversation continued by a live fork → show the fork, not the parent
+    # (unless the parent has newer activity again)
+    local fork_sid
+    fork_sid=$(printf '%s\n' "$fork_pairs" | sed -n "s/^$sid://p" | head -1)
+    if [ -n "$fork_sid" ]; then
+      # skip the parent when the fork is newer — or when the parent's own
+      # client is dead (forwarded notifications keep bumping its timestamp)
+      if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        continue
+      fi
+      local fu tu
+      fu=$(jq -r '.updated_at // 0' "$STATE_DIR/$fork_sid.json" 2>/dev/null || echo 0)
+      tu=$(jq -r '.updated_at // 0' <<<"$s")
+      if [ ! -f "$STATE_DIR/$fork_sid.json" ] || [ "$fu" -ge "$tu" ] 2>/dev/null; then
+        continue
+      fi
+    fi
+    # claude forks carry logicalParentUuid (a message uuid inside the parent
+    # transcript) — resolve it to a parent session id once and cache it on
+    # the record; spare-pool forks have no --fork-session cmdline to read
+    if [ "$(jq -r '.parent_resolved // empty' <<<"$s")" != "true" ] \
+       && [ "$(jq -r '.agent // "claude"' <<<"$s")" = "claude" ]; then
+      local tpath0 lp parent_sid pf psid pt is_continuation
+      is_continuation=""
+      tpath0=$(jq -r '.transcript_path // ""' <<<"$s")
+      parent_sid=""
+      # the recorded path goes stale when a session's cwd changes (transcripts
+      # live under a per-project dir) — relocate by session id
+      if [ -n "$tpath0" ] && [ ! -f "$tpath0" ]; then
+        tpath0=$(ls "$HOME/.claude/projects"/*/"$sid.jsonl" 2>/dev/null | head -1 || true)
+      fi
+      if [ -n "$tpath0" ] && [ -f "$tpath0" ]; then
+        lp=$(head -n 12 "$tpath0" 2>/dev/null \
+          | jq -r 'select(.logicalParentUuid) | .logicalParentUuid' 2>/dev/null | head -1 || true)
+        if [ -z "$lp" ]; then
+          # continuation sessions (bg jobs after compaction) carry no
+          # logicalParentUuid — but their first prompt cites the original
+          # transcript path ("read the full transcript at: …/<uuid>.jsonl")
+          local cited
+          cited=$(head -n 80 "$tpath0" 2>/dev/null \
+            | grep -m1 -oE '/projects/[^" ]*[0-9a-f-]{36}\.jsonl' \
+            | grep -oE '[0-9a-f-]{36}' | tail -1 || true)
+          if [ -n "$cited" ] && [ "$cited" != "$sid" ] && [ -f "$STATE_DIR/$cited.json" ]; then
+            parent_sid="$cited"
+            is_continuation="true"
+          fi
+        fi
+        if [ -n "$lp" ]; then
+          # forks copy the parent's full history (and rewrite sessionId on
+          # every line), so the uuid appears in every sibling fork too — the
+          # true parent is the OLDEST session whose transcript contains it
+          local best_started=""
+          for pf in "$STATE_DIR"/*.json; do
+            [ -e "$pf" ] || continue
+            psid=$(basename "$pf" .json)
+            [ "$psid" = "$sid" ] && continue
+            pt=$(jq -r '.transcript_path // ""' "$pf" 2>/dev/null)
+            [ -n "$pt" ] && [ -f "$pt" ] || continue
+            grep -m1 -q "\"uuid\":\"$lp\"" "$pt" 2>/dev/null || continue
+            local pstarted
+            pstarted=$(jq -r '.started_at // 9999999999' "$pf" 2>/dev/null)
+            if [ -z "$best_started" ] || [ "$pstarted" -lt "$best_started" ] 2>/dev/null; then
+              best_started="$pstarted"
+              parent_sid="$psid"
+            fi
+          done
+        fi
+        s=$(jq -c --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+          '.parent_resolved = true
+           | if $p != "" then .parent = $p else . end
+           | if $cont == "true" then .continuation = true else . end' <<<"$s")
+        rf0="$STATE_DIR/$sid.json"
+        if [ -f "$rf0" ]; then
+          jq --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+            '.parent_resolved = true
+             | if $p != "" then .parent = $p else . end
+             | if $cont == "true" then .continuation = true else . end' \
+            "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0"
+        fi
+      fi
+    fi
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
     # turn fires no Stop hook) — a rollout file untouched for 5 minutes
     # means the turn is over
@@ -537,22 +734,58 @@ cmd_sessions_json() {
       # agents-view TUIs and spare-pool processes register phantom sessions.
       pcmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
       case "$pcmd" in
-        (*bg-spare*|*bg-pty-host*|*"claude agents"*|"") : ;; # phantom — drop
+        (*bg-spare*|*bg-pty-host*|*"claude agents"*|"")
+          # pool-hosted but with a title = a real conversation claimed a
+          # spare (e.g. a fresh bg-job fork the daemon hasn't listed yet);
+          # titleless pool records are pre-warm phantoms — drop those
+          if [ -n "$(jq -r '.title // ""' <<<"$s")" ]; then
+            printf '%s\n' "$s"
+          fi ;;
         (*) printf '%s\n' "$s" ;;
       esac
     fi
   done | jq -s '.')
 
-  extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" '
-    [.[] | select([.sessionId] | inside($tracked) | not) | {
+  # a parent the loop above just hid hands its pin/name/order slot to the fork
+  # that superseded it, so a pinned conversation stays pinned across a fork
+  local visible_json lineage
+  visible_json=$(jq -c '[.[].session_id]' <<<"$sessions")
+  lineage=$( { printf '%s\n' "$fork_pairs"
+               jq -r '.[] | select((.parent // "") != "") | "\(.parent):\(.session_id)"' \
+                 <<<"$sessions"; } | grep ':' | sort -u || true)
+  if [ -n "$lineage" ]; then
+    local assets p f
+    assets=$(cat "$PINS_FILE" "$NAMES_FILE" "$SORDER_FILE" 2>/dev/null || true)
+    while IFS=: read -r p f; do
+      [ -n "$p" ] && [ -n "$f" ] || continue
+      # cheap gate: nothing to hand over unless the parent owns some asset
+      case "$assets" in (*"$p"*) ;; (*) continue ;; esac
+      # only when the parent left the view — both rows visible would mean a
+      # duplicate pin rather than a handover
+      jq -e --arg p "$p" --arg f "$f" \
+        '(index($p) | not) and (index($f) != null)' <<<"$visible_json" >/dev/null 2>&1 || continue
+      migrate_session_assets "$p" "$f"
+    done <<<"$lineage"
+  fi
+
+  # fork parents hidden above must not resurface as untracked daemon rows
+  local fork_parents_json
+  fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
+  extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
+             --argjson forked "$fork_parents_json" '
+    [.[] | select([.sessionId] | inside($tracked) | not)
+         | select([.sessionId] | inside($forked) | not) | {
       session_id: .sessionId,
-      status: (if .status == "busy" then "running" else "done" end),
+      # "" status = completed-but-resumable (claude agents --all) → ENDED row
+      status: (if .status == "busy" then "running"
+               elif (.status // "") == "" then "gone"
+               else "done" end),
       cwd: .cwd,
       title: (if (.name // "") != "" then .name else null end),
       updated_at: 0,
       bg: true,
       kind: .kind
-    }]' <<<"$agents_json")
+    }]' <<<"$agents_all")
 
   # annotate tracked rows with the daemon's kind + name so UIs can label
   # daemon-hosted sessions correctly; attach user-defined group names
@@ -564,20 +797,26 @@ cmd_sessions_json() {
   pins_json=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pins_json" || pins_json='[]'
   local colors_json order_json
-  colors_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json" 2>/dev/null || echo '{}')
+  colors_json=$(cat "$COLORS_FILE" 2>/dev/null || echo '{}')
   jq -e . >/dev/null 2>&1 <<<"$colors_json" || colors_json='{}'
-  order_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json" 2>/dev/null || echo '[]')
+  order_json=$(cat "$GORDER_FILE" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$order_json" || order_json='[]'
   local sorder_json
-  sorder_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json" 2>/dev/null || echo '[]')
+  sorder_json=$(cat "$SORDER_FILE" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$sorder_json" || sorder_json='[]'
+  # fork lineage for the UI: a fork nests under its parent when both are shown
+  local pairs_json
+  pairs_json=$(printf '%s\n' "$fork_pairs" \
+    | awk -F: 'NF==2{printf "{\"p\":\"%s\",\"f\":\"%s\"}\n",$1,$2}' | jq -sc '.' 2>/dev/null || echo '[]')
   jq --argjson extra "$extra" --argjson agents "$agents_json" \
      --argjson groups "$groups_json" --argjson names "$names_json" \
      --argjson pins "$pins_json" --argjson colors "$colors_json" \
-     --argjson gorder "$order_json" --argjson sorder "$sorder_json" '
+     --argjson gorder "$order_json" --argjson sorder "$sorder_json" \
+     --argjson pairs "$pairs_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
+      | .parent = ($s.parent // ([$pairs[] | select(.f == $s.session_id) | .p] | first) // null)
       # daemon status corrects stale hook state (permission waits stay
       # waiting) — applies to interactive sessions too, e.g. an Esc-
       # interrupted turn never fires the Stop hook
@@ -587,7 +826,9 @@ cmd_sessions_json() {
       # unacknowledged results / input waits decay to idle after 30 minutes
       | if (.status | IN("finished", "input")) and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
     | . + $extra
-    | map(. + {group: ($groups[.session_id] // null),
+    | map(. + {group: ($groups[.session_id]
+                       # a fork inherits its parent'\''s group unless assigned
+                       // (if .parent then ($groups[.parent] // null) else null end)),
                title: ($names[.session_id] // .title),
                pin_order: (.session_id as $s | ($pins | index($s)))})
     | map(. + {group_color: (if .group then ($colors[.group] // null) else null end),
@@ -630,21 +871,64 @@ case "${1:-list}" in
       | grep -v '^\s*$' | tail -n 8 | head -c 600 || true
     ;;
   send)
-    # cst send <session-id> <message…> — run one headless turn, notify when done
+    # cst send <session-id> <message…> — run one headless turn in the
+    # background; the panel's status tracking shows the result
     [ $# -ge 3 ] || { echo "usage: cst send <session-id> <message>" >&2; exit 1; }
     sid="$2"; shift 2; msg="$*"
     f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
     cwd=$([ -n "$f" ] && jq -r '.cwd // empty' "$f" || echo "$HOME")
-    title=$([ -n "$f" ] && jq -r '(.title // "session")[:30]' "$f" || echo "session")
+    agent=$([ -n "$f" ] && jq -r '.agent // "claude"' "$f" || echo "claude")
     (
       cd "$cwd" 2>/dev/null || cd "$HOME"
-      if claude -p --resume "$sid" "$msg" >/dev/null 2>&1; then
-        osascript -e "display notification \"응답 완료 — 패널에서 확인\" with title \"$title\"" 2>/dev/null
+      if [ "$agent" = "codex" ]; then
+        codex exec resume "$sid" "$msg" --skip-git-repo-check </dev/null
       else
-        osascript -e "display notification \"전송 실패 (세션이 busy일 수 있음)\" with title \"$title\"" 2>/dev/null
+        claude -p --resume "$sid" "$msg"
       fi
     ) >/dev/null 2>&1 &
     disown 2>/dev/null || true
+    ;;
+  type-into)
+    # cst type-into <session-id> <text…> — type text straight into the
+    # session's terminal (submits). Lets TUI-only slash commands (/resume…)
+    # work from the panel, unlike the headless `send`.
+    [ $# -ge 3 ] || { echo "usage: cst type-into <session-id> <text>" >&2; exit 1; }
+    sid="$2"; shift 2; msg="$*"
+    f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
+    iterm_id=""
+    [ -n "$f" ] && iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$f")
+    if [ -z "$iterm_id" ] && [ -n "$f" ]; then
+      tpid=$(jq -r '.pid // empty' "$f")
+      [ -n "$tpid" ] && iterm_id=$(ps eww -o command= -p "$tpid" 2>/dev/null | tr ' ' '\n' \
+        | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+    fi
+    if [ -z "$iterm_id" ]; then
+      osascript -e 'display notification "터미널 핸들이 없어 입력 불가 (헤드리스 전송을 쓰세요)" with title "Agents Session Tracker"' 2>/dev/null || true
+      exit 1
+    fi
+    uuid="${iterm_id##*:}"
+    osascript - "$uuid" "$msg" <<'APPLESCRIPT' >/dev/null 2>&1
+on run argv
+  set target to item 1 of argv
+  set msg to item 2 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if id of s is target then
+            tell s to write text msg
+            select s
+            select t
+            select w
+            activate
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+end run
+APPLESCRIPT
     ;;
   run-command)
     # cst run-command <name> — execute a user command from commands.json.
@@ -685,9 +969,11 @@ case "${1:-list}" in
     fi
     ;;
   new-session)
-    # cst new-session <dir> — open a new claude session in a fresh tab
-    [ $# -ge 2 ] || { echo "usage: cst new-session <dir>" >&2; exit 1; }
-    open_tab_with "cd $(shquote "$2") && claude"
+    # cst new-session <dir> [claude|codex] — open a new session in a fresh tab
+    [ $# -ge 2 ] || { echo "usage: cst new-session <dir> [agent]" >&2; exit 1; }
+    agent_cmd="claude"
+    [ "${3:-}" = "codex" ] && agent_cmd="codex"
+    open_tab_with "cd $(shquote "$2") && $agent_cmd"
     ;;
   resume-tab)
     # cst resume-tab <session-id> <cwd> — reopen an archived session in a tab
@@ -695,30 +981,59 @@ case "${1:-list}" in
     open_resume_tab "$3" "$2"
     ;;
   archive-search)
-    # cst archive-search <query> — grep past transcripts, newest first
+    # cst archive-search <query> — full-text grep over claude + codex
+    # transcripts, newest first. Live sessions are included so the panel
+    # can surface content matches on running work too.
     [ $# -ge 2 ] || { echo "[]"; exit 0; }
     q="$2"
-    hits=$(grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.claude/projects" 2>/dev/null \
-      | xargs -I{} stat -f '%m {}' {} 2>/dev/null | sort -rn | head -10 | cut -d' ' -f2-)
+    hits=$( { grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.claude/projects" 2>/dev/null || true
+              grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.codex/sessions" 2>/dev/null || true; } \
+      | xargs -I{} stat -f '%m {}' {} 2>/dev/null | sort -rn | head -12 | cut -d' ' -f2- || true)
+    # ^ || true: head closing early SIGPIPEs sort; with pipefail+set -e that
+    #   killed the whole script (exit 141) — reliably under Process, not a tty
     out="[]"
+    seen=""
     while IFS= read -r t; do
       [ -n "$t" ] || continue
-      sid=$(basename "$t" .jsonl)
-      # skip live sessions and subagent transcripts
-      [ -f "$STATE_DIR/$sid.json" ] && continue
-      case "$sid" in agent-*) continue ;; esac
-      cwd=$(head -n 5 "$t" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | grep -m1 . || true)
-      title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
-      if [ -z "$title" ]; then
-        title=$( (head -n 80 "$t" 2>/dev/null \
-          | jq -r 'select(.type=="user") | .message.content
-                   | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
-          | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-60) || true)
-      fi
+      base=$(basename "$t" .jsonl)
+      agent="claude"; sid="$base"; cwd=""; title=""
+      case "$t" in
+        */.codex/*)
+          agent="codex"
+          sid="${base:${#base}-36}"  # rollout-<timestamp>-<uuid>
+          cwd=$(head -n 2 "$t" 2>/dev/null \
+            | jq -r 'select(.type=="session_meta") | .payload.cwd // empty' 2>/dev/null | grep -m1 . || true)
+          title=$( (head -n 200 "$t" 2>/dev/null \
+            | jq -r 'select(.type=="response_item") | .payload
+                     | select(.type=="message" and .role=="user")
+                     | ((.content // []) | map(select(.type=="input_text")) | first // {}).text // empty
+                     | select(length > 0) | select(startswith("<") | not)' 2>/dev/null \
+            | head -n 1 | cut -c1-60) || true)
+          ;;
+        *)
+          case "$sid" in agent-*) continue ;; esac  # subagent transcripts
+          cwd=$(head -n 5 "$t" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | grep -m1 . || true)
+          title=$( (head -n 5 "$t" 2>/dev/null \
+            | jq -r 'select(.type=="ai-title") | .aiTitle // empty' 2>/dev/null | head -n 1) || true)
+          if [ -z "$title" ]; then
+            title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
+          fi
+          if [ -z "$title" ]; then
+            title=$( (head -n 80 "$t" 2>/dev/null \
+              | jq -r 'select(.type=="user") | .message.content
+                       | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
+              | grep -vE '^\s*(<|$)' | grep -v '^This session is being continued' \
+              | head -n 1 | cut -c1-60) || true)
+          fi
+          ;;
+      esac
+      case " $seen " in *" $sid "*) continue ;; esac
+      seen="$seen $sid"
       mt=$(stat -f %m "$t" 2>/dev/null || echo 0)
-      out=$(jq --arg sid "$sid" --arg cwd "$cwd" --arg title "$title" --argjson mt "$mt" \
+      out=$(jq --arg sid "$sid" --arg cwd "$cwd" --arg title "$title" \
+               --arg agent "$agent" --argjson mt "$mt" \
         '. + [{session_id: $sid, cwd: $cwd, title: (if $title == "" then null else $title end),
-               status: "archived", updated_at: $mt}]' <<<"$out")
+               status: "archived", updated_at: $mt, agent: $agent}]' <<<"$out")
     done <<<"$hits"
     printf '%s\n' "$out"
     ;;
@@ -726,7 +1041,7 @@ case "${1:-list}" in
     # cst order-insert <sid> <before-sid|end> — manual ordering within
     # status sections (session-order.json)
     [ $# -ge 3 ] || { echo "usage: cst order-insert <sid> <before-sid|end>" >&2; exit 1; }
-    ORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json"
+    ORDER_FILE="$SORDER_FILE"
     existing=$(cat "$ORDER_FILE" 2>/dev/null || echo '[]')
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
     jq --arg sid "$2" --arg before "$3" '
@@ -749,7 +1064,6 @@ case "${1:-list}" in
   group-color)
     # cst group-color <group> <color|-> — colors.json (named accents)
     [ $# -ge 3 ] || { echo "usage: cst group-color <group> <color|->" >&2; exit 1; }
-    COLORS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json"
     existing=$(cat "$COLORS_FILE" 2>/dev/null || echo '{}')
     jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
     if [ "$3" = "-" ]; then
@@ -783,7 +1097,7 @@ case "${1:-list}" in
   group-move)
     # cst group-move <name> <before-name|end> — reorder groups
     [ $# -ge 3 ] || { echo "usage: cst group-move <name> <before|end>" >&2; exit 1; }
-    ORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json"
+    ORDER_FILE="$GORDER_FILE"
     existing=$(cat "$ORDER_FILE" 2>/dev/null || echo '[]')
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
     jq --arg g "$2" --arg before "$3" '
@@ -829,78 +1143,56 @@ case "${1:-list}" in
                 -(.updated_at // 0))
       | (first // {}).session_id // empty')
     if [ -z "$sid" ]; then
-      osascript -e 'display notification "지금 주의 필요한 세션 없음" with title "Claude Sessions"' 2>/dev/null || true
+      osascript -e 'display notification "지금 주의 필요한 세션 없음" with title "Agents Session Tracker"' 2>/dev/null || true
       exit 0
     fi
     cmd_jump "$sid"
     ;;
   stop-session)
     # cst stop-session <session-id> — stop the session; it stays listed as 💤
-    # (resumable). Background: claude stop. Interactive: SIGTERM the client
-    # so the terminal returns to a shell and SessionEnd fires cleanly.
+    # (resumable). Fast: the record's own pid/handles avoid a daemon CLI
+    # round-trip, and AppleScript runs in the background.
     [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
-    if [ -n "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
-      # codex is unknown to the claude daemon — drive it from the record
+    cpid=""; rowner=""
+    if [ -n "$f" ]; then
       cpid=$(jq -r '.pid // empty' "$f")
+      rowner=$(jq -r '.owner // empty' "$f")
+    fi
+    if [ -n "$f" ] && [ "$rowner" = "client" ] && [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+      # client-owned live session (claude or codex) — record-driven
       rstatus=$(jq -r '.status // empty' "$f")
       iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$f")
-      if [ -z "$iterm_id" ] && [ -n "$cpid" ]; then
+      if [ -z "$iterm_id" ]; then
         iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
           | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
       fi
-      if [ "$rstatus" = "running" ]; then
-        [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" || true
+      if [ "$rstatus" = "running" ] || [ "$rstatus" = "waiting" ]; then
+        # running turn: inject Esc (stop-generation) — a SIGINT signal
+        # would make the agent exit to the shell
+        [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" >/dev/null 2>&1 &
         jq --arg it "$iterm_id" \
           '.status = "done" | if $it != "" then .terminal.iterm_session_id = $it else . end' \
-          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+          "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
       else
+        # idle at the prompt: first press just shelves it as 💤 — the
+        # process and tab stay untouched until a second press ends it
         jq --arg it "$iterm_id" \
           '.status = "gone" | .owner = "client"
            | if $it != "" then .terminal.iterm_session_id = $it else . end' \
-          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
-      fi
-      rm -f "$AGENTS_CACHE"
-      exit 0
-    fi
-    entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
-    if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
-      cpid=$(jq -r '.pid // empty' <<<"$entry")
-      dstatus=$(jq -r '.status // empty' <<<"$entry")
-      if [ -n "$cpid" ]; then
-        iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
-          | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
-        f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
-        if [ "$dstatus" = "busy" ]; then
-          # running turn: inject Esc (stop-generation) — a SIGINT signal
-          # would make claude exit to the shell
-          [ -n "$iterm_id" ] && send_esc_iterm "$iterm_id" || true
-          if [ -n "$f" ]; then
-            jq --arg it "$iterm_id" \
-              '.status = "done" | if $it != "" then .terminal.iterm_session_id = $it else . end' \
-              "$f" >"$f.tmp" && mv "$f.tmp" "$f"
-          fi
-        else
-          # idle at the prompt: first press just shelves it as 💤 — the
-          # process and tab stay untouched until a second press ends it
-          if [ -n "$f" ]; then
-            jq --arg it "$iterm_id" \
-              '.status = "gone" | .owner = "client"
-               | if $it != "" then .terminal.iterm_session_id = $it else . end' \
-              "$f" >"$f.tmp" && mv "$f.tmp" "$f"
-          fi
-        fi
+          "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
       fi
     else
+      # daemon-hosted background agent (or a record without a live client)
+      entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
       # claude stop takes the short job id (first 8 chars of the session id)
-      claude stop "${2:0:8}" >/dev/null 2>&1 || true
+      claude stop "${2:0:8}" >/dev/null 2>&1 &
       attach_title=$(jq -r '.name // empty' <<<"$entry")
-      f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
       if [ -n "$f" ]; then
         jq --arg at "$attach_title" \
           '.status = "gone" | .owner = "client"
            | if $at != "" then .attach_title = $at else . end' \
-          "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+          "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
       fi
     fi
     rm -f "$AGENTS_CACHE"
@@ -909,33 +1201,166 @@ case "${1:-list}" in
     # cst end <session-id> — stop (if needed), drop from view, close its tab
     [ $# -ge 2 ] || { echo "usage: cst end <session-id>" >&2; exit 1; }
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
-    if [ -n "$f" ] && [ "$(jq -r '.agent // empty' "$f")" = "codex" ]; then
-      cpid=$(jq -r '.pid // empty' "$f")
-      [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
-      sleep 0.3
+    cpid=""
+    [ -n "$f" ] && cpid=$(jq -r '.pid // empty' "$f")
+    # grab the tab handle from the LIVE process before killing it — the
+    # recorded handle can be stale or missing, which left tabs open
+    live_it=""
+    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+      live_it=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
+        | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+    fi
+    if [ -n "$cpid" ] && [ "$(jq -r '.owner // empty' "$f")" = "client" ] \
+       && kill -0 "$cpid" 2>/dev/null; then
+      kill -TERM "$cpid" 2>/dev/null || true
     else
       entry=$(fetch_agents | jq -c --arg sid "$2" '[.[] | select(.sessionId == $sid)] | first // {}')
-      if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ]; then
-        cpid=$(jq -r '.pid // empty' <<<"$entry")
-        [ -n "$cpid" ] && kill -TERM "$cpid" 2>/dev/null || true
-        sleep 0.3
+      dpid=$(jq -r '.pid // empty' <<<"$entry")
+      if [ "$(jq -r '.kind // empty' <<<"$entry")" = "interactive" ] && [ -n "$dpid" ]; then
+        [ -z "$live_it" ] && live_it=$(ps eww -o command= -p "$dpid" 2>/dev/null | tr ' ' '\n' \
+          | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+        kill -TERM "$dpid" 2>/dev/null || true
       else
-        claude stop "${2:0:8}" >/dev/null 2>&1 || true
+        claude stop "${2:0:8}" >/dev/null 2>&1 &
       fi
     fi
-    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    [ -n "$live_it" ] && close_iterm_by_id "$live_it" >/dev/null 2>&1 &
+    # attach/resume client tabs aren't in the record (pool forks have no
+    # terminal env) — find them by process and close their exact tabs
+    for apid in $(pgrep -f "claude attach ${2:0:8}" 2>/dev/null; pgrep -f "claude --resume $2" 2>/dev/null); do
+      aid=$(ps eww -o command= -p "$apid" 2>/dev/null | tr ' ' '\n' \
+        | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+      kill -TERM "$apid" 2>/dev/null || true
+      [ -n "$aid" ] && close_iterm_by_id "$aid" >/dev/null 2>&1 &
+    done
     if [ -n "$f" ]; then
       it=$(jq -r '.terminal.iterm_session_id // empty' "$f")
       at=$(jq -r '.attach_title // empty' "$f")
-      [ -n "$it" ] && close_iterm_by_id "$it" || true
-      [ -n "$at" ] && close_iterm_by_title "$at" || true
-      jq '.status = "ended"' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+      # tab close is cosmetic — run it in the background, id handle first
+      if [ -n "$it" ]; then
+        close_iterm_by_id "$it" >/dev/null 2>&1 &
+      elif [ -n "$at" ]; then
+        close_iterm_by_title "$at" >/dev/null 2>&1 &
+      fi
+      jq '.status = "ended"' "$f" >"$f.tmp.$$" && mv "$f.tmp.$$" "$f"
+    fi
+    # the daemon keeps completed jobs as "resumable" forever — drop the job
+    # registry entry too, unless the session is still live. The transcript
+    # stays in ~/.claude/projects, so archive search / --resume still work.
+    jobdir="$HOME/.claude/jobs/${2:0:8}"
+    if [ -d "$jobdir" ]; then
+      sleep 0.5  # let a just-killed client die before the liveness check
+      if ! claude agents --json 2>/dev/null \
+           | jq -e --arg sid "$2" '.[] | select(.sessionId == $sid)' >/dev/null 2>&1; then
+        rm -rf "$jobdir"
+      fi
     fi
     rm -f "$AGENTS_CACHE"
     ;;
+  usage-json)
+    # cst usage-json — quota snapshot for the panel footer.
+    #   codex: official rate_limits from the newest rollout event
+    #   claude: local estimate — tokens in the last 5h across transcripts
+    USAGE_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/usage-cache.json"
+    if [ -f "$USAGE_CACHE" ]; then
+      age=$(( $(date +%s) - $(stat -f %m "$USAGE_CACHE" 2>/dev/null || echo 0) ))
+      if [ "$age" -lt 300 ]; then cat "$USAGE_CACHE"; exit 0; fi
+    fi
+    codex_rl="null"
+    for t in $(ls -t "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -6); do
+      rl=$(tail -n 200 "$t" 2>/dev/null \
+        | jq -c 'select(.type=="event_msg") | .payload | select(.type=="token_count") | .rate_limits // empty' 2>/dev/null \
+        | tail -1 || true)
+      if [ -n "$rl" ]; then codex_rl="$rl"; break; fi
+    done
+    # transcript timestamps are UTC ISO strings
+    # official claude usage (CodexBar-style): the OAuth token stays inside
+    # this process — read from Keychain, sent only to Anthropic's usage
+    # endpoint, never logged
+    claude_official="null"
+    cl_tok=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+      | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null || true)
+    if [ -n "$cl_tok" ]; then
+      resp=$(curl -sf --max-time 4 \
+        -H "Authorization: Bearer $cl_tok" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null || true)
+      if jq -e . >/dev/null 2>&1 <<<"$resp"; then claude_official="$resp"; fi
+    fi
+    unset cl_tok
+
+    cutoff=$(date -u -v-5H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo "")
+    rows=""
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      part=$(tail -n 2000 "$t" 2>/dev/null \
+        | jq -r --arg cut "$cutoff" '
+            select(.type=="assistant" and (.timestamp // "") >= $cut)
+            | [(.message.model // "?"), (.message.usage.input_tokens // 0),
+               (.message.usage.output_tokens // 0)] | @tsv' 2>/dev/null || true)
+      [ -n "$part" ] && rows="$rows$part
+"
+    done < <(find "$HOME/.claude/projects" -name '*.jsonl' -not -name 'agent-*' -mmin -300 2>/dev/null)
+    by_model=$(printf '%s' "$rows" | awk -F'\t' '
+      $1 != "" && $1 !~ /^</ { i[$1]+=$2; o[$1]+=$3 }
+      END { for (m in i) printf "{\"model\":\"%s\",\"input\":%d,\"output\":%d}\n", m, i[m], o[m] }' \
+      | jq -sc 'sort_by(-.output)' 2>/dev/null || echo '[]')
+    cin=$(jq '[.[].input] | add // 0' <<<"$by_model")
+    cout=$(jq '[.[].output] | add // 0' <<<"$by_model")
+    jq -n --argjson codex "$codex_rl" \
+          --argjson cin "$cin" --argjson cout "$cout" \
+          --argjson bym "$by_model" \
+          --argjson clo "$claude_official" \
+      '{claude: {window_h: 5, input: $cin, output: $cout, by_model: $bym},
+        claude_official: $clo, codex: $codex}' \
+      | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
+    cat "$USAGE_CACHE"
+    ;;
+  stats-json)
+    # cst stats-json — fun usage stats for the panel (1h cache).
+    # Daily counts bucket transcripts by mtime (= sessions active that day).
+    STATS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/stats-cache.json"
+    if [ -f "$STATS_CACHE" ]; then
+      age=$(( $(date +%s) - $(stat -f %m "$STATS_CACHE" 2>/dev/null || echo 0) ))
+      if [ "$age" -lt 3600 ]; then cat "$STATS_CACHE"; exit 0; fi
+    fi
+    cl_days=$(find "$HOME/.claude/projects" -name '*.jsonl' -not -name 'agent-*' 2>/dev/null \
+      | xargs -I{} stat -f '%Sm' -t '%F' {} 2>/dev/null)
+    cx_days=$(find "$HOME/.codex/sessions" -name '*.jsonl' 2>/dev/null \
+      | xargs -I{} stat -f '%Sm' -t '%F' {} 2>/dev/null)
+    cl_total=$(printf '%s\n' "$cl_days" | grep -c . || true)
+    cx_total=$(printf '%s\n' "$cx_days" | grep -c . || true)
+    daily="[]"
+    for i in 13 12 11 10 9 8 7 6 5 4 3 2 1 0; do
+      d=$(date -v-"$i"d +%F)
+      n=$(printf '%s\n%s\n' "$cl_days" "$cx_days" | grep -cx "$d" || true)
+      daily=$(jq --arg d "$d" --argjson n "$n" '. + [{date: $d, count: $n}]' <<<"$daily")
+    done
+    usage=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/usage-cache.json" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$usage" || usage='{}'
+    jq -n --argjson cl "$cl_total" --argjson cx "$cx_total" \
+          --argjson daily "$daily" --argjson usage "$usage" \
+      '{claude_total: $cl, codex_total: $cx, daily: $daily, usage: $usage}' \
+      >"$STATS_CACHE.tmp.$$" && mv "$STATS_CACHE.tmp.$$" "$STATS_CACHE"
+    cat "$STATS_CACHE"
+    ;;
   skills-json)
-    # list available skills / slash commands as [{name, description}]
-    out='[]'
+    # list available skills / slash commands as [{name, description}].
+    # Built-in skills live inside the claude binary (no SKILL.md on disk),
+    # so seed the well-known ones statically.
+    out=$(jq -n '[
+      {name: "simplify",       description: "변경 코드 단순화/정리 리뷰 후 적용"},
+      {name: "code-review",    description: "변경분 버그 중심 코드 리뷰"},
+      {name: "security-review", description: "브랜치 변경분 보안 리뷰"},
+      {name: "init",           description: "CLAUDE.md 생성"},
+      {name: "run",            description: "앱 실행해서 변경 확인"},
+      {name: "loop",           description: "프롬프트/커맨드 주기 실행"},
+      {name: "fork",           description: "현재 세션 포크 (백그라운드)"},
+      {name: "compact",        description: "컨텍스트 압축"},
+      {name: "usage",          description: "플랜 사용량 확인"},
+      {name: "model",          description: "모델 변경 (예: /model opus)"},
+      {name: "resume",         description: "세션 재개 픽커 — ⌘↩(터미널 입력)로 보내야 동작"}
+    ]')
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       case "$f" in
