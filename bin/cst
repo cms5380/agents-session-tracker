@@ -547,7 +547,8 @@ cmd_sessions_json() {
     # the record; spare-pool forks have no --fork-session cmdline to read
     if [ "$(jq -r '.parent_resolved // empty' <<<"$s")" != "true" ] \
        && [ "$(jq -r '.agent // "claude"' <<<"$s")" = "claude" ]; then
-      local tpath0 lp parent_sid pf psid pt
+      local tpath0 lp parent_sid pf psid pt is_continuation
+      is_continuation=""
       tpath0=$(jq -r '.transcript_path // ""' <<<"$s")
       parent_sid=""
       # the recorded path goes stale when a session's cwd changes (transcripts
@@ -568,6 +569,7 @@ cmd_sessions_json() {
             | grep -oE '[0-9a-f-]{36}' | tail -1 || true)
           if [ -n "$cited" ] && [ "$cited" != "$sid" ] && [ -f "$STATE_DIR/$cited.json" ]; then
             parent_sid="$cited"
+            is_continuation="true"
           fi
         fi
         if [ -n "$lp" ]; then
@@ -590,13 +592,29 @@ cmd_sessions_json() {
             fi
           done
         fi
-        s=$(jq -c --arg p "$parent_sid" \
-          '.parent_resolved = true | if $p != "" then .parent = $p else . end' <<<"$s")
+        s=$(jq -c --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+          '.parent_resolved = true
+           | if $p != "" then .parent = $p else . end
+           | if $cont == "true" then .continuation = true else . end' <<<"$s")
         rf0="$STATE_DIR/$sid.json"
         if [ -f "$rf0" ]; then
-          jq --arg p "$parent_sid" \
-            '.parent_resolved = true | if $p != "" then .parent = $p else . end' \
+          jq --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+            '.parent_resolved = true
+             | if $p != "" then .parent = $p else . end
+             | if $cont == "true" then .continuation = true else . end' \
             "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0"
+        fi
+      fi
+    fi
+    # a continuation is the same conversation as its parent — while the
+    # parent's client is alive, fold it into that one row
+    if [ "$(jq -r '.continuation // false' <<<"$s")" = "true" ]; then
+      local cpar cppid
+      cpar=$(jq -r '.parent // ""' <<<"$s")
+      if [ -n "$cpar" ] && [ -f "$STATE_DIR/$cpar.json" ]; then
+        cppid=$(jq -r '.pid // empty' "$STATE_DIR/$cpar.json")
+        if [ -n "$cppid" ] && kill -0 "$cppid" 2>/dev/null; then
+          continue
         fi
       fi
     fi
@@ -637,11 +655,31 @@ cmd_sessions_json() {
     fi
   done | jq -s '.')
 
-  # fork parents hidden above must not resurface as untracked daemon rows
-  local fork_parents_json
+  # rows hidden above (fork parents, folded continuations) must not
+  # resurface as untracked daemon rows
+  local fork_parents_json folded_json hidden_json
   fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
+  folded_json=$({ for rf in "$STATE_DIR"/*.json; do
+      [ -e "$rf" ] || continue
+      jq -e '.continuation == true' "$rf" >/dev/null 2>&1 || continue
+      par=$(jq -r '.parent // ""' "$rf")
+      [ -n "$par" ] && [ -f "$STATE_DIR/$par.json" ] || continue
+      pp=$(jq -r '.pid // empty' "$STATE_DIR/$par.json")
+      [ -n "$pp" ] && kill -0 "$pp" 2>/dev/null && basename "$rf" .json
+    done; } | jq -R . | jq -sc 'map(select(length > 0))' 2>/dev/null || echo '[]')
+  hidden_json=$(jq -c --argjson a "$fork_parents_json" --argjson b "$folded_json" -n '$a + $b')
+  # a folded running child means its parent row is really still working
+  local folded_running_json
+  folded_running_json=$({ for rf in "$STATE_DIR"/*.json; do
+      [ -e "$rf" ] || continue
+      jq -e '.continuation == true and .status == "running"' "$rf" >/dev/null 2>&1 || continue
+      par=$(jq -r '.parent // ""' "$rf")
+      [ -n "$par" ] && [ -f "$STATE_DIR/$par.json" ] || continue
+      pp=$(jq -r '.pid // empty' "$STATE_DIR/$par.json")
+      [ -n "$pp" ] && kill -0 "$pp" 2>/dev/null && printf '%s\n' "$par"
+    done; } | jq -R . | jq -sc 'map(select(length > 0)) | unique' 2>/dev/null || echo '[]')
   extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
-             --argjson forked "$fork_parents_json" '
+             --argjson forked "$hidden_json" '
     [.[] | select([.sessionId] | inside($tracked) | not)
          | select([.sessionId] | inside($forked) | not) | {
       session_id: .sessionId,
@@ -678,11 +716,14 @@ cmd_sessions_json() {
      --argjson groups "$groups_json" --argjson names "$names_json" \
      --argjson pins "$pins_json" --argjson colors "$colors_json" \
      --argjson gorder "$order_json" --argjson sorder "$sorder_json" \
-     --argjson pairs "$pairs_json" '
+     --argjson pairs "$pairs_json" --argjson frp "$folded_running_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
       | .parent = ($s.parent // ([$pairs[] | select(.f == $s.session_id) | .p] | first) // null)
+      # a hidden continuation child is still working on the parent's behalf
+      | if ($frp | index(.session_id)) != null and (.status | IN("done", "gone"))
+        then .status = "running" else . end
       # daemon status corrects stale hook state (permission waits stay
       # waiting) — applies to interactive sessions too, e.g. an Esc-
       # interrupted turn never fires the Stop hook
