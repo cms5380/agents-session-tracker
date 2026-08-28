@@ -539,18 +539,6 @@ let slimeMap: [String] = [
     ".oooooooooooooo.",
     "..oooooooooooo..",
 ]
-let starMap: [String] = [
-    ".......oo.......",
-    ".......oo.......",
-    "......oooo......",
-    "oooooooooooooooo",
-    ".oooooooooooooo.",
-    "...oooooooooo...",
-    "....oooooooo....",
-    "...oooo..oooo...",
-    "..ooo......ooo..",
-    "..oo........oo..",
-]
 
 // icon registry: key → (map, panel tint). claude/codex use their mascots.
 // computed, not stored: top-level globals init in source order, and this
@@ -563,7 +551,6 @@ var iconChoices: [(key: String, label: String, map: [String], tint: NSColor)] { 
     ("ghost", "고스트", ghostMap, NSColor.systemPurple),
     ("robot", "로봇", robotMap, NSColor.systemGray),
     ("slime", "슬라임", slimeMap, NSColor.systemGreen),
-    ("star", "별", starMap, NSColor.systemYellow),
 ] }
 func iconChoice(_ key: String) -> (key: String, label: String, map: [String], tint: NSColor) {
     iconChoices.first { $0.key == key } ?? iconChoices[0]
