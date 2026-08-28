@@ -40,6 +40,8 @@ echo "registered claude hooks (backup: $SETTINGS.bak-cst)"
 # ── menubar app ──────────────────────────────────────────────────
 mkdir -p "$APP/Contents/MacOS"
 cp "$REPO_DIR/menubar/Info.plist" "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"
+cp "$REPO_DIR/menubar/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 echo "building AgentsSessionTracker.app (first build takes ~30s)…"
 swiftc -O -o "$APP/Contents/MacOS/AgentsSessionTracker" "$REPO_DIR/menubar/AgentsSessionTracker.swift"
 # ad-hoc signature — notification registration doesn't stick without one
