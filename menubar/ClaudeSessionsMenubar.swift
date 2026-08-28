@@ -1841,11 +1841,12 @@ struct PanelView: View {
             if !attn.isEmpty || !pinnedSessions.isEmpty { out.append(.label("SESSIONS")) }
             // purely visual nesting: a child renders indented under its
             // parent when both live in this list — status/ack stay
-            // independent (a child in ATTENTION stays in ATTENTION)
+            // independent (a child in ATTENTION stays in ATTENTION), and a
+            // manually placed child (drag → sort_order) escapes the nest
             let restIds = Set(rest.map { $0.session_id })
             let children = Dictionary(grouping: rest.filter {
-                if let p = $0.parent { return restIds.contains(p) }
-                return false
+                guard $0.sort_order == nil, let p = $0.parent else { return false }
+                return restIds.contains(p)
             }, by: { $0.parent! })
             let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
             for m in rest where !nestedIds.contains(m.session_id) {
