@@ -721,15 +721,17 @@ cmd_sessions_json() {
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
       | .parent = ($s.parent // ([$pairs[] | select(.f == $s.session_id) | .p] | first) // null)
-      # a hidden continuation child is still working for this parent
-      | if ($frp | index($s.session_id)) != null and (.status | IN("done", "gone"))
-        then .status = "running" else . end
       # daemon status corrects stale hook state (permission waits stay
       # waiting) — applies to interactive sessions too, e.g. an Esc-
       # interrupted turn never fires the Stop hook
       | if ($a.status // "") == "busy" and (.status | IN("waiting", "finished", "input") | not) then .status = "running"
         elif ($a.status // "") == "idle" and .status == "running" then .status = "done"
         else . end
+      # a hidden continuation child is still working for this parent — this
+      # outranks the daemon idle correction (the parent CLIENT is idle, but
+      # the conversation is not)
+      | if ($frp | index($s.session_id)) != null and (.status | IN("done", "gone"))
+        then .status = "running" else . end
       # unacknowledged results / input waits decay to idle after 30 minutes
       | if (.status | IN("finished", "input")) and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
     | . + $extra
