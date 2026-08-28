@@ -3229,6 +3229,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
         let content = UNMutableNotificationContent()
         content.title = s.title ?? ((s.cwd ?? "session") as NSString).lastPathComponent
+        if let cwd = s.cwd, !cwd.isEmpty {
+            content.subtitle = (cwd as NSString).lastPathComponent
+        }
         content.body = body
         content.userInfo = ["sid": s.session_id]
         let req = UNNotificationRequest(identifier: s.session_id, content: content, trigger: nil)
