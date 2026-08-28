@@ -8,6 +8,22 @@ set -euo pipefail
 # SwiftBar/launchd run with a minimal PATH — make sure claude & friends resolve
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# Swift's Process hands arguments over in NFD (decomposed jamo) — grep can
+# never match NFC transcripts then. Renormalize non-ASCII args to NFC.
+if command -v python3 >/dev/null 2>&1; then
+  _nfc_args=()
+  _nfc_changed=0
+  for _a in "$@"; do
+    case "$_a" in
+      (*[![:ascii:]]*)
+        _nfc_args+=("$(printf '%s' "$_a" | python3 -c 'import sys,unicodedata;sys.stdout.write(unicodedata.normalize("NFC",sys.stdin.read()))' 2>/dev/null || printf '%s' "$_a")")
+        _nfc_changed=1 ;;
+      (*) _nfc_args+=("$_a") ;;
+    esac
+  done
+  [ "$_nfc_changed" = "1" ] && set -- "${_nfc_args[@]}"
+fi
+
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.json"
 NAMES_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/names.json"
@@ -833,7 +849,9 @@ case "${1:-list}" in
     q="$2"
     hits=$( { grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.claude/projects" 2>/dev/null || true
               grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.codex/sessions" 2>/dev/null || true; } \
-      | xargs -I{} stat -f '%m {}' {} 2>/dev/null | sort -rn | head -12 | cut -d' ' -f2-)
+      | xargs -I{} stat -f '%m {}' {} 2>/dev/null | sort -rn | head -12 | cut -d' ' -f2- || true)
+    # ^ || true: head closing early SIGPIPEs sort; with pipefail+set -e that
+    #   killed the whole script (exit 141) — reliably under Process, not a tty
     out="[]"
     seen=""
     while IFS= read -r t; do
