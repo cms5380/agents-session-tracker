@@ -42,10 +42,17 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
                | select(length > 0) | select(startswith("<") | not)' 2>/dev/null \
       | head -n 1 | cut -c1-80) || true)
   else
+    # continuation boilerplate is not a name — skip it and fall back to the
+    # ai-title claude itself assigned, then the rolling summary
     title=$( (head -n 80 "$transcript" 2>/dev/null \
       | jq -r 'select(.type=="user") | .message.content
                | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
-      | grep -vE '^\s*(<|$)' | head -n 1 | cut -c1-80) || true)
+      | grep -vE '^\s*(<|$)' | grep -v '^This session is being continued' \
+      | head -n 1 | cut -c1-80) || true)
+    if [ -z "$title" ]; then
+      title=$( (head -n 5 "$transcript" 2>/dev/null \
+        | jq -r 'select(.type=="ai-title") | .aiTitle // empty' 2>/dev/null | head -n 1) || true)
+    fi
     if [ -z "$title" ]; then
       title=$( (grep '"type":"summary"' "$transcript" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
     fi
