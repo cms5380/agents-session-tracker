@@ -269,6 +269,15 @@ final class Model: ObservableObject {
         }
     }
 
+    // Arc Tidy — auto-group ungrouped sessions. The ai pass calls claude -p,
+    // which can take a few seconds; both run off the main thread.
+    func tidy(ai: Bool) {
+        DispatchQueue.global().async {
+            runCST(ai ? ["tidy", "ai"] : ["tidy"])
+            self.refresh()
+        }
+    }
+
     func hub() {
         appDelegate?.hidePanel()
         DispatchQueue.global().async { runCST(["hub"]) }
@@ -1654,6 +1663,8 @@ struct PanelView: View {
         guard searching, !q.isEmpty, !query.hasPrefix("/") else { return [] }
         var cmds: [(String, String, String)] = [
             ("clean", "Clean Stale Sessions", "오래된 세션 정리"),
+            ("tidy", "Tidy: Group by Repo", "미분류 세션을 저장소/폴더별로 자동 그룹"),
+            ("tidy-ai", "Tidy: Group by Topic (AI)", "claude가 주제별로 묶고 그룹명 생성"),
             ("quit", "Quit Claude Sessions", "앱 종료"),
             ("agent-toggle", "Main Agent: \(model.mainAgent) → \(model.otherAgent)",
              "새 세션 기본 에이전트 전환"),
@@ -1722,6 +1733,8 @@ struct PanelView: View {
         }
         if id == "hub" { model.hub() }
         else if id == "clean" { model.clean(); query = "" }
+        else if id == "tidy" { model.tidy(ai: false); query = "" }
+        else if id == "tidy-ai" { model.tidy(ai: true); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
         else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
         else if id == "stats" {

@@ -1370,6 +1370,52 @@ APPLESCRIPT
       | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
     cat "$USAGE_CACHE"
     ;;
+  tidy)
+    # cst tidy [ai] — auto-group ungrouped sessions (Arc Tidy style).
+    #   default: by repo/folder from cwd · ai: semantic clusters via claude -p
+    MODE="${2:-}"
+    list=$(cmd_sessions_json 2>/dev/null \
+      | jq -c '[.[] | select((.group // "") == "" and .status != "archived")
+                    | {sid: .session_id, title: (.title // ""), cwd: (.cwd // "")}]')
+    cnt=$(jq 'length' <<<"$list")
+    if [ "$cnt" = "0" ]; then echo "no ungrouped sessions"; exit 0; fi
+    existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
+    assigns='{}'
+    if [ "$MODE" = "ai" ]; then
+      gnames=$(jq -r '[.[]] | unique | join(", ")' <<<"$existing")
+      items=$(jq -r '.[] | "\(.sid)\t\(.title)\t\(.cwd)"' <<<"$list")
+      prompt="다음 AI 코딩 세션들을 주제별로 2~5개 그룹으로 묶어라. 그룹명은 짧은 한국어. 기존 그룹명(${gnames:-없음})이 어울리면 재사용. 오직 JSON 객체 하나만 출력: {\"<세션id>\": \"<그룹명>\", ...}. 다른 텍스트 금지.
+
+세션 목록 (id, 제목, 경로):
+$items"
+      raw=$(CST_INTERNAL=1 claude -p "$prompt" 2>/dev/null | sed 's/^```json//; s/^```//; s/```$//' | tr -d '\r' || true)
+      if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$raw"; then
+        # reuse existing group names case-insensitively — the model tends to
+        # invent "ADP" next to an existing "adp"
+        assigns=$(jq -c --argjson ex "$existing" '
+          ([$ex[]] | unique | map({key: ascii_downcase, value: .}) | from_entries) as $canon
+          | with_entries(select((.value | type) == "string" and .value != ""))
+          | with_entries(.value = ($canon[.value | ascii_downcase] // .value))' <<<"$raw")
+      else
+        echo "ai grouping failed — falling back to repo grouping" >&2
+      fi
+    fi
+    if [ "$assigns" = "{}" ]; then
+      # deterministic: repo name (first path segment after /GitHub/), else
+      # the cwd basename
+      assigns=$(jq -c 'map({key: .sid,
+        value: (.cwd
+          | if test("/GitHub/") then (split("/GitHub/")[1] | split("/")[0])
+            elif . == "" then "기타"
+            else (split("/") | map(select(. != "")) | last // "기타") end)})
+        | from_entries' <<<"$list")
+    fi
+    jq -n --argjson a "$existing" --argjson b "$assigns" '$a + $b' >"$GROUPS_FILE.tmp.$$" \
+      && mv "$GROUPS_FILE.tmp.$$" "$GROUPS_FILE"
+    echo "grouped $(jq 'length' <<<"$assigns") sessions:"
+    jq -r 'to_entries | group_by(.value) | .[] | "  \(.[0].value): \(length)"' <<<"$assigns"
+    ;;
   icon)
     # cst icon <key|emoji|image-path> — set the menubar/search icon.
     #   keys: generic claude codex cat ghost robot slime

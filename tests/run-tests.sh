@@ -180,6 +180,18 @@ t "T34 group color" "blue" "$(sjq '.[] | select(.session_id=="s-alive") | .group
 SJ=$("$CST" sessions-json 2>/dev/null)
 t "T35 group unassign" "null" "$(sjq '.[] | select(.session_id=="s-alive") | .group')"
 
+# ══ tidy (Arc-style auto grouping) ═══════════════════════════════
+mkrec "s-tidy-gh"  "{status:\"done\", owner:\"client\", pid:$LIVE1, title:\"t\", cwd:\"/Users/x/Documents/GitHub/myrepo/.claude/worktrees/b\"}"
+mkrec "s-tidy-dir" "{status:\"done\", owner:\"client\", pid:$LIVE1, title:\"t\", cwd:\"/tmp/projx\"}"
+"$CST" group s-alive "수동그룹" >/dev/null 2>&1
+"$CST" tidy >/dev/null 2>&1
+SJ=$("$CST" sessions-json 2>/dev/null)
+t "T36 tidy repo group"   "myrepo"  "$(sjq '.[] | select(.session_id=="s-tidy-gh") | .group')"
+t "T37 tidy dir fallback" "projx"   "$(sjq '.[] | select(.session_id=="s-tidy-dir") | .group')"
+t "T38 tidy keeps manual" "수동그룹" "$(sjq '.[] | select(.session_id=="s-alive") | .group')"
+"$CST" group s-alive - >/dev/null 2>&1
+rm -f "$STATE/s-tidy-gh.json" "$STATE/s-tidy-dir.json"
+
 # ══ stop-session / end lifecycle ═════════════════════════════════
 sleep 600 </dev/null >/dev/null 2>&1 & SP1=$!
 mkrec "s-stop-run" "{status:\"running\", owner:\"client\", pid:$SP1, title:\"x\"}"

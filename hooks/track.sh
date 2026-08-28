@@ -6,6 +6,9 @@ set -euo pipefail
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 mkdir -p "$STATE_DIR"
 
+# internal headless helpers (cst tidy ai etc.) must not appear as sessions
+[ -n "${CST_INTERNAL:-}" ] && exit 0
+
 input=$(cat)
 session_id=$(jq -r '.session_id // empty' <<<"$input")
 [ -n "$session_id" ] || exit 0
