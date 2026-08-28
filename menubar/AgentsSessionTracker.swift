@@ -23,6 +23,7 @@ struct Session: Decodable, Identifiable, Equatable {
     let agent: String?
     let model: String?
     let parent: String?
+    let continuation: Bool?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
 }
@@ -1617,7 +1618,7 @@ struct PanelView: View {
                            bg: s.bg, kind: s.kind, group: s.group, pin_order: s.pin_order,
                            group_color: s.group_color, group_order: s.group_order,
                            sort_order: s.sort_order, agent: s.agent, model: s.model,
-                           parent: s.parent)
+                           parent: s.parent, continuation: s.continuation)
         }
     }
 
@@ -1933,10 +1934,21 @@ struct PanelView: View {
         // manually placed child (drag → sort_order) escapes the nest
         let parentIds = Set(rest.map { $0.session_id })
             .union(pinnedSessions.map { $0.session_id })
+        // a hidden parent (dead original) is represented by its live
+        // continuation — nest siblings under that row instead
+        func displayParent(_ s: Session) -> String? {
+            guard let p = s.parent else { return nil }
+            if parentIds.contains(p) { return p }
+            if let proxy = (rest + pinnedSessions).first(where: {
+                $0.session_id != s.session_id && $0.parent == p && ($0.continuation ?? false)
+            }) {
+                return proxy.session_id
+            }
+            return nil
+        }
         let children = Dictionary(grouping: rest.filter {
-            guard $0.sort_order == nil, let p = $0.parent else { return false }
-            return parentIds.contains(p)
-        }, by: { $0.parent! })
+            $0.sort_order == nil && displayParent($0) != nil
+        }, by: { displayParent($0)! })
         let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
         func appendWithChildren(_ s: Session) {
             out.append(.session(s, indented: false))
