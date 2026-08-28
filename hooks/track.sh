@@ -86,7 +86,9 @@ case "$event" in
   # codex asks for tool approval via its own PermissionRequest hook event
   PermissionRequest) status="waiting" ;;
   Stop) status="finished" ;;
-  SessionEnd) status="ended" ;;
+  # a naturally closed session (tab closed, reboot) stays resumable in the
+  # ENDED section — only an explicit ^X^X (cst end) marks it "ended"/hidden
+  SessionEnd) status="gone" ;;
   *) status="running" ;;
 esac
 
@@ -157,7 +159,11 @@ jq -n \
     agent: $agent,
     updated_at: ($updated_at | tonumber)
   }
-  | .status = (if $status == "" then (.status // "running") else $status end)
+  | .status = (if $status == "" then (.status // "running")
+               # an explicit cst end already marked it ended — the SessionEnd
+               # from the dying client must not resurrect it as resumable
+               elif $event == "SessionEnd" and .status == "ended" then "ended"
+               else $status end)
   | .started_at = (.started_at // ($updated_at | tonumber))
   | if $cwd != "" then .cwd = $cwd else . end
   | if $message != "" then .message = $message else . end

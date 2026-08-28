@@ -91,7 +91,13 @@ hook "${P1}\"PermissionRequest\"}"
 t "T11 PermissionRequest→waiting" "waiting" "$(rec "$SID1" .status)"
 
 hook "${P1}\"SessionEnd\"}"
-t "T12 SessionEnd→ended"         "ended"   "$(rec "$SID1" .status)"
+t "T12 SessionEnd→gone (resumable)" "gone" "$(rec "$SID1" .status)"
+
+# an explicit end (record already ended) survives the dying client's hook
+jq '.status = "ended"' "$STATE/$SID1.json" >"$STATE/$SID1.json.t" && mv "$STATE/$SID1.json.t" "$STATE/$SID1.json"
+hook "${P1}\"SessionEnd\"}"
+t "T12b explicit ended not resurrected" "ended" "$(rec "$SID1" .status)"
+jq '.status = "gone"' "$STATE/$SID1.json" >"$STATE/$SID1.json.t" && mv "$STATE/$SID1.json.t" "$STATE/$SID1.json"
 
 hook "${P1}\"UserPromptSubmit\"}"
 t "T13 title sticky"             "첫 프롬프트: QA 테스트" "$(rec "$SID1" .title)"
