@@ -76,6 +76,10 @@ cat >"$LA" <<PLIST
 PLIST
 echo "login autostart: $LA"
 
+# ── /Applications symlink (Spotlight / Launchpad discovery) ──────
+ln -sfn "$APP" "/Applications/Agents Session Tracker.app" 2>/dev/null \
+  && echo "applications link: /Applications/Agents Session Tracker.app" || true
+
 # ── codex hooks (optional) ───────────────────────────────────────
 if [ "${1:-}" = "--codex" ]; then
   CODEX_HOOKS="$HOME/.codex/hooks.json"
