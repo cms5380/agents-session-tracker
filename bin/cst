@@ -668,16 +668,20 @@ cmd_sessions_json() {
       [ -n "$pp" ] && kill -0 "$pp" 2>/dev/null && basename "$rf" .json
     done; } | jq -R . | jq -sc 'map(select(length > 0))' 2>/dev/null || echo '[]')
   hidden_json=$(jq -c --argjson a "$fork_parents_json" --argjson b "$folded_json" -n '$a + $b')
-  # a folded running child means its parent row is really still working
-  local folded_running_json
-  folded_running_json=$({ for rf in "$STATE_DIR"/*.json; do
+  # a folded child's live status (running/finished/asks) belongs to the
+  # parent row — [{p, st}] pairs
+  local folded_status_json
+  folded_status_json=$({ for rf in "$STATE_DIR"/*.json; do
       [ -e "$rf" ] || continue
-      jq -e '.continuation == true and .status == "running"' "$rf" >/dev/null 2>&1 || continue
+      jq -e '.continuation == true' "$rf" >/dev/null 2>&1 || continue
+      cst_st=$(jq -r '.status' "$rf")
+      case "$cst_st" in running|waiting|input|finished) ;; *) continue ;; esac
       par=$(jq -r '.parent // ""' "$rf")
       [ -n "$par" ] && [ -f "$STATE_DIR/$par.json" ] || continue
       pp=$(jq -r '.pid // empty' "$STATE_DIR/$par.json")
-      [ -n "$pp" ] && kill -0 "$pp" 2>/dev/null && printf '%s\n' "$par"
-    done; } | jq -R . | jq -sc 'map(select(length > 0)) | unique' 2>/dev/null || echo '[]')
+      [ -n "$pp" ] && kill -0 "$pp" 2>/dev/null \
+        && printf '{"p":"%s","st":"%s"}\n' "$par" "$cst_st"
+    done; } | jq -sc '.' 2>/dev/null || echo '[]')
   extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
              --argjson forked "$hidden_json" '
     [.[] | select([.sessionId] | inside($tracked) | not)
@@ -716,7 +720,7 @@ cmd_sessions_json() {
      --argjson groups "$groups_json" --argjson names "$names_json" \
      --argjson pins "$pins_json" --argjson colors "$colors_json" \
      --argjson gorder "$order_json" --argjson sorder "$sorder_json" \
-     --argjson pairs "$pairs_json" --argjson frp "$folded_running_json" '
+     --argjson pairs "$pairs_json" --argjson fst "$folded_status_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
@@ -727,11 +731,12 @@ cmd_sessions_json() {
       | if ($a.status // "") == "busy" and (.status | IN("waiting", "finished", "input") | not) then .status = "running"
         elif ($a.status // "") == "idle" and .status == "running" then .status = "done"
         else . end
-      # a hidden continuation child is still working for this parent — this
-      # outranks the daemon idle correction (the parent CLIENT is idle, but
-      # the conversation is not)
-      | if ($frp | index($s.session_id)) != null and (.status | IN("done", "gone"))
-        then .status = "running" else . end
+      # a hidden continuation child speaks for this parent — its status wins
+      # over the daemon idle correction (the parent CLIENT is idle, but the
+      # conversation is not)
+      | ([$fst[] | select(.p == $s.session_id) | .st] | first) as $cstat
+      | if $cstat != null and (.status | IN("done", "gone"))
+        then .status = $cstat else . end
       # unacknowledged results / input waits decay to idle after 30 minutes
       | if (.status | IN("finished", "input")) and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
     | . + $extra
