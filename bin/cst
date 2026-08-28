@@ -621,6 +621,15 @@ cmd_clean() {
 cmd_sessions_json() {
   local now sessions agents_json extra
   now=$(date +%s)
+  # ended tombstones exist only so the dying client's SessionEnd can't
+  # resurrect the record — after an hour they're pure garbage; reap them
+  # so explicit ⌃X⌃X deletes don't pile up in the state dir forever
+  local reaped="" tf tm
+  for tf in $(grep -El '"status": ?"ended"' "$STATE_DIR"/*.json 2>/dev/null || true); do
+    tm=$(stat -f %m "$tf" 2>/dev/null || echo "$now")
+    if [ $((now - tm)) -gt 3600 ]; then rm -f "$tf"; reaped=1; fi
+  done
+  [ -n "$reaped" ] && gc_session_assets >/dev/null 2>&1
   # read records one by one so a single corrupt file (e.g. a torn write)
   # can't blank the whole list
   sessions=$({ for rf in "$STATE_DIR"/*.json; do
