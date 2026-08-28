@@ -126,6 +126,15 @@ final class Model: ObservableObject {
                 }
                 self.firstLoad = false
                 self.prevStatuses = Dictionary(uniqueKeysWithValues: parsed.map { ($0.session_id, $0.status) })
+                // once a session leaves an attention state (user answered in
+                // the terminal, turn resumed, …) its banner is stale — sweep
+                // it out of Notification Center
+                let seen = parsed.filter { !["waiting", "finished", "input"].contains($0.status) }
+                    .map { $0.session_id }
+                if !seen.isEmpty {
+                    UNUserNotificationCenter.current()
+                        .removeDeliveredNotifications(withIdentifiers: seen)
+                }
             }
         }
     }
@@ -215,6 +224,9 @@ final class Model: ObservableObject {
 
     func jump(_ s: Session) {
         appDelegate?.hidePanel()
+        // jumping = the user saw it — clear its alert from Notification Center
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: [s.session_id])
         if s.status == "archived" {
             let cwd = s.cwd ?? NSHomeDirectory()
             DispatchQueue.global().async { runCST(["resume-tab", s.session_id, cwd]) }
