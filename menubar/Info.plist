@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>com.dean.claude-sessions</string>
+  <string>com.dean.agents-session-tracker</string>
   <key>CFBundleName</key>
   <string>Agents Session Tracker</string>
   <key>CFBundleExecutable</key>
