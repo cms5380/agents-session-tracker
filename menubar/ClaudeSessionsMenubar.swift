@@ -1598,16 +1598,22 @@ struct PanelView: View {
             return $0.status != "gone"
         }, by: { $0.parent! })
         let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
-        let sections: [(String, String)] = [
-            ("waiting", "NEEDS INPUT"), ("running", "RUNNING"),
-            ("input", "REPLY WAITING"), ("finished", "FINISHED"),
-            ("done", "IDLE"), ("gone", "ENDED"),
+        // everything that needs the user folds into one ATTENTION section,
+        // ordered by urgency: approval ask > reply wait > finished
+        let sections: [(statuses: [String], label: String)] = [
+            (["waiting", "input", "finished"], "ATTENTION"),
+            (["running"], "RUNNING"),
+            (["done"], "IDLE"),
+            (["gone"], "ENDED"),
         ]
-        for (st, label) in sections {
-            let members = pool.filter { $0.status == st && !nestedIds.contains($0.session_id) }
+        for (sts, label) in sections {
+            let members = pool.filter { sts.contains($0.status) && !nestedIds.contains($0.session_id) }
                 .sorted { a, b in
+                    let ua = sts.firstIndex(of: a.status) ?? 9
+                    let ub = sts.firstIndex(of: b.status) ?? 9
+                    if ua != ub { return ua < ub }
                     // IDLE is pure recency; other sections honor manual order
-                    if st != "done" {
+                    if label != "IDLE" {
                         let oa = a.sort_order ?? Int.max
                         let ob = b.sort_order ?? Int.max
                         if oa != ob { return oa < ob }
