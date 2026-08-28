@@ -406,6 +406,21 @@ out=$("$CST" sessions-json)
 t "T96 stale codex running decays" "done" \
   "$(jq -r --arg s "$CXSID" '.[] | select(.session_id==$s) | .status' <<<"$out")"
 
+# T98: a child keeps its inherited group after the parent record is reaped
+rm -f "$STATE"/*.json
+mkrec "gp-parent" "{status:\"done\", owner:\"client\", pid:$LIVE1, title:\"p\", parent_resolved:true}"
+mkrec "gp-child"  "{status:\"done\", owner:\"client\", pid:$LIVE2, title:\"c\", parent:\"gp-parent\", parent_resolved:true}"
+"$CST" group gp-parent "상속그룹" >/dev/null 2>&1
+"$CST" end gp-parent >/dev/null 2>&1
+sleep 0.3
+"$CST" sessions-json >/dev/null 2>&1
+touch -t 202001010000 "$STATE/gp-parent.json" 2>/dev/null
+out=$("$CST" sessions-json 2>/dev/null)
+t "T98 inherited group survives parent reap" "상속그룹" \
+  "$(jq -r '.[] | select(.session_id=="gp-child") | .group // "null"' <<<"$out")"
+t "T99 group promoted to the child's own entry" "상속그룹" \
+  "$(jq -r '.["gp-child"] // "null"' "$CST_STATE_DIR/groups.json")"
+
 # ── teardown ─────────────────────────────────────────────────────
 kill "$LIVE1" "$LIVE2" 2>/dev/null
 echo
