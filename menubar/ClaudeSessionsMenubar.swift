@@ -569,6 +569,19 @@ func iconChoice(_ key: String) -> (key: String, label: String, map: [String], ti
     iconChoices.first { $0.key == key } ?? iconChoices[0]
 }
 
+// drop any PNG here to use it as the icon ("이미지" card appears when present)
+let customIconPath = ("~/.local/state/claude-session-tracker/icon.png" as NSString).expandingTildeInPath
+func customIconImage(height: CGFloat) -> NSImage? {
+    guard let img = NSImage(contentsOfFile: customIconPath), img.size.height > 0 else { return nil }
+    let w = img.size.width * height / img.size.height
+    let out = NSImage(size: NSSize(width: w, height: height))
+    out.lockFocus()
+    img.draw(in: NSRect(x: 0, y: 0, width: w, height: height),
+             from: .zero, operation: .sourceOver, fraction: 1)
+    out.unlockFocus()
+    return out
+}
+
 // card-grid icon picker shown under the status item on right-click
 struct IconPickerView: View {
     let current: String
@@ -579,9 +592,12 @@ struct IconPickerView: View {
                 .font(.system(size: 9, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
                 .tracking(1.4)
+            let choices = iconChoices
+                + (FileManager.default.fileExists(atPath: customIconPath)
+                   ? [("custom", "이미지", appIconMap, NSColor.clear)] : [])
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(66), spacing: 8), count: 4),
                       spacing: 8) {
-                ForEach(iconChoices, id: \.key) { c in
+                ForEach(choices, id: \.key) { c in
                     let selected = current == c.key
                     VStack(spacing: 5) {
                         PixelAppIcon(choice: c.key, pixel: 2.4)
@@ -610,15 +626,19 @@ struct PixelAppIcon: View {
     @Environment(\.displayScale) private var scale
     var body: some View {
         let px = quantizedPixel(pixel, scale: scale)
-        let c = iconChoice(choice)
-        Canvas { ctx, _ in
-            ctx.withCGContext { cg in
-                drawPixelMap(cg, map: c.map, pixel: px) {
-                    $0 == "o" ? c.tint : ($0 == "w" ? .white : nil)
+        if choice == "custom", let img = customIconImage(height: px * 10) {
+            Image(nsImage: img).frame(height: px * 10)
+        } else {
+            let c = iconChoice(choice)
+            Canvas { ctx, _ in
+                ctx.withCGContext { cg in
+                    drawPixelMap(cg, map: c.map, pixel: px) {
+                        $0 == "o" ? c.tint : ($0 == "w" ? .white : nil)
+                    }
                 }
             }
+            .frame(width: px * 16, height: px * 10)
         }
-        .frame(width: px * 16, height: px * 10)
     }
 }
 
@@ -2785,6 +2805,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func buildMenubarImages() {
         let empty = String(repeating: ".", count: 16)
+        // custom PNG: bounce by drawing at two vertical offsets
+        if menubarAgent == "custom", let img = customIconImage(height: 16) {
+            func offsetFrame(_ dy: CGFloat) -> NSImage {
+                let out = NSImage(size: NSSize(width: img.size.width, height: 18))
+                out.lockFocus()
+                img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: 16),
+                         from: .zero, operation: .sourceOver, fraction: 1)
+                out.unlockFocus()
+                return out
+            }
+            menubarStaticImage = offsetFrame(1)
+            menubarStatusFrames = [
+                "running": [offsetFrame(2), offsetFrame(0)],
+                "waiting": [offsetFrame(2), offsetFrame(0)],
+            ]
+            return
+        }
         let body = iconChoice(menubarAgent).map
         menubarStaticImage = mascotNSImage(map: [empty] + body, pixel: 1.2)
         menubarStatusFrames = [:]
