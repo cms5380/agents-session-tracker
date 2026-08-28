@@ -569,11 +569,18 @@ func iconChoice(_ key: String) -> (key: String, label: String, map: [String], ti
     iconChoices.first { $0.key == key } ?? iconChoices[0]
 }
 
-// drop any PNG here to use it as the icon ("이미지" card appears when present)
+// drop a PNG (static, gets a bounce) or GIF (frame animation) here — the
+// "이미지" card appears in the picker when either exists
 let customIconPath = ("~/.local/state/claude-session-tracker/icon.png" as NSString).expandingTildeInPath
-func customIconImage(height: CGFloat) -> NSImage? {
-    guard let img = NSImage(contentsOfFile: customIconPath), img.size.height > 0 else { return nil }
-    let w = img.size.width * height / img.size.height
+let customIconGIFPath = ("~/.local/state/claude-session-tracker/icon.gif" as NSString).expandingTildeInPath
+var customIconExists: Bool {
+    FileManager.default.fileExists(atPath: customIconGIFPath)
+        || FileManager.default.fileExists(atPath: customIconPath)
+}
+var _customIconCache: (key: String, frames: [NSImage])? = nil
+
+func resizedIcon(_ img: NSImage, height: CGFloat) -> NSImage {
+    let w = img.size.height > 0 ? img.size.width * height / img.size.height : height
     let out = NSImage(size: NSSize(width: w, height: height))
     out.lockFocus()
     img.draw(in: NSRect(x: 0, y: 0, width: w, height: height),
@@ -581,6 +588,36 @@ func customIconImage(height: CGFloat) -> NSImage? {
     out.unlockFocus()
     return out
 }
+
+// all frames at the given height: n frames for a GIF, 1 for a PNG, [] if none
+func customIconFrames(height: CGFloat) -> [NSImage] {
+    let fm = FileManager.default
+    let path = fm.fileExists(atPath: customIconGIFPath) ? customIconGIFPath : customIconPath
+    guard fm.fileExists(atPath: path) else { return [] }
+    let mtime = ((try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?
+        .timeIntervalSince1970 ?? 0
+    let key = "\(path):\(mtime):\(height)"
+    if let c = _customIconCache, c.key == key { return c.frames }
+    var frames: [NSImage] = []
+    if let img = NSImage(contentsOfFile: path) {
+        if let rep = img.representations.first as? NSBitmapImageRep,
+           let n = rep.value(forProperty: .frameCount) as? Int, n > 1 {
+            for i in 0..<min(n, 24) {
+                rep.setProperty(.currentFrame, withValue: i)
+                if let data = rep.representation(using: .png, properties: [:]),
+                   let f = NSImage(data: data) {
+                    frames.append(resizedIcon(f, height: height))
+                }
+            }
+        } else {
+            frames = [resizedIcon(img, height: height)]
+        }
+    }
+    _customIconCache = (key, frames)
+    return frames
+}
+
+func customIconImage(height: CGFloat) -> NSImage? { customIconFrames(height: height).first }
 
 // card-grid icon picker shown under the status item on right-click
 struct IconPickerView: View {
@@ -593,8 +630,7 @@ struct IconPickerView: View {
                 .foregroundStyle(.secondary)
                 .tracking(1.4)
             let choices = iconChoices
-                + (FileManager.default.fileExists(atPath: customIconPath)
-                   ? [("custom", "이미지", appIconMap, NSColor.clear)] : [])
+                + (customIconExists ? [("custom", "이미지", appIconMap, NSColor.clear)] : [])
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(66), spacing: 8), count: 4),
                       spacing: 8) {
                 ForEach(choices, id: \.key) { c in
@@ -626,8 +662,17 @@ struct PixelAppIcon: View {
     @Environment(\.displayScale) private var scale
     var body: some View {
         let px = quantizedPixel(pixel, scale: scale)
-        if choice == "custom", let img = customIconImage(height: px * 10) {
-            Image(nsImage: img).frame(height: px * 10)
+        if choice == "custom", !customIconFrames(height: px * 10).isEmpty {
+            let frames = customIconFrames(height: px * 10)
+            if frames.count > 1 {
+                TimelineView(.periodic(from: .now, by: 0.12)) { tl in
+                    let i = Int(tl.date.timeIntervalSince1970 / 0.12) % frames.count
+                    Image(nsImage: frames[i])
+                }
+                .frame(height: px * 10)
+            } else {
+                Image(nsImage: frames[0]).frame(height: px * 10)
+            }
         } else {
             let c = iconChoice(choice)
             Canvas { ctx, _ in
@@ -2805,22 +2850,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func buildMenubarImages() {
         let empty = String(repeating: ".", count: 16)
-        // custom PNG: bounce by drawing at two vertical offsets
-        if menubarAgent == "custom", let img = customIconImage(height: 16) {
-            func offsetFrame(_ dy: CGFloat) -> NSImage {
-                let out = NSImage(size: NSSize(width: img.size.width, height: 18))
-                out.lockFocus()
-                img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: 16),
-                         from: .zero, operation: .sourceOver, fraction: 1)
-                out.unlockFocus()
-                return out
+        // custom image: a GIF animates with its own frames, a PNG bounces
+        if menubarAgent == "custom" {
+            let frames = customIconFrames(height: 16)
+            if frames.count > 1 {
+                menubarStaticImage = frames[0]
+                menubarStatusFrames = ["running": frames, "waiting": frames]
+                return
             }
-            menubarStaticImage = offsetFrame(1)
-            menubarStatusFrames = [
-                "running": [offsetFrame(2), offsetFrame(0)],
-                "waiting": [offsetFrame(2), offsetFrame(0)],
-            ]
-            return
+            if let img = frames.first {
+                func offsetFrame(_ dy: CGFloat) -> NSImage {
+                    let out = NSImage(size: NSSize(width: img.size.width, height: 18))
+                    out.lockFocus()
+                    img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: 16),
+                             from: .zero, operation: .sourceOver, fraction: 1)
+                    out.unlockFocus()
+                    return out
+                }
+                menubarStaticImage = offsetFrame(1)
+                menubarStatusFrames = [
+                    "running": [offsetFrame(2), offsetFrame(0)],
+                    "waiting": [offsetFrame(2), offsetFrame(0)],
+                ]
+                return
+            }
         }
         let body = iconChoice(menubarAgent).map
         menubarStaticImage = mascotNSImage(map: [empty] + body, pixel: 1.2)
@@ -2893,7 +2946,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             menubarTimer?.invalidate()
             menubarTimer = nil
             if let st = active, let frames = menubarStatusFrames[st], frames.count > 1 {
-                let interval = ["running": 0.35, "waiting": 0.4, "input": 0.6][st] ?? 0.4
+                // many-frame custom GIFs play fast; two-frame mascots stay calm
+                let interval = frames.count > 2 ? 0.12
+                    : ["running": 0.35, "waiting": 0.4, "input": 0.6][st] ?? 0.4
                 menubarTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
                     guard let self, let st = self.menubarStatus,
                           let fr = self.menubarStatusFrames[st] else { return }
