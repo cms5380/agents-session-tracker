@@ -101,6 +101,9 @@ final class Model: ObservableObject {
                 if !self.firstLoad {
                     for s in parsed {
                         let old = self.prevStatuses[s.session_id]
+                        if old != s.status, s.status == "running" {
+                            appDelegate?.runStart[s.session_id] = Date()
+                        }
                         if old != s.status, ["waiting", "finished", "input"].contains(s.status) {
                             appDelegate?.notify(session: s)
                         }
@@ -3189,27 +3192,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
+    // start-of-turn timestamps, for the "(4m 32s)" tag on completion
+    var runStart: [String: Date] = [:]
+
     func notify(session s: Session) {
         guard notificationsReady else { return }
         let d = UserDefaults.standard
-        let body: String
         switch s.status {
-        case "waiting":
-            guard d.object(forKey: "notifyWaiting") as? Bool ?? true else { return }
-            body = "승인이 필요해요"
-        case "input":
-            guard d.object(forKey: "notifyInput") as? Bool ?? true else { return }
-            body = "답을 기다리고 있어요"
-        default:
-            guard d.object(forKey: "notifyFinished") as? Bool ?? true else { return }
-            body = "작업 완료 — 결과를 확인하세요"
+        case "waiting": guard d.object(forKey: "notifyWaiting") as? Bool ?? true else { return }
+        case "input": guard d.object(forKey: "notifyInput") as? Bool ?? true else { return }
+        default: guard d.object(forKey: "notifyFinished") as? Bool ?? true else { return }
         }
-        let content = UNMutableNotificationContent()
-        content.title = s.title ?? ((s.cwd ?? "session") as NSString).lastPathComponent
-        content.body = body
-        content.userInfo = ["sid": s.session_id]
-        let req = UNNotificationRequest(identifier: s.session_id, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        var title = s.title ?? ((s.cwd ?? "session") as NSString).lastPathComponent
+        if s.status == "finished", let start = runStart[s.session_id] {
+            let e = Int(Date().timeIntervalSince(start))
+            title += e >= 60 ? " (\(e / 60)m \(e % 60)s)" : " (\(e)s)"
+        }
+        let status = s.status
+        let sid = s.session_id
+        let hookMsg = (s.message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // the body says what actually happened — last reply line for
+        // finished/input, the permission ask itself for waiting
+        DispatchQueue.global().async {
+            var body: String
+            switch status {
+            case "waiting":
+                body = hookMsg.isEmpty ? "승인이 필요해요" : String(hookMsg.prefix(140))
+            default:
+                let peek = runCST(["peek", sid], capture: true)
+                let line = peek.split(separator: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .last { !$0.isEmpty } ?? ""
+                if status == "input" {
+                    body = line.isEmpty ? "답을 기다리고 있어요" : "질문: \(line.prefix(140))"
+                } else {
+                    body = line.isEmpty ? "작업 완료 — 결과를 확인하세요" : String(line.prefix(140))
+                }
+            }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.userInfo = ["sid": sid]
+            let req = UNNotificationRequest(identifier: sid, content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(req)
+        }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -3364,28 +3390,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         p.makeKeyAndOrderFront(nil)
     }
 
-    // pick up icon changes made externally (cst icon … / defaults write)
-    var lastIconSig = ""
-    func syncIconFromDefaults() {
-        let want = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
-        let emoji = UserDefaults.standard.string(forKey: "menubarEmoji") ?? ""
-        let fm = FileManager.default
-        let path = fm.fileExists(atPath: customIconGIFPath) ? customIconGIFPath : customIconPath
-        let mtime = ((try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?
-            .timeIntervalSince1970 ?? 0
-        let sig = "\(want):\(emoji):\(mtime)"
-        if sig != lastIconSig {
-            lastIconSig = sig
-            menubarAgent = want
-            buildMenubarImages()
-            menubarStatus = "__rebuild__"
-            model.iconChoiceKey = want
-        }
-    }
-
     func updateTitle(sessions: [Session]) {
         lastSessions = sessions
-        syncIconFromDefaults()
         guard let button = statusItem.button else { return }
         // most attention-worthy state wins: approval ask > running
         let statuses = Set(sessions.map(\.status))

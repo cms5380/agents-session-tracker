@@ -865,10 +865,19 @@ case "${1:-list}" in
       t="$HOME/.claude/projects/$slug/$sid.jsonl"
     fi
     [ -f "$t" ] || exit 0
-    tail -n 300 "$t" 2>/dev/null \
-      | jq -r 'select(.type == "assistant") | .message.content
-               | if type == "array" then (map(select(.type == "text") | .text) | join("")) else tostring end' 2>/dev/null \
-      | grep -v '^\s*$' | tail -n 8 | head -c 600 || true
+    case "$t" in
+      (*/.codex/*)
+        tail -n 300 "$t" 2>/dev/null \
+          | jq -r 'select(.type == "response_item") | .payload
+                   | select(.type == "message" and .role == "assistant")
+                   | ((.content // []) | map(select(.type == "output_text") | .text) | join(""))' 2>/dev/null \
+          | grep -v '^\s*$' | tail -n 8 | head -c 600 || true ;;
+      (*)
+        tail -n 300 "$t" 2>/dev/null \
+          | jq -r 'select(.type == "assistant") | .message.content
+                   | if type == "array" then (map(select(.type == "text") | .text) | join("")) else tostring end' 2>/dev/null \
+          | grep -v '^\s*$' | tail -n 8 | head -c 600 || true ;;
+    esac
     ;;
   send)
     # cst send <session-id> <message…> — run one headless turn in the
@@ -1346,6 +1355,10 @@ APPLESCRIPT
           echo "icon: emoji $arg" ;;
       esac
     fi
+    # apply by restarting the app (one-shot — no polling in the app)
+    pkill -f "MacOS/AgentsSessionTracker" 2>/dev/null || true
+    sleep 0.4
+    open "$HOME/.claude/session-tracker/AgentsSessionTracker.app" 2>/dev/null || true
     ;;
   stats-json)
     # cst stats-json — fun usage stats for the panel (1h cache).
