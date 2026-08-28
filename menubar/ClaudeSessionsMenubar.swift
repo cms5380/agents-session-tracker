@@ -1811,31 +1811,35 @@ struct PanelView: View {
         }
         let pool = filtered.filter { !$0.pinned }
             .filter { selectedChip == nil || $0.group == selectedChip }
-        // everything that needs the user folds into one ATTENTION section,
-        // ordered by urgency: approval ask > reply wait > finished
-        let sections: [(statuses: [String], label: String)] = [
-            (["waiting", "input", "finished"], "ATTENTION"),
-            (["running"], "RUNNING"),
-            (["done"], "IDLE"),
-            (["gone"], "ENDED"),
-        ]
-        for (sts, label) in sections {
-            let members = pool.filter { sts.contains($0.status) }
-                .sorted { a, b in
-                    let ua = sts.firstIndex(of: a.status) ?? 9
-                    let ub = sts.firstIndex(of: b.status) ?? 9
-                    if ua != ub { return ua < ub }
-                    // IDLE is pure recency; other sections honor manual order
-                    if label != "IDLE" {
-                        let oa = a.sort_order ?? Int.max
-                        let ob = b.sort_order ?? Int.max
-                        if oa != ob { return oa < ob }
-                    }
-                    return (a.updated_at ?? 0) > (b.updated_at ?? 0)
-                }
-            if members.isEmpty { continue }
-            out.append(.label(label))
-            out += members.map { .session($0, indented: false) }
+        // hybrid layout: only attention-worthy sessions get pulled to the
+        // top; everything else stays in one stable list (manual order, then
+        // recency, ended sunk to the bottom) — status reads off the mascot
+        let attnOrder = ["waiting", "input", "finished"]
+        let attn = pool.filter { attnOrder.contains($0.status) }
+            .sorted { a, b in
+                let ua = attnOrder.firstIndex(of: a.status) ?? 9
+                let ub = attnOrder.firstIndex(of: b.status) ?? 9
+                if ua != ub { return ua < ub }
+                let oa = a.sort_order ?? Int.max
+                let ob = b.sort_order ?? Int.max
+                if oa != ob { return oa < ob }
+                return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+            }
+        let rest = pool.filter { !attnOrder.contains($0.status) }
+            .sorted { a, b in
+                if (a.status == "gone") != (b.status == "gone") { return b.status == "gone" }
+                let oa = a.sort_order ?? Int.max
+                let ob = b.sort_order ?? Int.max
+                if oa != ob { return oa < ob }
+                return (a.updated_at ?? 0) > (b.updated_at ?? 0)
+            }
+        if !attn.isEmpty {
+            out.append(.label("ATTENTION"))
+            out += attn.map { .session($0, indented: false) }
+        }
+        if !rest.isEmpty {
+            if !attn.isEmpty || !pinnedSessions.isEmpty { out.append(.label("SESSIONS")) }
+            out += rest.map { .session($0, indented: false) }
         }
         return out
     }
