@@ -655,8 +655,9 @@ cmd_sessions_json() {
       is_continuation=""
       tpath0=$(jq -r '.transcript_path // ""' <<<"$s")
       parent_sid=""
-      # authoritative source first: the daemon's job state records the fork
-      # parent directly (spare-pool /fork sessions)
+      # best-available source first: the daemon's job state records the fork
+      # parent directly (spare-pool /fork sessions). NOTE: this file is an
+      # undocumented internal — transcript heuristics below stay as fallback
       jstate="$HOME/.claude/jobs/${sid:0:8}/state.json"
       if [ -f "$jstate" ]; then
         jparent=$(jq -r '.forkParentSessionId // empty' "$jstate" 2>/dev/null || true)

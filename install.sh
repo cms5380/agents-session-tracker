@@ -30,7 +30,7 @@ mkdir -p "$(dirname "$SETTINGS")"
 cp "$SETTINGS" "$SETTINGS.bak-cst"
 jq --arg cmd "/bin/bash $TRACK" '
   .hooks = (.hooks // {})
-  | reduce ("SessionStart","UserPromptSubmit","PreToolUse","Notification","Stop","SessionEnd") as $ev (.;
+  | reduce ("SessionStart","UserPromptSubmit","PreToolUse","PermissionRequest","Notification","Stop","SessionEnd") as $ev (.;
       .hooks[$ev] = (
         ((.hooks[$ev] // []) | map(select((.hooks // []) | any(.command == $cmd) | not)))
         + [{hooks: [{type: "command", command: $cmd}]}]))
