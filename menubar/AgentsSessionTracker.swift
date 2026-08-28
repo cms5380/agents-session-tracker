@@ -3225,19 +3225,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             let e = Int(Date().timeIntervalSince(start))
             title += e >= 60 ? " (\(e / 60)m \(e % 60)s)" : " (\(e)s)"
         }
-        // body = the session state, plain English
-        let body: String
-        switch s.status {
-        case "waiting": body = "Needs approval"
-        case "input": body = "Waiting for your reply"
-        default: body = "Finished"
+        // body = the session state, plain English. "input" is refined by
+        // what the session actually asked for (question / plan / reply)
+        let sid = s.session_id
+        let status = s.status
+        DispatchQueue.global().async {
+            let body: String
+            switch status {
+            case "waiting": body = "Needs approval"
+            case "input":
+                let kind = runCST(["input-kind", sid], capture: true)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                switch kind {
+                case "question": body = "Question — pick an option"
+                case "plan": body = "Plan approval needed"
+                default: body = "Waiting for your reply"
+                }
+            default: body = "Finished"
+            }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.userInfo = ["sid": sid]
+            let req = UNNotificationRequest(identifier: sid, content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(req)
         }
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.userInfo = ["sid": s.session_id]
-        let req = UNNotificationRequest(identifier: s.session_id, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,

@@ -902,6 +902,24 @@ case "${1:-list}" in
           | grep -v '^\s*$' | tail -n 8 | head -c 600 || true ;;
     esac
     ;;
+  input-kind)
+    # cst input-kind <sid> — what kind of reply the session is waiting on:
+    # question (AskUserQuestion) | plan (ExitPlanMode) | reply (anything else)
+    [ $# -ge 2 ] || { echo "reply"; exit 0; }
+    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    t=""
+    [ -n "$f" ] && t=$(jq -r '.transcript_path // empty' "$f")
+    if [ -z "$t" ] || [ ! -f "$t" ]; then echo "reply"; exit 0; fi
+    last_tool=$(tail -n 120 "$t" 2>/dev/null \
+      | jq -r 'select(.type=="assistant") | .message.content
+               | if type=="array" then (map(select(.type=="tool_use") | .name) | join(",")) else empty end' 2>/dev/null \
+      | grep -v '^$' | tail -1 || true)
+    case "$last_tool" in
+      (*AskUserQuestion*) echo "question" ;;
+      (*ExitPlanMode*)    echo "plan" ;;
+      (*)                 echo "reply" ;;
+    esac
+    ;;
   send)
     # cst send <session-id> <message…> — run one headless turn in the
     # background; the panel's status tracking shows the result
