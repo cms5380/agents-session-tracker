@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HOME/.claude/session-tracker"
-APP="$DEST/AgentsSessionTracker.app"
+APP="/Applications/Agents Session Tracker.app"
 SETTINGS="$HOME/.claude/settings.json"
 TRACK="$DEST/track.sh"
 
@@ -75,6 +75,8 @@ cat >"$LA" <<PLIST
 </dict></plist>
 PLIST
 echo "login autostart: $LA"
+
+
 
 # ── codex hooks (optional) ───────────────────────────────────────
 if [ "${1:-}" = "--codex" ]; then

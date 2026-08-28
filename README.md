@@ -95,7 +95,7 @@ agents-session-tracker-setup            # Codex 사용자는 --codex 추가
 
 # 2. 검증
 ~/.claude/session-tracker/cst sessions-json | jq 'type'   # "array" 나오면 정상
-pgrep -f MacOS/AgentsSessionTracker                        # 앱 프로세스 존재 확인
+pgrep -f MacOS/AgentsSessionTracker                        # 앱 프로세스 존재 확인 (/Applications 설치)
 jq '.hooks | keys' ~/.claude/settings.json                 # 훅 6종 등록 확인
 ```
 
@@ -104,7 +104,7 @@ jq '.hooks | keys' ~/.claude/settings.json                 # 훅 6종 등록 확
 2. 첫 점프 시 **iTerm2 자동화(Automation)** 권한 허용
 3. `--codex` 사용 시: `codex`를 한 번 실행해 **훅 신뢰(trust) 프롬프트** 승인
 
-문제 해결: 패널이 안 뜨면 `open ~/.claude/session-tracker/AgentsSessionTracker.app`,
+문제 해결: 패널이 안 뜨면 `open "/Applications/Agents Session Tracker.app"`,
 세션이 안 보이면 새 claude 세션을 하나 시작해 훅이 레코드를 쓰는지
 `ls ~/.local/state/claude-session-tracker/sessions/`로 확인.
 
@@ -164,7 +164,7 @@ install.sh       # 설치 스크립트
 
 ```sh
 pkill -f MacOS/AgentsSessionTracker
-rm -rf ~/.claude/session-tracker ~/Library/LaunchAgents/com.dean.claude-sessions.plist
+rm -rf ~/.claude/session-tracker "/Applications/Agents Session Tracker.app" ~/Library/LaunchAgents/com.dean.claude-sessions.plist
 # ~/.claude/settings.json 의 hooks에서 track.sh 항목 제거 (백업: settings.json.bak-cst)
 # Codex를 연결했다면 ~/.codex/hooks.json 도 제거
 ```
