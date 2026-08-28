@@ -313,7 +313,7 @@ final class Model: ObservableObject {
     var otherAgent: String { mainAgent == "claude" ? "codex" : "claude" }
 
     // which pixel character fronts the app (menubar + search field)
-    @Published var iconChoiceKey = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
+    @Published var iconChoiceKey = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
 
     // fun usage stats (cst stats-json, cached 1h on disk)
     struct DailyStat: Decodable, Equatable { let date: String; let count: Int }
@@ -527,67 +527,12 @@ let appIconMap: [String] = [
     ".oooooooooooooo.",
 ]
 
-// ── selectable icon set (original pixel characters) ──────────────
-let catMap: [String] = [
-    "..oo........oo..",
-    "..ooo......ooo..",
-    "..oooooooooooo..",
-    ".oooooooooooooo.",
-    ".ooo.oooooo.ooo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    "..oooooooooooo..",
-    "...o.o....o.o...",
-]
-let ghostMap: [String] = [
-    "....oooooooo....",
-    "..oooooooooooo..",
-    ".oooooooooooooo.",
-    ".oo..oooooo..oo.",
-    ".oo..oooooo..oo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    ".oo..oo..oo..oo.",
-]
-let robotMap: [String] = [
-    ".......oo.......",
-    "....oooooooo....",
-    "...oooooooooo...",
-    "...o.oooooo.o...",
-    "...oooooooooo...",
-    "....oooooooo....",
-    "..oooooooooooo..",
-    "..oooooooooooo..",
-    "...oo......oo...",
-    "...oo......oo...",
-]
-let slimeMap: [String] = [
-    "................",
-    ".....oooooo.....",
-    "...oooooooooo...",
-    "..oooooooooooo..",
-    ".ooo.oooooo.ooo.",
-    ".oooooooooooooo.",
-    "oooooooooooooooo",
-    "oooooooooooooooo",
-    ".oooooooooooooo.",
-    "..oooooooooooo..",
-]
-
 // icon registry: key → (map, panel tint). claude/codex use their mascots.
 // computed, not stored: top-level globals init in source order, and this
 // references maps declared later in the file (codexMap segfaulted as let)
 var iconChoices: [(key: String, label: String, map: [String], tint: NSColor)] { [
-    ("generic", "터미널", appIconMap, NSColor.textColor.withAlphaComponent(0.75)),
     ("claude", "Claude", mascotMap, claudeOrangeNS),
     ("codex", "Codex", codexMap, NSColor(codexBlue)),
-    ("cat", "고양이", catMap, NSColor.systemBrown),
-    ("ghost", "고스트", ghostMap, NSColor.systemPurple),
-    ("robot", "로봇", robotMap, NSColor.systemGray),
-    ("slime", "슬라임", slimeMap, NSColor.systemGreen),
 ] }
 func iconChoice(_ key: String) -> (key: String, label: String, map: [String], tint: NSColor) {
     iconChoices.first { $0.key == key } ?? iconChoices[0]
@@ -771,7 +716,7 @@ struct SettingsView: View {
 }
 
 struct PixelAppIcon: View {
-    var choice: String = "generic"
+    var choice: String = "claude"
     var pixel: CGFloat = 3
     @Environment(\.displayScale) private var scale
     var body: some View {
@@ -3315,7 +3260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // menubar mascot frames: static idle pose + the running bounce, all
     // 11 rows tall so swapping frames never shifts the icon's baseline.
     // The mascot itself is user-selectable (right-click → Claude / Codex).
-    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
+    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
     var menubarStaticImage = NSImage()
     var menubarStatusFrames: [String: [NSImage]] = [:]
     var menubarStatus: String?

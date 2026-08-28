@@ -1422,7 +1422,7 @@ $items"
     ;;
   icon)
     # cst icon <key|emoji|image-path> — set the menubar/search icon.
-    #   keys: generic claude codex cat ghost robot slime
+    #   keys: claude codex
     #   image: png/gif path (gif animates) · anything else: treated as emoji
     [ $# -ge 2 ] || { echo "usage: cst icon <key|emoji|image.png|image.gif>" >&2; exit 1; }
     APPID="com.dean.agents-session-tracker"
@@ -1441,7 +1441,7 @@ $items"
       echo "icon: custom image ($arg)"
     else
       case "$arg" in
-        (generic|claude|codex|cat|ghost|robot|slime)
+        (claude|codex)
           defaults write "$APPID" menubarAgent "$arg"
           echo "icon: $arg" ;;
         (*)
