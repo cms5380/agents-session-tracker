@@ -223,11 +223,35 @@ resolve_live() { # $1=session cwd → sets R_ITERM/R_CMUX/R_TMUX/R_TERM/R_TTY
 }
 
 # open a new terminal tab running a command — used to resume dead sessions
-# and attach to live background agents
+# and attach to live background agents. The app's 설정 picks the terminal
+# (defaults: defaultTerminal = iterm|terminal|ghostty, empty = auto).
 open_tab_with() { # $1=shell command, $2=auto-press-enter after N seconds (optional)
-  local cmd="$1" enter_after="${2:-}"
+  local cmd="$1" enter_after="${2:-}" term
+  term=$(defaults read com.dean.agents-session-tracker defaultTerminal 2>/dev/null || true)
+  case "$term" in
+    (iterm)    tab_iterm "$cmd" "$enter_after"; return ;;
+    (terminal) tab_terminal "$cmd"; return ;;
+    (ghostty)
+      # ghostty has no tab scripting — new window running the command;
+      # fall through to auto when it isn't installed
+      if open -na Ghostty --args -e "${SHELL:-/bin/zsh}" -ic "$cmd" 2>/dev/null; then
+        return
+      fi ;;
+  esac
   if [ -d "/Applications/iTerm.app" ]; then
-    osascript - "$cmd" "$enter_after" <<'APPLESCRIPT'
+    tab_iterm "$cmd" "$enter_after"
+  else
+    tab_terminal "$cmd"
+  fi
+}
+
+tab_terminal() {
+  osascript -e "tell application \"Terminal\"" -e "activate" -e "do script \"$1\"" -e "end tell"
+}
+
+tab_iterm() {
+  local cmd="$1" enter_after="${2:-}"
+  osascript - "$cmd" "$enter_after" <<'APPLESCRIPT'
 on run argv
   set cmd to item 1 of argv
   set enterAfter to item 2 of argv
@@ -250,9 +274,6 @@ on run argv
   end tell
 end run
 APPLESCRIPT
-  else
-    osascript -e "tell application \"Terminal\"" -e "activate" -e "do script \"$cmd\"" -e "end tell"
-  fi
 }
 
 resume_command() { # $1=session id → the agent-appropriate resume command

@@ -672,6 +672,7 @@ struct SettingsView: View {
     @State private var panelHK = appDelegate?.currentHotkeyLabel() ?? "⌥Space"
     @State private var attnHK = appDelegate?.currentAttentionLabel() ?? "⌘⌥A"
     @State private var recording: String? = nil  // "panel" | "attn"
+    @AppStorage("defaultTerminal") private var defaultTerminal = ""
     @AppStorage("notifyWaiting") private var notifyWaiting = true
     @AppStorage("notifyInput") private var notifyInput = true
     @AppStorage("notifyFinished") private var notifyFinished = true
@@ -717,13 +718,20 @@ struct SettingsView: View {
                     Text("codex").tag("codex")
                 }
                 .pickerStyle(.segmented)
+                Picker("새 탭 기본 터미널", selection: $defaultTerminal) {
+                    Text("자동").tag("")
+                    Text("iTerm2").tag("iterm")
+                    Text("Terminal").tag("terminal")
+                    Text("Ghostty").tag("ghostty")
+                }
+                .pickerStyle(.segmented)
                 Toggle("알림: 승인 필요", isOn: $notifyWaiting)
                 Toggle("알림: 답변 대기", isOn: $notifyInput)
                 Toggle("알림: 작업 완료", isOn: $notifyFinished)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 400, height: 340)
+        .frame(width: 400, height: 380)
     }
 }
 
