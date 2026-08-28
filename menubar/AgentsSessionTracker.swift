@@ -611,6 +611,8 @@ func customIconImage(height: CGFloat) -> NSImage? { customIconFrames(height: hei
 struct IconPickerView: View {
     let current: String
     let onPick: (String) -> Void
+    @State private var hotkeyLabel = appDelegate?.currentHotkeyLabel() ?? "⌥Space"
+    @State private var recordingHotkey = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("아이콘")
@@ -637,6 +639,28 @@ struct IconPickerView: View {
                     .contentShape(RoundedRectangle(cornerRadius: 9))
                     .onTapGesture { onPick(c.key) }
                 }
+            }
+            Divider().padding(.vertical, 2)
+            HStack {
+                Text("전역 단축키")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    recordingHotkey = true
+                    appDelegate?.beginHotkeyCapture { label in
+                        hotkeyLabel = label
+                        recordingHotkey = false
+                    }
+                } label: {
+                    Text(recordingHotkey ? "새 조합을 누르세요… (Esc 취소)" : hotkeyLabel)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 6)
+                            .fill(recordingHotkey ? claudeOrange.opacity(0.25)
+                                : Color.primary.opacity(0.07)))
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(12)
@@ -2952,6 +2976,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     var attentionHotKeyRef: EventHotKeyRef?
     var digitHotKeyRefs: [EventHotKeyRef?] = []
 
+    // ── user-configurable panel hotkey ───────────────────────────
+    static let keyNames: [Int: String] = [
+        kVK_Space: "Space", kVK_Return: "↩", kVK_Tab: "⇥",
+        kVK_ANSI_A: "A", kVK_ANSI_B: "B", kVK_ANSI_C: "C", kVK_ANSI_D: "D",
+        kVK_ANSI_E: "E", kVK_ANSI_F: "F", kVK_ANSI_G: "G", kVK_ANSI_H: "H",
+        kVK_ANSI_I: "I", kVK_ANSI_J: "J", kVK_ANSI_K: "K", kVK_ANSI_L: "L",
+        kVK_ANSI_M: "M", kVK_ANSI_N: "N", kVK_ANSI_O: "O", kVK_ANSI_P: "P",
+        kVK_ANSI_Q: "Q", kVK_ANSI_R: "R", kVK_ANSI_S: "S", kVK_ANSI_T: "T",
+        kVK_ANSI_U: "U", kVK_ANSI_V: "V", kVK_ANSI_W: "W", kVK_ANSI_X: "X",
+        kVK_ANSI_Y: "Y", kVK_ANSI_Z: "Z",
+        kVK_ANSI_0: "0", kVK_ANSI_1: "1", kVK_ANSI_2: "2", kVK_ANSI_3: "3",
+        kVK_ANSI_4: "4", kVK_ANSI_5: "5", kVK_ANSI_6: "6", kVK_ANSI_7: "7",
+        kVK_ANSI_8: "8", kVK_ANSI_9: "9",
+        kVK_ANSI_Grave: "`", kVK_ANSI_Minus: "-", kVK_ANSI_Equal: "=",
+        kVK_ANSI_Slash: "/", kVK_ANSI_Period: ".", kVK_ANSI_Comma: ",",
+        kVK_ANSI_Semicolon: ";",
+    ]
+
+    func currentHotkeyLabel() -> String {
+        let d = UserDefaults(suiteName: "com.dean.claude-sessions")
+        let key = d?.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_Space
+        let mods = d?.object(forKey: "hotkeyModifiers") as? Int ?? optionKey
+        var s = ""
+        if mods & controlKey != 0 { s += "⌃" }
+        if mods & optionKey != 0 { s += "⌥" }
+        if mods & shiftKey != 0 { s += "⇧" }
+        if mods & cmdKey != 0 { s += "⌘" }
+        return s + (Self.keyNames[key] ?? "key\(key)")
+    }
+
+    func setHotkey(keyCode: Int, carbonMods: Int) {
+        let d = UserDefaults(suiteName: "com.dean.claude-sessions")
+        d?.set(keyCode, forKey: "hotkeyKeyCode")
+        d?.set(carbonMods, forKey: "hotkeyModifiers")
+        if let r = hotKeyRef { UnregisterEventHotKey(r); hotKeyRef = nil }
+        let hotKeyID = EventHotKeyID(signature: OSType(0x43535453), id: 1)
+        RegisterEventHotKey(UInt32(keyCode), UInt32(carbonMods), hotKeyID,
+                            GetEventDispatcherTarget(), 0, &hotKeyRef)
+    }
+
+    var recordMonitor: Any?
+    func beginHotkeyCapture(_ done: @escaping (String) -> Void) {
+        if let m = recordMonitor { NSEvent.removeMonitor(m); recordMonitor = nil }
+        recordMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] ev in
+            guard let self else { return ev }
+            func finish() {
+                if let m = self.recordMonitor { NSEvent.removeMonitor(m); self.recordMonitor = nil }
+                done(self.currentHotkeyLabel())
+            }
+            if ev.keyCode == 53 { finish(); return nil } // esc = cancel
+            var carbon = 0
+            if ev.modifierFlags.contains(.command) { carbon |= cmdKey }
+            if ev.modifierFlags.contains(.option) { carbon |= optionKey }
+            if ev.modifierFlags.contains(.control) { carbon |= controlKey }
+            if ev.modifierFlags.contains(.shift) { carbon |= shiftKey }
+            guard carbon != 0 else { return ev } // a bare key can't be global
+            self.setHotkey(keyCode: Int(ev.keyCode), carbonMods: carbon)
+            finish()
+            return nil
+        }
+    }
+
     func jumpIndex(_ n: Int) {
         if let handler = model.hotkeyNumber {
             handler(n)
@@ -3115,6 +3201,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 self?.setMenubarAgent(key)
                 self?.iconPanel?.orderOut(nil)
             })
+        if let v = p.contentViewController?.view {
+            p.setContentSize(v.fittingSize)
+        }
         p.layoutIfNeeded()
         if let btn = statusItem.button, let win = btn.window {
             let f = win.frame
