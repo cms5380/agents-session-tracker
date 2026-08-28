@@ -777,7 +777,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 400, height: 330)
+        .frame(width: 400, height: 430)
     }
 }
 
