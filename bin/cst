@@ -392,22 +392,11 @@ cmd_jump() {
       echo "unknown session: $sid" >&2; exit 1
     fi
   fi
-  # jumping to a finished/input-waiting session acknowledges it — including
-  # folded continuation children, whose status bubbles up to this row
+  # jumping to a finished/input-waiting session acknowledges it
   case "$(jq -r '.status' "$file")" in
     finished|input)
       jq '.status = "done"' "$file" >"$file.tmp.$$" && mv "$file.tmp.$$" "$file" ;;
   esac
-  ack_sid=$(jq -r '.session_id' "$file")
-  for cf in "$STATE_DIR"/*.json; do
-    [ -e "$cf" ] || continue
-    [ "$(jq -r '.parent // ""' "$cf" 2>/dev/null)" = "$ack_sid" ] || continue
-    jq -e '.continuation == true' "$cf" >/dev/null 2>&1 || continue
-    case "$(jq -r '.status' "$cf")" in
-      (finished|input)
-        jq '.status = "done"' "$cf" >"$cf.tmp.$$" && mv "$cf.tmp.$$" "$cf" ;;
-    esac
-  done
 
   local cmux_ws iterm_id tmux_pane tty term_program app pid cwd
   cmux_ws=$(jq -r '.terminal.cmux_workspace_id // empty' "$file")
@@ -617,18 +606,6 @@ cmd_sessions_json() {
         fi
       fi
     fi
-    # a continuation is the same conversation as its parent — while the
-    # parent's client is alive, fold it into that one row
-    if [ "$(jq -r '.continuation // false' <<<"$s")" = "true" ]; then
-      local cpar cppid
-      cpar=$(jq -r '.parent // ""' <<<"$s")
-      if [ -n "$cpar" ] && [ -f "$STATE_DIR/$cpar.json" ]; then
-        cppid=$(jq -r '.pid // empty' "$STATE_DIR/$cpar.json")
-        if [ -n "$cppid" ] && kill -0 "$cppid" 2>/dev/null; then
-          continue
-        fi
-      fi
-    fi
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
     # turn fires no Stop hook) — a rollout file untouched for 5 minutes
     # means the turn is over
@@ -672,35 +649,11 @@ cmd_sessions_json() {
     fi
   done | jq -s '.')
 
-  # rows hidden above (fork parents, folded continuations) must not
-  # resurface as untracked daemon rows
-  local fork_parents_json folded_json hidden_json
+  # fork parents hidden above must not resurface as untracked daemon rows
+  local fork_parents_json
   fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
-  folded_json=$({ for rf in "$STATE_DIR"/*.json; do
-      [ -e "$rf" ] || continue
-      jq -e '.continuation == true' "$rf" >/dev/null 2>&1 || continue
-      par=$(jq -r '.parent // ""' "$rf")
-      [ -n "$par" ] && [ -f "$STATE_DIR/$par.json" ] || continue
-      pp=$(jq -r '.pid // empty' "$STATE_DIR/$par.json")
-      [ -n "$pp" ] && kill -0 "$pp" 2>/dev/null && basename "$rf" .json
-    done; } | jq -R . | jq -sc 'map(select(length > 0))' 2>/dev/null || echo '[]')
-  hidden_json=$(jq -c --argjson a "$fork_parents_json" --argjson b "$folded_json" -n '$a + $b')
-  # a folded child's live status (running/finished/asks) belongs to the
-  # parent row — [{p, st}] pairs
-  local folded_status_json
-  folded_status_json=$({ for rf in "$STATE_DIR"/*.json; do
-      [ -e "$rf" ] || continue
-      jq -e '.continuation == true' "$rf" >/dev/null 2>&1 || continue
-      cst_st=$(jq -r '.status' "$rf")
-      case "$cst_st" in (running|waiting|input|finished) ;; (*) continue ;; esac
-      par=$(jq -r '.parent // ""' "$rf")
-      [ -n "$par" ] && [ -f "$STATE_DIR/$par.json" ] || continue
-      pp=$(jq -r '.pid // empty' "$STATE_DIR/$par.json")
-      [ -n "$pp" ] && kill -0 "$pp" 2>/dev/null \
-        && printf '{"p":"%s","st":"%s"}\n' "$par" "$cst_st"
-    done; } | jq -sc '.' 2>/dev/null || echo '[]')
   extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
-             --argjson forked "$hidden_json" '
+             --argjson forked "$fork_parents_json" '
     [.[] | select([.sessionId] | inside($tracked) | not)
          | select([.sessionId] | inside($forked) | not) | {
       session_id: .sessionId,
@@ -737,7 +690,7 @@ cmd_sessions_json() {
      --argjson groups "$groups_json" --argjson names "$names_json" \
      --argjson pins "$pins_json" --argjson colors "$colors_json" \
      --argjson gorder "$order_json" --argjson sorder "$sorder_json" \
-     --argjson pairs "$pairs_json" --argjson fst "$folded_status_json" '
+     --argjson pairs "$pairs_json" '
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
@@ -748,12 +701,6 @@ cmd_sessions_json() {
       | if ($a.status // "") == "busy" and (.status | IN("waiting", "finished", "input") | not) then .status = "running"
         elif ($a.status // "") == "idle" and .status == "running" then .status = "done"
         else . end
-      # a hidden continuation child speaks for this parent — its status wins
-      # over the daemon idle correction (the parent CLIENT is idle, but the
-      # conversation is not)
-      | ([$fst[] | select(.p == $s.session_id) | .st] | first) as $cstat
-      | if $cstat != null and (.status | IN("done", "gone"))
-        then .status = $cstat else . end
       # unacknowledged results / input waits decay to idle after 30 minutes
       | if (.status | IN("finished", "input")) and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
     | . + $extra
