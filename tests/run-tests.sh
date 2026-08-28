@@ -255,7 +255,53 @@ jq ".updated_at = $((NOW + 500))" "$STATE/$PSID.json" >"$STATE/$PSID.json.n" \
 SJ=$("$CST" sessions-json 2>/dev/null)
 t "T82 parent newer → shown"       "$PSID" "$(sjq ".[] | select(.session_id==\"$PSID\") | .session_id")"
 t "T83 child carries parent id"    "$PSID" "$(sjq ".[] | select(.session_id==\"$FSID\") | .parent")"
+
+# ══ fork lineage: pin/name/order handover ════════════════════════
+# both rows visible (parent is newer, from T82) → no handover
+echo "[\"$PSID\"]" >"$CST_STATE_DIR/pins.json"
+echo "{\"$PSID\":\"my name\"}" >"$CST_STATE_DIR/names.json"
+"$CST" sessions-json >/dev/null 2>&1
+t "T84 both visible → pin stays" "$PSID" "$(jq -r '.[0]' "$CST_STATE_DIR/pins.json")"
+
+# fork newer again → parent hidden → assets move to the fork
+jq ".updated_at = $((NOW + 900))" "$STATE/$FSID.json" >"$STATE/$FSID.json.n" \
+  && mv "$STATE/$FSID.json.n" "$STATE/$FSID.json"
+echo "[\"x-other\",\"$PSID\"]" >"$CST_STATE_DIR/session-order.json"
+SJ=$("$CST" sessions-json 2>/dev/null)
+t "T85 pin moves to fork"    "$FSID"    "$(jq -r '.[0]' "$CST_STATE_DIR/pins.json")"
+t "T86 pin has no dup"       "1"        "$(jq 'length' "$CST_STATE_DIR/pins.json")"
+t "T87 name moves to fork"   "my name"  "$(jq -r ".[\"$FSID\"] // \"\"" "$CST_STATE_DIR/names.json")"
+t "T88 parent name dropped"  "0"        "$(jq "has(\"$PSID\") | if . then 1 else 0 end" "$CST_STATE_DIR/names.json")"
+t "T89 order slot kept"      "1"        "$(jq "index(\"$FSID\")" "$CST_STATE_DIR/session-order.json")"
+t "T8A fork row shows pinned" "0"       "$(sjq ".[] | select(.session_id==\"$FSID\") | .pin_order")"
 kill "$PP" "$FP" "$FORKPROC" 2>/dev/null
+
+# ══ gc: assets of vanished sessions ══════════════════════════════
+mkrec "s-gc-live" '{status:"done", owner:"client", title:"live"}'
+echo "[\"s-gc-live\",\"s-gc-dead\"]" >"$CST_STATE_DIR/pins.json"
+echo "[\"s-gc-dead\"]" >"$CST_STATE_DIR/session-order.json"
+echo "{\"s-gc-dead\":\"ghost\"}" >"$CST_STATE_DIR/names.json"
+echo "{\"s-gc-live\":\"keep\",\"s-gc-dead\":\"drop\"}" >"$CST_STATE_DIR/groups.json"
+echo '{"keep":"blue","drop":"red"}' >"$CST_STATE_DIR/colors.json"
+echo '["keep","drop"]' >"$CST_STATE_DIR/group-order.json"
+"$CST" clean 24 >/dev/null 2>&1
+# s-corrupt.json (fixture from T28) used to abort the sweep under set -e
+t "T91b clean survives torn record" "yes" "$([ -f "$STATE/s-corrupt.json" ] && echo yes || echo no)"
+t "T92 gc keeps live pin"    "[\"s-gc-live\"]" "$(jq -c . "$CST_STATE_DIR/pins.json")"
+t "T93 gc empties order"     "[]"              "$(jq -c . "$CST_STATE_DIR/session-order.json")"
+t "T94 gc drops dead name"   "{}"              "$(jq -c . "$CST_STATE_DIR/names.json")"
+t "T95 gc drops dead group"  "{\"s-gc-live\":\"keep\"}" "$(jq -c . "$CST_STATE_DIR/groups.json")"
+t "T96 gc prunes group color" "{\"keep\":\"blue\"}"    "$(jq -c . "$CST_STATE_DIR/colors.json")"
+t "T97 gc prunes group order" "[\"keep\"]"            "$(jq -c . "$CST_STATE_DIR/group-order.json")"
+# an empty state dir must not wipe assignments (misconfigured CST_STATE_DIR)
+EMPTY_STATE="$SANDBOX/empty-state"
+mkdir -p "$EMPTY_STATE/sessions"
+echo '["s-gc-live"]' >"$EMPTY_STATE/pins.json"
+CST_STATE_DIR="$EMPTY_STATE" "$CST" clean 24 >/dev/null 2>&1
+t "T98 empty state dir → no wipe" "[\"s-gc-live\"]" "$(jq -c . "$EMPTY_STATE/pins.json")"
+rm -f "$CST_STATE_DIR/pins.json" "$CST_STATE_DIR/names.json" \
+      "$CST_STATE_DIR/session-order.json" "$CST_STATE_DIR/groups.json" \
+      "$CST_STATE_DIR/colors.json" "$CST_STATE_DIR/group-order.json"
 
 # ══ send routing (stubs log their argv) ══════════════════════════
 cat >"$SANDBOX/.local/bin/claude" <<EOF

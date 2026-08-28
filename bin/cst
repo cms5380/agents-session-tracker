@@ -29,6 +29,9 @@ GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.
 NAMES_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/names.json"
 AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-cache.json"
 PINS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/pins.json"
+SORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json"
+COLORS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json"
+GORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json"
 
 # The menubar app refreshes sessions-json every 5s, which keeps this cache
 # warm — jumps then skip the ~0.6s claude CLI startup entirely.
@@ -499,18 +502,90 @@ cmd_copy_resume() {
   osascript -e "display notification \"cd ${cwd/#$HOME/~} && resume …\" with title \"resume command copied\"" 2>/dev/null || true
 }
 
+# rewrite a sid-keyed state file in place; a jq failure leaves the original
+write_json_file() { # write_json_file <file> <jq-filter> [jq-args…]
+  local f="$1"; shift
+  [ -f "$f" ] || return 0
+  jq "$@" "$f" >"$f.tmp.$$" 2>/dev/null && mv "$f.tmp.$$" "$f" || rm -f "$f.tmp.$$"
+  return 0
+}
+
+# a superseded parent hands its per-session assets to the fork that replaced
+# it. Pin slot / custom name / drag position are 1:1 per session and have
+# toggle + reorder writers, so ownership moves — unlike `group`, which stays
+# an inherited lookup (parent and fork can legitimately share one group).
+migrate_session_assets() { # migrate_session_assets <parent-sid> <fork-sid>
+  local from="$1" to="$2" f
+  for f in "$PINS_FILE" "$SORDER_FILE"; do
+    write_json_file "$f" '
+      if type == "array" and (index($from) != null)
+      then map(if . == $from then $to else . end)
+           # the fork may already hold a slot of its own — keep the first
+           | reduce .[] as $x ([]; if index($x) then . else . + [$x] end)
+      else . end' --arg from "$from" --arg to "$to"
+  done
+  # a fork that was renamed on its own keeps that name; the parent's entry is
+  # left for gc_session_assets to reap once the parent record is gone
+  write_json_file "$NAMES_FILE" '
+    if type == "object" and has($from) and (has($to) | not)
+    then .[$to] = .[$from] | del(.[$from]) else . end' --arg from "$from" --arg to "$to"
+}
+
+# sid-keyed assets outlive the records they point at — pins/names/groups/order
+# entries for sessions that clean removed would otherwise accumulate forever
+# (and keep occupying pin/drag slots). Archived rows can't be pinned or
+# renamed, so a missing record means the session is really gone.
+gc_session_assets() {
+  local live f
+  live=$( { for f in "$STATE_DIR"/*.json; do
+              [ -e "$f" ] || continue
+              basename "$f" .json
+            done; } | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
+  # an empty state dir reads the same as a misconfigured CST_STATE_DIR — never
+  # wipe every assignment on that signal
+  [ "$live" = "[]" ] && return 0
+  for f in "$PINS_FILE" "$SORDER_FILE"; do
+    write_json_file "$f" \
+      'if type == "array" then map(select(. as $s | $live | index($s))) else . end' \
+      --argjson live "$live"
+  done
+  for f in "$NAMES_FILE" "$GROUPS_FILE"; do
+    write_json_file "$f" \
+      'if type == "object" then with_entries(select(.key as $s | $live | index($s))) else . end' \
+      --argjson live "$live"
+  done
+  # group colors/order key off names that exist only through assignments
+  local groups_left
+  groups_left=$(jq -c '[.[]] | unique' "$GROUPS_FILE" 2>/dev/null || echo '[]')
+  [ -n "$groups_left" ] || groups_left='[]'
+  write_json_file "$GORDER_FILE" \
+    'if type == "array" then map(select(. as $g | $groups | index($g))) else . end' \
+    --argjson groups "$groups_left"
+  write_json_file "$COLORS_FILE" \
+    'if type == "object" then with_entries(select(.key as $g | $groups | index($g))) else . end' \
+    --argjson groups "$groups_left"
+}
+
 cmd_clean() {
   local max_h="${1:-24}" now
   now=$(date +%s)
   for f in "$STATE_DIR"/*.json; do
     [ -e "$f" ] || continue
-    local status updated
-    status=$(jq -r '.status' "$f")
-    updated=$(jq -r '.updated_at // 0' "$f")
+    local status updated mtime
+    # a torn record (crashed writer) parses as nothing — under `set -e` that
+    # used to abort the whole sweep. Keep it while fresh in case the write is
+    # still in flight; reap it once it's past the cutoff.
+    if ! status=$(jq -r '.status // ""' "$f" 2>/dev/null); then
+      mtime=$(stat -f %m "$f" 2>/dev/null || echo 0)
+      if [ $((now - mtime)) -gt $((max_h * 3600)) ]; then rm -f "$f"; fi
+      continue
+    fi
+    updated=$(jq -r '.updated_at // 0' "$f" 2>/dev/null || echo 0)
     if [ "$status" = "ended" ] || [ $((now - updated)) -gt $((max_h * 3600)) ]; then
       rm -f "$f"
     fi
   done
+  gc_session_assets
 }
 
 # merged view for UIs: tracked sessions + daemon session list, with dead
@@ -671,6 +746,28 @@ cmd_sessions_json() {
     fi
   done | jq -s '.')
 
+  # a parent the loop above just hid hands its pin/name/order slot to the fork
+  # that superseded it, so a pinned conversation stays pinned across a fork
+  local visible_json lineage
+  visible_json=$(jq -c '[.[].session_id]' <<<"$sessions")
+  lineage=$( { printf '%s\n' "$fork_pairs"
+               jq -r '.[] | select((.parent // "") != "") | "\(.parent):\(.session_id)"' \
+                 <<<"$sessions"; } | grep ':' | sort -u || true)
+  if [ -n "$lineage" ]; then
+    local assets p f
+    assets=$(cat "$PINS_FILE" "$NAMES_FILE" "$SORDER_FILE" 2>/dev/null || true)
+    while IFS=: read -r p f; do
+      [ -n "$p" ] && [ -n "$f" ] || continue
+      # cheap gate: nothing to hand over unless the parent owns some asset
+      case "$assets" in (*"$p"*) ;; (*) continue ;; esac
+      # only when the parent left the view — both rows visible would mean a
+      # duplicate pin rather than a handover
+      jq -e --arg p "$p" --arg f "$f" \
+        '(index($p) | not) and (index($f) != null)' <<<"$visible_json" >/dev/null 2>&1 || continue
+      migrate_session_assets "$p" "$f"
+    done <<<"$lineage"
+  fi
+
   # fork parents hidden above must not resurface as untracked daemon rows
   local fork_parents_json
   fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
@@ -700,12 +797,12 @@ cmd_sessions_json() {
   pins_json=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pins_json" || pins_json='[]'
   local colors_json order_json
-  colors_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json" 2>/dev/null || echo '{}')
+  colors_json=$(cat "$COLORS_FILE" 2>/dev/null || echo '{}')
   jq -e . >/dev/null 2>&1 <<<"$colors_json" || colors_json='{}'
-  order_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json" 2>/dev/null || echo '[]')
+  order_json=$(cat "$GORDER_FILE" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$order_json" || order_json='[]'
   local sorder_json
-  sorder_json=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json" 2>/dev/null || echo '[]')
+  sorder_json=$(cat "$SORDER_FILE" 2>/dev/null || echo '[]')
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$sorder_json" || sorder_json='[]'
   # fork lineage for the UI: a fork nests under its parent when both are shown
   local pairs_json
@@ -902,7 +999,7 @@ case "${1:-list}" in
     # cst order-insert <sid> <before-sid|end> — manual ordering within
     # status sections (session-order.json)
     [ $# -ge 3 ] || { echo "usage: cst order-insert <sid> <before-sid|end>" >&2; exit 1; }
-    ORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json"
+    ORDER_FILE="$SORDER_FILE"
     existing=$(cat "$ORDER_FILE" 2>/dev/null || echo '[]')
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
     jq --arg sid "$2" --arg before "$3" '
@@ -925,7 +1022,6 @@ case "${1:-list}" in
   group-color)
     # cst group-color <group> <color|-> — colors.json (named accents)
     [ $# -ge 3 ] || { echo "usage: cst group-color <group> <color|->" >&2; exit 1; }
-    COLORS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json"
     existing=$(cat "$COLORS_FILE" 2>/dev/null || echo '{}')
     jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
     if [ "$3" = "-" ]; then
@@ -959,7 +1055,7 @@ case "${1:-list}" in
   group-move)
     # cst group-move <name> <before-name|end> — reorder groups
     [ $# -ge 3 ] || { echo "usage: cst group-move <name> <before|end>" >&2; exit 1; }
-    ORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/group-order.json"
+    ORDER_FILE="$GORDER_FILE"
     existing=$(cat "$ORDER_FILE" 2>/dev/null || echo '[]')
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
     jq --arg g "$2" --arg before "$3" '

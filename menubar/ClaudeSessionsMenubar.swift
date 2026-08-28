@@ -2192,7 +2192,7 @@ struct PanelView: View {
                 base.dropDestination(for: String.self) { items, location in
                     if let d = items.first, d != s.session_id, !d.hasPrefix("group:") {
                         let draggedStatus = viewSessions.first(where: { $0.session_id == d })?.status
-                        if draggedStatus == s.status {
+                        if let ds = draggedStatus, dragZone(ds) == dragZone(s.status) {
                             if isLastInSection(s) && location.y > 24 {
                                 model.orderInsert(d, before: "end")
                             } else {
@@ -2221,16 +2221,22 @@ struct PanelView: View {
     }
 
     func isLastInSection(_ s: Session) -> Bool {
-        let pool = filtered.filter { !$0.pinned && $0.status == s.status }
+        let zone = dragZone(s.status)
+        let pool = filtered.filter { !$0.pinned && dragZone($0.status) == zone }
             .filter { selectedChip == nil || $0.group == selectedChip }
             .sorted(by: manualThenRecent)
         return pool.last?.session_id == s.session_id
     }
 
+    // hybrid layout has two drag zones: ATTENTION and the stable SESSIONS
+    // list — reorder applies within a zone, cross-zone drops assign groups
+    func dragZone(_ status: String) -> String {
+        ["waiting", "input", "finished"].contains(status) ? "attn" : "rest"
+    }
     func draggedSameStatus(as s: Session) -> Bool {
         guard let d = draggingSessionSid,
               let dragged = viewSessions.first(where: { $0.session_id == d }) else { return false }
-        return dragged.status == s.status
+        return dragZone(dragged.status) == dragZone(s.status)
     }
 
     // the group a session-onto-session drop would land in — used to co-
