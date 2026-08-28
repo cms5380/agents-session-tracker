@@ -91,7 +91,13 @@ hook "${P1}\"PermissionRequest\"}"
 t "T11 PermissionRequest→waiting" "waiting" "$(rec "$SID1" .status)"
 
 hook "${P1}\"SessionEnd\"}"
-t "T12 SessionEnd→ended"         "ended"   "$(rec "$SID1" .status)"
+t "T12 SessionEnd→gone (resumable)" "gone" "$(rec "$SID1" .status)"
+
+# an explicit end (record already ended) survives the dying client's hook
+jq '.status = "ended"' "$STATE/$SID1.json" >"$STATE/$SID1.json.t" && mv "$STATE/$SID1.json.t" "$STATE/$SID1.json"
+hook "${P1}\"SessionEnd\"}"
+t "T12b explicit ended not resurrected" "ended" "$(rec "$SID1" .status)"
+jq '.status = "gone"' "$STATE/$SID1.json" >"$STATE/$SID1.json.t" && mv "$STATE/$SID1.json.t" "$STATE/$SID1.json"
 
 hook "${P1}\"UserPromptSubmit\"}"
 t "T13 title sticky"             "첫 프롬프트: QA 테스트" "$(rec "$SID1" .title)"
@@ -137,9 +143,16 @@ printf 'not json' >"$STATE/s-corrupt.json"
 SJ=$("$CST" sessions-json 2>/dev/null)
 sjq() { jq -r "$1" <<<"$SJ"; }
 t "T20 ended excluded"     ""        "$(sjq '.[] | select(.session_id=="s-ended") | .session_id')"
-t "T21 24h+ old excluded"  ""        "$(sjq '.[] | select(.session_id=="s-old") | .session_id')"
+t "T20a fresh tombstone kept" "yes"  "$([ -f "$STATE/s-ended.json" ] && echo yes)"
+touch -t 202001010000 "$STATE/s-ended.json"
+"$CST" sessions-json >/dev/null 2>&1
+t "T20b old tombstone reaped" ""     "$([ -f "$STATE/s-ended.json" ] && echo yes)"
+mkrec "s-ended"   '{status:"ended", owner:"client", pid:99999}'
+SJ=$("$CST" sessions-json 2>/dev/null)
+t "T21 old sessions stay (no expiry)" "done" "$(sjq '.[] | select(.session_id=="s-old") | .status')"
 t "T22 dead client → gone" "gone"    "$(sjq '.[] | select(.session_id=="s-deadcli") | .status')"
 t "T23 dead pool dropped"  ""        "$(sjq '.[] | select(.session_id=="s-deadpool") | .session_id')"
+t "T23b dead pool record deleted" "" "$([ -f "$STATE/s-deadpool.json" ] && echo yes)"
 t "T24 legacy titled → gone" "gone"  "$(sjq '.[] | select(.session_id=="s-legacy-titled") | .status')"
 t "T25 legacy untitled dropped" ""   "$(sjq '.[] | select(.session_id=="s-legacy-untitled") | .session_id')"
 t "T26 alive kept running" "running" "$(sjq '.[] | select(.session_id=="s-alive") | .status')"
@@ -173,6 +186,21 @@ t "T34 group color" "blue" "$(sjq '.[] | select(.session_id=="s-alive") | .group
 "$CST" group s-alive - >/dev/null 2>&1
 SJ=$("$CST" sessions-json 2>/dev/null)
 t "T35 group unassign" "null" "$(sjq '.[] | select(.session_id=="s-alive") | .group')"
+
+# ══ tidy (Arc-style auto grouping) ═══════════════════════════════
+mkrec "s-tidy-gh"  "{status:\"done\", owner:\"client\", pid:$LIVE1, title:\"t\", cwd:\"/Users/x/Documents/GitHub/myrepo/.claude/worktrees/b\"}"
+mkrec "s-tidy-dir" "{status:\"done\", owner:\"client\", pid:$LIVE1, title:\"t\", cwd:\"/tmp/projx\"}"
+"$CST" group s-alive "수동그룹" >/dev/null 2>&1
+"$CST" tidy >/dev/null 2>&1
+SJ=$("$CST" sessions-json 2>/dev/null)
+t "T36 tidy repo group"   "myrepo"  "$(sjq '.[] | select(.session_id=="s-tidy-gh") | .group')"
+t "T37 tidy dir fallback" "projx"   "$(sjq '.[] | select(.session_id=="s-tidy-dir") | .group')"
+t "T38 tidy keeps manual" "수동그룹" "$(sjq '.[] | select(.session_id=="s-alive") | .group')"
+"$CST" tidy all >/dev/null 2>&1
+SJ=$("$CST" sessions-json 2>/dev/null)
+t "T39 tidy all regroups manual" "기타" "$(sjq '.[] | select(.session_id=="s-alive") | .group')"
+"$CST" group s-alive - >/dev/null 2>&1
+rm -f "$STATE/s-tidy-gh.json" "$STATE/s-tidy-dir.json"
 
 # ══ stop-session / end lifecycle ═════════════════════════════════
 sleep 600 </dev/null >/dev/null 2>&1 & SP1=$!
@@ -325,7 +353,7 @@ t "T91 send routes codex"  "1" "$(grep -c 'codex exec resume s-send-cx' "$SANDBO
 
 # ══ exception layers: ended dismissal · continuation lineage ·
 # ══ codex stale decay (the newest special-case rules) ════════════
-rm -f "$STATE"/*.json "$CST_STATE_DIR/agents-cache.json"
+rm -f "$STATE"/*.json "$CST_STATE_DIR/agents-cache.json" "$CST_STATE_DIR/agents-all-cache.json"
 
 # stub daemon now returns an --all list including a completed session
 cat >"$SANDBOX/.local/bin/claude" <<EOF

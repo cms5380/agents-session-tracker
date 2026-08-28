@@ -60,6 +60,20 @@ func runCST(_ args: [String], capture: Bool = false) -> String {
 
 final class Model: ObservableObject {
     @Published var sessions: [Session] = []
+    // transient in-panel feedback for commands whose CLI output would
+    // otherwise be swallowed (tidy, …)
+    @Published var toast: String? = nil
+    private var toastGen = 0
+    func showToast(_ s: String) {
+        DispatchQueue.main.async {
+            self.toast = s
+            self.toastGen += 1
+            let gen = self.toastGen
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                if self.toastGen == gen { self.toast = nil }
+            }
+        }
+    }
     @Published var focusTick = 0
     @Published var panelVisible = false
     @Published var refreshing = false
@@ -76,13 +90,40 @@ final class Model: ObservableObject {
     func start() {
         refresh()
         loadSkills()
+        startDirWatch()
+        // hooks push changes through the kqueue watcher, so the timer is only
+        // a fallback for what leaves no file event: process death, decay
         var tick = 0
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             guard let self else { return }
             tick += 1
-            // panel hidden → refresh every 15s (menubar badge only)
-            if self.panelVisible || tick % 3 == 0 { self.refresh() }
+            if (self.panelVisible && tick % 3 == 0) || tick % 12 == 0 { self.refresh() }
         }
+    }
+
+    // kqueue watch on the sessions dir — every record update lands via
+    // tmp+mv (a rename), which raises a directory write event
+    private var dirWatchFD: Int32 = -1
+    private var dirWatchSource: DispatchSourceFileSystemObject?
+    private var watchDebounce: DispatchWorkItem?
+    private func startDirWatch() {
+        let dir = NSHomeDirectory() + "/.local/state/claude-session-tracker/sessions"
+        dirWatchFD = open(dir, O_EVTONLY)
+        guard dirWatchFD >= 0 else { return }
+        let src = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: dirWatchFD, eventMask: .write, queue: .main)
+        src.setEventHandler { [weak self] in
+            guard let self else { return }
+            // hook bursts (one write per tool call) collapse into one refresh
+            self.watchDebounce?.cancel()
+            let w = DispatchWorkItem { [weak self] in self?.refresh() }
+            self.watchDebounce = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: w)
+        }
+        let fd = dirWatchFD
+        src.setCancelHandler { close(fd) }
+        src.resume()
+        dirWatchSource = src
     }
 
     private var prevStatuses: [String: String] = [:]
@@ -112,6 +153,18 @@ final class Model: ObservableObject {
                 }
                 self.firstLoad = false
                 self.prevStatuses = Dictionary(uniqueKeysWithValues: parsed.map { ($0.session_id, $0.status) })
+                // drop turn-start timestamps for sessions that no longer exist
+                let liveSids = Set(parsed.map { $0.session_id })
+                appDelegate?.runStart = appDelegate?.runStart.filter { liveSids.contains($0.key) } ?? [:]
+                // once a session leaves an attention state (user answered in
+                // the terminal, turn resumed, …) its banner is stale — sweep
+                // it out of Notification Center
+                let seen = parsed.filter { !["waiting", "finished", "input"].contains($0.status) }
+                    .map { $0.session_id }
+                if !seen.isEmpty {
+                    UNUserNotificationCenter.current()
+                        .removeDeliveredNotifications(withIdentifiers: seen)
+                }
             }
         }
     }
@@ -201,6 +254,9 @@ final class Model: ObservableObject {
 
     func jump(_ s: Session) {
         appDelegate?.hidePanel()
+        // jumping = the user saw it — clear its alert from Notification Center
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: [s.session_id])
         if s.status == "archived" {
             let cwd = s.cwd ?? NSHomeDirectory()
             DispatchQueue.global().async { runCST(["resume-tab", s.session_id, cwd]) }
@@ -269,6 +325,24 @@ final class Model: ObservableObject {
         }
     }
 
+    // Arc Tidy — auto-group ungrouped sessions. The ai pass calls claude -p,
+    // which can take a few seconds; both run off the main thread.
+    func tidy(ai: Bool, all: Bool = false) {
+        if ai { showToast("AI가 세션 분류 중…") }
+        DispatchQueue.global().async {
+            var args = ["tidy"]
+            if ai { args.append("ai") }
+            if all { args.append("all") }
+            let out = runCST(args, capture: true)
+            self.refresh()
+            if out.hasPrefix("no ungrouped") {
+                self.showToast("미분류 세션 없음 — 이미 다 정리됨")
+            } else if let n = out.split(separator: " ").dropFirst().first {
+                self.showToast("세션 \(n)개 그룹화 완료")
+            }
+        }
+    }
+
     func hub() {
         appDelegate?.hidePanel()
         DispatchQueue.global().async { runCST(["hub"]) }
@@ -281,7 +355,7 @@ final class Model: ObservableObject {
     var otherAgent: String { mainAgent == "claude" ? "codex" : "claude" }
 
     // which pixel character fronts the app (menubar + search field)
-    @Published var iconChoiceKey = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
+    @Published var iconChoiceKey = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
 
     // fun usage stats (cst stats-json, cached 1h on disk)
     struct DailyStat: Decodable, Equatable { let date: String; let count: Int }
@@ -316,7 +390,12 @@ final class Model: ObservableObject {
     @Published var modelUsage: [ModelUsage] = []
     @Published var usageText = ""
 
+    // gauges move slowly and cst caches upstream for 5 minutes anyway — one
+    // spawn a minute is plenty (event-driven refreshes arrive in bursts)
+    private var lastUsageFetch = Date.distantPast
     func fetchUsage() {
+        guard Date().timeIntervalSince(lastUsageFetch) > 60 else { return }
+        lastUsageFetch = Date()
         DispatchQueue.global().async {
             let out = runCST(["usage-json"], capture: true)
             guard let data = out.data(using: .utf8),
@@ -495,67 +574,12 @@ let appIconMap: [String] = [
     ".oooooooooooooo.",
 ]
 
-// ── selectable icon set (original pixel characters) ──────────────
-let catMap: [String] = [
-    "..oo........oo..",
-    "..ooo......ooo..",
-    "..oooooooooooo..",
-    ".oooooooooooooo.",
-    ".ooo.oooooo.ooo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    "..oooooooooooo..",
-    "...o.o....o.o...",
-]
-let ghostMap: [String] = [
-    "....oooooooo....",
-    "..oooooooooooo..",
-    ".oooooooooooooo.",
-    ".oo..oooooo..oo.",
-    ".oo..oooooo..oo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    ".oooooooooooooo.",
-    ".oo..oo..oo..oo.",
-]
-let robotMap: [String] = [
-    ".......oo.......",
-    "....oooooooo....",
-    "...oooooooooo...",
-    "...o.oooooo.o...",
-    "...oooooooooo...",
-    "....oooooooo....",
-    "..oooooooooooo..",
-    "..oooooooooooo..",
-    "...oo......oo...",
-    "...oo......oo...",
-]
-let slimeMap: [String] = [
-    "................",
-    ".....oooooo.....",
-    "...oooooooooo...",
-    "..oooooooooooo..",
-    ".ooo.oooooo.ooo.",
-    ".oooooooooooooo.",
-    "oooooooooooooooo",
-    "oooooooooooooooo",
-    ".oooooooooooooo.",
-    "..oooooooooooo..",
-]
-
 // icon registry: key → (map, panel tint). claude/codex use their mascots.
 // computed, not stored: top-level globals init in source order, and this
 // references maps declared later in the file (codexMap segfaulted as let)
 var iconChoices: [(key: String, label: String, map: [String], tint: NSColor)] { [
-    ("generic", "터미널", appIconMap, NSColor.textColor.withAlphaComponent(0.75)),
     ("claude", "Claude", mascotMap, claudeOrangeNS),
     ("codex", "Codex", codexMap, NSColor(codexBlue)),
-    ("cat", "고양이", catMap, NSColor.systemBrown),
-    ("ghost", "고스트", ghostMap, NSColor.systemPurple),
-    ("robot", "로봇", robotMap, NSColor.systemGray),
-    ("slime", "슬라임", slimeMap, NSColor.systemGreen),
 ] }
 func iconChoice(_ key: String) -> (key: String, label: String, map: [String], tint: NSColor) {
     iconChoices.first { $0.key == key } ?? iconChoices[0]
@@ -683,9 +707,12 @@ struct SettingsView: View {
     @State private var panelHK = appDelegate?.currentHotkeyLabel() ?? "⌥Space"
     @State private var attnHK = appDelegate?.currentAttentionLabel() ?? "⌘⌥A"
     @State private var recording: String? = nil  // "panel" | "attn"
+    @AppStorage("defaultTerminal") private var defaultTerminal = ""
     @AppStorage("notifyWaiting") private var notifyWaiting = true
     @AppStorage("notifyInput") private var notifyInput = true
     @AppStorage("notifyFinished") private var notifyFinished = true
+
+    @State private var panelKeyLabels: [String: String] = [:]
 
     func hotkeyButton(_ id: String, _ label: String, apply: @escaping (Int, Int) -> Void,
                       refresh: @escaping () -> String) -> some View {
@@ -693,7 +720,11 @@ struct SettingsView: View {
             recording = id
             appDelegate?.beginKeyCapture { k, m in
                 if k >= 0 { apply(k, m) }
-                if id == "panel" { panelHK = refresh() } else { attnHK = refresh() }
+                switch id {
+                case "panel": panelHK = refresh()
+                case "attn": attnHK = refresh()
+                default: panelKeyLabels[id] = refresh()
+                }
                 recording = nil
             }
         } label: {
@@ -706,40 +737,167 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    var body: some View {
-        Form {
-            Section("단축키") {
-                LabeledContent("패널 열기/닫기") {
-                    hotkeyButton("panel", panelHK,
-                                 apply: { appDelegate?.setHotkey(keyCode: $0, carbonMods: $1) },
-                                 refresh: { appDelegate?.currentHotkeyLabel() ?? "" })
-                }
-                LabeledContent("어텐션 세션으로 점프") {
-                    hotkeyButton("attn", attnHK,
-                                 apply: { appDelegate?.setAttentionHotkey(keyCode: $0, carbonMods: $1) },
-                                 refresh: { appDelegate?.currentAttentionLabel() ?? "" })
-                }
-                Text("패널 안: ⌘1–9 점프 · ⌃X 중지/종료 · ⌃R 이름 · ⌃P 핀 · Tab 프롬프트")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+    @State private var tab = "general"
+
+    private let tabs: [(id: String, label: String, icon: String)] = [
+        ("general", "일반", "gearshape.fill"),
+        ("hotkeys", "단축키", "command"),
+        ("notifications", "알림", "bell.badge.fill"),
+        ("about", "정보", "info.circle.fill"),
+    ]
+
+    // System Settings-style toolbar tab: icon over label, tinted when active
+    private func tabButton(_ t: (id: String, label: String, icon: String)) -> some View {
+        let active = tab == t.id
+        return Button {
+            tab = t.id
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: t.icon)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(height: 17)
+                Text(t.label)
+                    .font(.system(size: 10, weight: active ? .semibold : .regular))
             }
-            Section("일반") {
-                Picker("새 세션 기본 에이전트", selection: $model.mainAgent) {
-                    Text("claude").tag("claude")
-                    Text("codex").tag("codex")
-                }
-                .pickerStyle(.segmented)
-                Toggle("알림: 승인 필요", isOn: $notifyWaiting)
-                Toggle("알림: 답변 대기", isOn: $notifyInput)
-                Toggle("알림: 작업 완료", isOn: $notifyFinished)
-            }
+            .frame(width: 58, height: 44)
+            .foregroundStyle(active ? Color.accentColor : Color.secondary)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(active ? Color.accentColor.opacity(0.13) : Color.clear))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
-        .formStyle(.grouped)
-        .frame(width: 400, height: 340)
+        .buttonStyle(.plain)
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                ForEach(tabs, id: \.id) { tabButton($0) }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(.bar)
+
+            Divider()
+
+            Group {
+                switch tab {
+                case "hotkeys":
+                    Form {
+                        Section("전역 단축키") {
+                            LabeledContent("패널 열기/닫기") {
+                                hotkeyButton("panel", panelHK,
+                                             apply: { appDelegate?.setHotkey(keyCode: $0, carbonMods: $1) },
+                                             refresh: { appDelegate?.currentHotkeyLabel() ?? "" })
+                            }
+                            LabeledContent("어텐션 세션으로 점프") {
+                                hotkeyButton("attn", attnHK,
+                                             apply: { appDelegate?.setAttentionHotkey(keyCode: $0, carbonMods: $1) },
+                                             refresh: { appDelegate?.currentAttentionLabel() ?? "" })
+                            }
+                        }
+                        Section("패널 안 — 세션 액션 (변경 가능)") {
+                            ForEach(AppDelegate.panelActions, id: \.id) { a in
+                                LabeledContent(a.label) {
+                                    hotkeyButton(a.id,
+                                                 panelKeyLabels[a.id]
+                                                     ?? appDelegate?.panelBindingLabel(a.id) ?? "",
+                                                 apply: { appDelegate?.setPanelBinding(a.id, keyCode: $0, carbonMods: $1) },
+                                                 refresh: { appDelegate?.panelBindingLabel(a.id) ?? "" })
+                                }
+                            }
+                        }
+                        Section("패널 안 — 고정") {
+                            keyRow("↩ / ⌘1–9", "세션 점프 · ⌘↩ 대체 동작")
+                            keyRow("Tab", "퀵 프롬프트 · 커맨드 자동완성")
+                            keyRow("/", "스킬 팔레트 · ⌘R 새로고침")
+                        }
+                    }
+                    .formStyle(.grouped)
+                case "notifications":
+                    Form {
+                        Section {
+                            Toggle("승인 필요 (Needs approval)", isOn: $notifyWaiting)
+                            Toggle("답변 대기 (Waiting for reply)", isOn: $notifyInput)
+                            Toggle("작업 완료 (Finished)", isOn: $notifyFinished)
+                        } footer: {
+                            Text("알림을 클릭하면 해당 세션의 터미널로 점프합니다. 세션을 확인하면 남은 배너는 자동으로 지워집니다.")
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .formStyle(.grouped)
+                case "about":
+                    VStack(spacing: 10) {
+                        Spacer()
+                        if let icon = NSApp.applicationIconImage {
+                            Image(nsImage: icon)
+                                .resizable().frame(width: 76, height: 76)
+                        }
+                        Text("Agents Session Tracker")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        Text("v\(appVersion) · Claude Code & Codex 세션 트래커")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            Link("GitHub", destination:
+                                URL(string: "https://github.com/cms5380/agents-session-tracker")!)
+                            Text("·").foregroundStyle(.secondary)
+                            Text("brew install cms5380/tap/agents-session-tracker")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        .font(.system(size: 11.5))
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                default:
+                    Form {
+                        Section("새 세션") {
+                            Picker("기본 에이전트", selection: $model.mainAgent) {
+                                Text("claude").tag("claude")
+                                Text("codex").tag("codex")
+                            }
+                            .pickerStyle(.segmented)
+                            Picker("기본 터미널", selection: $defaultTerminal) {
+                                Text("자동").tag("")
+                                Text("iTerm2").tag("iterm")
+                                Text("Terminal").tag("terminal")
+                                Text("Ghostty").tag("ghostty")
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        Section {
+                            LabeledContent("메뉴바 아이콘") {
+                                Text("메뉴바 아이콘 우클릭으로 변경")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .formStyle(.grouped)
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(width: 440, height: 360)
+    }
+
+    private func keyRow(_ keys: String, _ desc: String) -> some View {
+        LabeledContent {
+            Text(desc).font(.system(size: 11.5)).foregroundStyle(.secondary)
+        } label: {
+            Text(keys)
+                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.07)))
+        }
     }
 }
 
 struct PixelAppIcon: View {
-    var choice: String = "generic"
+    var choice: String = "claude"
     var pixel: CGFloat = 3
     @Environment(\.displayScale) private var scale
     var body: some View {
@@ -1654,6 +1812,8 @@ struct PanelView: View {
         guard searching, !q.isEmpty, !query.hasPrefix("/") else { return [] }
         var cmds: [(String, String, String)] = [
             ("clean", "Clean Stale Sessions", "오래된 세션 정리"),
+            ("tidy", "Tidy: Group by Repo", "미분류를 저장소/폴더별 그룹 · ⌘↩ 전체 재그룹"),
+            ("tidy-ai", "Tidy: Group by Topic (AI)", "claude가 주제별 그룹명 생성 · ⌘↩ 전체 재그룹"),
             ("quit", "Quit Claude Sessions", "앱 종료"),
             ("agent-toggle", "Main Agent: \(model.mainAgent) → \(model.otherAgent)",
              "새 세션 기본 에이전트 전환"),
@@ -1722,6 +1882,8 @@ struct PanelView: View {
         }
         if id == "hub" { model.hub() }
         else if id == "clean" { model.clean(); query = "" }
+        else if id == "tidy" { model.tidy(ai: false, all: alt); query = "" }
+        else if id == "tidy-ai" { model.tidy(ai: true, all: alt); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
         else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
         else if id == "stats" {
@@ -2472,6 +2634,15 @@ struct PanelView: View {
             }
             .padding(.horizontal, 16).padding(.top, 14)
 
+            if let toast = model.toast {
+                Text(toast)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                    .foregroundStyle(Color.accentColor)
+                    .transition(.opacity)
+            }
+
             Divider().padding(.horizontal, 10)
 
             ScrollViewReader { proxy in
@@ -2924,6 +3095,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             case 124: return self.model.arrowLR?(1) == true ? nil : event // right
             case 48: self.model.messageSelected?(); return nil // tab → quick prompt
             default:
+                // user-remappable session actions first — an explicit custom
+                // binding beats the fixed chords below
+                var carbon = 0
+                if event.modifierFlags.contains(.command) { carbon |= cmdKey }
+                if event.modifierFlags.contains(.option) { carbon |= optionKey }
+                if event.modifierFlags.contains(.control) { carbon |= controlKey }
+                if event.modifierFlags.contains(.shift) { carbon |= shiftKey }
+                if carbon != 0 {
+                    for a in Self.panelActions {
+                        let b = self.panelBinding(a.id)
+                        if Int(event.keyCode) == b.code, carbon == b.mods,
+                           self.model.actionKey?(a.id) == true {
+                            return nil
+                        }
+                    }
+                }
                 if event.modifierFlags.contains(.command) {
                     // ⌘1..9 — jump to the badged target
                     let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5,
@@ -2940,21 +3127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                         self.model.enterKey?(true)
                         return nil
                     }
-                }
-                if event.modifierFlags.contains(.control), !event.modifierFlags.contains(.command) {
-                    // ⌃ actions on the selected session (less conflict-prone)
-                    let shift = event.modifierFlags.contains(.shift)
-                    let action: String?
-                    switch (event.keyCode, shift) {
-                    case (35, _): action = "pin"        // ⌃P
-                    case (15, false): action = "rename" // ⌃R
-                    case (8, _): action = "copyresume"  // ⌃C
-                    case (7, _): action = "end"         // ⌃X
-                    case (51, _): action = "ungroup"    // ⌃⌫
-                    default: action = nil
-                    }
-                    let handled = action.flatMap { self.model.actionKey?($0) }
-                    if handled == true { return nil }
                 }
                 return event
             }
@@ -3102,8 +3274,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         kVK_ANSI_8: "8", kVK_ANSI_9: "9",
         kVK_ANSI_Grave: "`", kVK_ANSI_Minus: "-", kVK_ANSI_Equal: "=",
         kVK_ANSI_Slash: "/", kVK_ANSI_Period: ".", kVK_ANSI_Comma: ",",
-        kVK_ANSI_Semicolon: ";",
+        kVK_ANSI_Semicolon: ";", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
     ]
+
+    // ── remappable in-panel action keys (modifier+key, stored like the
+    // global hotkeys; defaults are the classic ⌃ set) ───────────────
+    static let panelActions: [(id: String, label: String, defCode: Int, defMods: Int)] = [
+        ("end", "세션 중지 → 종료", kVK_ANSI_X, controlKey),
+        ("rename", "이름 변경", kVK_ANSI_R, controlKey),
+        ("pin", "핀 토글", kVK_ANSI_P, controlKey),
+        ("copyresume", "resume 명령 복사", kVK_ANSI_C, controlKey),
+        ("ungroup", "그룹 해제", kVK_Delete, controlKey),
+    ]
+
+    func panelBinding(_ id: String) -> (code: Int, mods: Int) {
+        guard let def = Self.panelActions.first(where: { $0.id == id }) else { return (0, 0) }
+        let d = UserDefaults.standard
+        let k = d.object(forKey: "panelKey.\(id)") as? Int ?? def.defCode
+        let m = d.object(forKey: "panelMods.\(id)") as? Int ?? def.defMods
+        return (k, m)
+    }
+
+    func setPanelBinding(_ id: String, keyCode: Int, carbonMods: Int) {
+        UserDefaults.standard.set(keyCode, forKey: "panelKey.\(id)")
+        UserDefaults.standard.set(carbonMods, forKey: "panelMods.\(id)")
+    }
+
+    func panelBindingLabel(_ id: String) -> String {
+        let b = panelBinding(id)
+        return comboLabel(keyCode: b.code, carbonMods: b.mods)
+    }
 
     func currentHotkeyLabel() -> String {
         let d = UserDefaults(suiteName: "com.dean.claude-sessions")
@@ -3270,7 +3470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // menubar mascot frames: static idle pose + the running bounce, all
     // 11 rows tall so swapping frames never shifts the icon's baseline.
     // The mascot itself is user-selectable (right-click → Claude / Codex).
-    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "generic"
+    var menubarAgent = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
     var menubarStaticImage = NSImage()
     var menubarStatusFrames: [String: [NSImage]] = [:]
     var menubarStatus: String?

@@ -6,6 +6,9 @@ set -euo pipefail
 STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 mkdir -p "$STATE_DIR"
 
+# internal headless helpers (cst tidy ai etc.) must not appear as sessions
+[ -n "${CST_INTERNAL:-}" ] && exit 0
+
 input=$(cat)
 session_id=$(jq -r '.session_id // empty' <<<"$input")
 [ -n "$session_id" ] || exit 0
@@ -28,10 +31,21 @@ if [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ ! -f "$transcript" ]; th
   [ -n "$alt" ] && transcript="$alt"
 fi
 
+# the record is read early so the expensive transcript digs below can be
+# skipped once title/model are already known — this script runs on every
+# tool call, so the common case must stay cheap
+file="$STATE_DIR/$session_id.json"
+existing="{}"
+[ -f "$file" ] && existing=$(cat "$file")
+# a torn record (crashed writer) must not wedge the hook — start fresh
+jq -e . >/dev/null 2>&1 <<<"$existing" || existing="{}"
+have=$(jq -r '(if (.title // "") != "" then "t" else "" end)
+              + (if (.model // "") != "" then "m" else "" end)' <<<"$existing")
+
 # human-readable session title: first user prompt (immutable), else the
 # transcript summary — summaries evolve every few turns and made names churn
 title=""
-if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+if [ -n "$transcript" ] && [ -f "$transcript" ] && [ "${have#*t}" = "$have" ]; then
   if [ "$agent" = "codex" ]; then
     # skip injected context messages (they start with an <xml-ish> tag) at the
     # message level — their bodies span lines that a line filter would keep
@@ -60,8 +74,10 @@ if [ -n "$transcript" ] && [ -f "$transcript" ]; then
 fi
 
 # claude hooks don't carry the model — read it from the transcript's most
-# recent assistant message (cheap: tail keeps it current after /model swaps)
-if [ -z "$model" ] && [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+# recent assistant message. Once known it's only re-read at turn start, so
+# /model swaps still land on the next prompt without a tail per tool call.
+if [ -z "$model" ] && [ "$agent" = "claude" ] && [ -n "$transcript" ] && [ -f "$transcript" ] \
+   && { [ "${have#*m}" = "$have" ] || [ "$event" = "UserPromptSubmit" ]; }; then
   model=$( (tail -n 40 "$transcript" 2>/dev/null \
     | jq -r 'select(.type=="assistant") | .message.model // empty
              | select(startswith("<") | not)' 2>/dev/null \
@@ -86,7 +102,9 @@ case "$event" in
   # codex asks for tool approval via its own PermissionRequest hook event
   PermissionRequest) status="waiting" ;;
   Stop) status="finished" ;;
-  SessionEnd) status="ended" ;;
+  # a naturally closed session (tab closed, reboot) stays resumable in the
+  # ENDED section — only an explicit ^X^X (cst end) marks it "ended"/hidden
+  SessionEnd) status="gone" ;;
   *) status="running" ;;
 esac
 
@@ -122,12 +140,6 @@ if [ "${TERM_PROGRAM:-}" = "vscode" ] || [ -n "${VSCODE_GIT_ASKPASS_MAIN:-}" ] |
   app="vscode"
 fi
 
-file="$STATE_DIR/$session_id.json"
-existing="{}"
-[ -f "$file" ] && existing=$(cat "$file")
-# a torn record (crashed writer) must not wedge the hook — start fresh
-jq -e . >/dev/null 2>&1 <<<"$existing" || existing="{}"
-
 jq -n \
   --argjson prev "$existing" \
   --arg session_id "$session_id" \
@@ -157,7 +169,11 @@ jq -n \
     agent: $agent,
     updated_at: ($updated_at | tonumber)
   }
-  | .status = (if $status == "" then (.status // "running") else $status end)
+  | .status = (if $status == "" then (.status // "running")
+               # an explicit cst end already marked it ended — the SessionEnd
+               # from the dying client must not resurrect it as resumable
+               elif $event == "SessionEnd" and .status == "ended" then "ended"
+               else $status end)
   | .started_at = (.started_at // ($updated_at | tonumber))
   | if $cwd != "" then .cwd = $cwd else . end
   | if $message != "" then .message = $message else . end

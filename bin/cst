@@ -28,6 +28,9 @@ STATE_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions"
 GROUPS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/groups.json"
 NAMES_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/names.json"
 AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-cache.json"
+# full `claude agents --json --all` result, reused for 10s — the CLI is a
+# ~300ms Node boot and event-driven refreshes can arrive in bursts
+AGENTS_ALL_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-all-cache.json"
 PINS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/pins.json"
 SORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json"
 COLORS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json"
@@ -223,11 +226,35 @@ resolve_live() { # $1=session cwd → sets R_ITERM/R_CMUX/R_TMUX/R_TERM/R_TTY
 }
 
 # open a new terminal tab running a command — used to resume dead sessions
-# and attach to live background agents
+# and attach to live background agents. The app's 설정 picks the terminal
+# (defaults: defaultTerminal = iterm|terminal|ghostty, empty = auto).
 open_tab_with() { # $1=shell command, $2=auto-press-enter after N seconds (optional)
-  local cmd="$1" enter_after="${2:-}"
+  local cmd="$1" enter_after="${2:-}" term
+  term=$(defaults read com.dean.agents-session-tracker defaultTerminal 2>/dev/null || true)
+  case "$term" in
+    (iterm)    tab_iterm "$cmd" "$enter_after"; return ;;
+    (terminal) tab_terminal "$cmd"; return ;;
+    (ghostty)
+      # ghostty has no tab scripting — new window running the command;
+      # fall through to auto when it isn't installed
+      if open -na Ghostty --args -e "${SHELL:-/bin/zsh}" -ic "$cmd" 2>/dev/null; then
+        return
+      fi ;;
+  esac
   if [ -d "/Applications/iTerm.app" ]; then
-    osascript - "$cmd" "$enter_after" <<'APPLESCRIPT'
+    tab_iterm "$cmd" "$enter_after"
+  else
+    tab_terminal "$cmd"
+  fi
+}
+
+tab_terminal() {
+  osascript -e "tell application \"Terminal\"" -e "activate" -e "do script \"$1\"" -e "end tell"
+}
+
+tab_iterm() {
+  local cmd="$1" enter_after="${2:-}"
+  osascript - "$cmd" "$enter_after" <<'APPLESCRIPT'
 on run argv
   set cmd to item 1 of argv
   set enterAfter to item 2 of argv
@@ -250,9 +277,6 @@ on run argv
   end tell
 end run
 APPLESCRIPT
-  else
-    osascript -e "tell application \"Terminal\"" -e "activate" -e "do script \"$cmd\"" -e "end tell"
-  fi
 }
 
 resume_command() { # $1=session id → the agent-appropriate resume command
@@ -600,18 +624,57 @@ cmd_clean() {
 cmd_sessions_json() {
   local now sessions agents_json extra
   now=$(date +%s)
-  # read records one by one so a single corrupt file (e.g. a torn write)
-  # can't blank the whole list
-  sessions=$({ for rf in "$STATE_DIR"/*.json; do
-      [ -e "$rf" ] || continue
-      jq -c . "$rf" 2>/dev/null || true
-    done; } | jq -s --argjson now "$now" '
-    [.[] | select(.status != "ended") | select(($now - (.updated_at // 0)) < 86400)]
-    | sort_by(-.updated_at)')
+  # the daemon query is the single slowest child (~300ms) and independent of
+  # everything until the busy/idle merge — fetch it concurrently, and skip it
+  # entirely while the 10s cache is fresh (busy/idle may lag by that much)
+  local agents_fetch="$AGENTS_CACHE.fetch.$$" agents_bgpid=""
+  if [ $((now - $(stat -f %m "$AGENTS_ALL_CACHE" 2>/dev/null || echo 0))) -ge 10 ]; then
+    { claude agents --json --all 2>/dev/null || printf '[]'; } >"$agents_fetch" &
+    agents_bgpid=$!
+  fi
+  # ended tombstones exist only so the dying client's SessionEnd can't
+  # resurrect the record — after an hour they're pure garbage; reap them
+  # so explicit ⌃X⌃X deletes don't pile up in the state dir forever
+  local reaped="" tf tm
+  for tf in $(grep -El '"status": ?"ended"' "$STATE_DIR"/*.json 2>/dev/null || true); do
+    tm=$(stat -f %m "$tf" 2>/dev/null || echo "$now")
+    if [ $((now - tm)) -gt 3600 ]; then rm -f "$tf"; reaped=1; fi
+  done
+  # dead spare-pool records are permanently hidden — delete on sight. A
+  # false positive is harmless: the next hook event rewrites the file.
+  local tpid
+  for tf in $(grep -El '"owner": ?"pool"' "$STATE_DIR"/*.json 2>/dev/null || true); do
+    tpid=$(jq -r '.pid // 0' "$tf" 2>/dev/null || echo 0)
+    kill -0 "$tpid" 2>/dev/null && continue
+    rm -f "$tf"; reaped=1
+  done
+  [ -n "$reaped" ] && gc_session_assets >/dev/null 2>&1
+  # tmp files a crashed writer never mv'd into place — orphans after an hour
+  find "$STATE_DIR" -name '*.tmp.*' -mmin +60 -delete 2>/dev/null || true
+  # fast path: every record in one jq pass. A single corrupt file (torn
+  # write) fails the batch — fall back to one-by-one so it can't blank the
+  # whole list.
+  local all_records
+  all_records=$(jq -c -s '.' "$STATE_DIR"/*.json 2>/dev/null) || all_records=""
+  if [ -z "$all_records" ]; then
+    all_records=$({ for rf in "$STATE_DIR"/*.json; do
+        [ -e "$rf" ] || continue
+        jq -c . "$rf" 2>/dev/null || true
+      done; } | jq -sc '.')
+  fi
+  sessions=$(jq -c '[.[] | select(.status != "ended")] | sort_by(-.updated_at)' <<<"$all_records")
   # --all also returns completed (resumable) background sessions — status ""
   # marks them. Live entries come first so unique_by keeps the live one.
   local agents_all
-  agents_all=$(claude agents --json --all 2>/dev/null || echo '[]')
+  if [ -n "$agents_bgpid" ]; then
+    wait "$agents_bgpid" 2>/dev/null || true
+    agents_all=$(cat "$agents_fetch" 2>/dev/null || echo '[]')
+    rm -f "$agents_fetch"
+    printf '%s' "$agents_all" >"$AGENTS_ALL_CACHE.tmp.$$" 2>/dev/null \
+      && mv "$AGENTS_ALL_CACHE.tmp.$$" "$AGENTS_ALL_CACHE" 2>/dev/null || true
+  else
+    agents_all=$(cat "$AGENTS_ALL_CACHE" 2>/dev/null || echo '[]')
+  fi
   jq -e . >/dev/null 2>&1 <<<"$agents_all" || agents_all='[]'
   agents_all=$(jq -c 'sort_by(if (.status // "") == "" then 1 else 0 end) | unique_by(.sessionId)' <<<"$agents_all")
   agents_json=$(jq -c 'map(select((.status // "") != ""))' <<<"$agents_all")
@@ -625,23 +688,41 @@ cmd_sessions_json() {
   fork_pairs=$(ps -axo command= 2>/dev/null \
     | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*--fork-session.*--resume [^ ]*\/\([0-9a-f-]\{36\}\)\.jsonl.*/\2:\1/p' || true)
 
+  # one jq per record extracts every scalar the shell logic needs — the
+  # previous field-at-a-time reads were ~8 jq spawns per record and dominated
+  # the whole command's latency. Tab-separated with "-" standing in for empty
+  # fields: bash 3.2's read only splits reliably on whitespace, and
+  # whitespace IFS collapses adjacent separators (empty fields would shift).
+  local agents_sids
+  agents_sids=$(jq -r '[.[].sessionId] | join(" ")' <<<"$agents_json")
   sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
-    local sid pid bg pcmd
-    sid=$(jq -r '.session_id' <<<"$s")
-    pid=$(jq -r '.pid // empty' <<<"$s")
+    local sid pid agent status owner has_title presolved tpath tu pcmd
+    IFS=$'\t' read -r sid pid agent status owner has_title presolved tu tpath <<<"$(jq -r \
+      '[.session_id, (.pid // "" | tostring), (.agent // "claude"), (.status // ""),
+        (.owner // ""), (if (.title // "") != "" then "1" else "" end),
+        (if .parent_resolved == true then "1" else "" end),
+        (.updated_at // 0 | tostring), (.transcript_path // "")]
+       | map(if . == "" then "-" else . end) | @tsv' <<<"$s")"
+    if [ "$pid" = "-" ]; then pid=""; fi
+    if [ "$owner" = "-" ]; then owner=""; fi
+    if [ "$has_title" = "-" ]; then has_title=""; fi
+    if [ "$presolved" = "-" ]; then presolved=""; fi
+    if [ "$status" = "-" ]; then status=""; fi
+    if [ "$tpath" = "-" ]; then tpath=""; fi
     # conversation continued by a live fork → show the fork, not the parent
     # (unless the parent has newer activity again)
-    local fork_sid
-    fork_sid=$(printf '%s\n' "$fork_pairs" | sed -n "s/^$sid://p" | head -1)
+    local fork_sid=""
+    case "$fork_pairs" in (*"$sid:"*)
+      fork_sid=$(printf '%s\n' "$fork_pairs" | sed -n "s/^$sid://p" | head -1) ;;
+    esac
     if [ -n "$fork_sid" ]; then
       # skip the parent when the fork is newer — or when the parent's own
       # client is dead (forwarded notifications keep bumping its timestamp)
       if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
         continue
       fi
-      local fu tu
+      local fu
       fu=$(jq -r '.updated_at // 0' "$STATE_DIR/$fork_sid.json" 2>/dev/null || echo 0)
-      tu=$(jq -r '.updated_at // 0' <<<"$s")
       if [ ! -f "$STATE_DIR/$fork_sid.json" ] || [ "$fu" -ge "$tu" ] 2>/dev/null; then
         continue
       fi
@@ -649,11 +730,10 @@ cmd_sessions_json() {
     # claude forks carry logicalParentUuid (a message uuid inside the parent
     # transcript) — resolve it to a parent session id once and cache it on
     # the record; spare-pool forks have no --fork-session cmdline to read
-    if [ "$(jq -r '.parent_resolved // empty' <<<"$s")" != "true" ] \
-       && [ "$(jq -r '.agent // "claude"' <<<"$s")" = "claude" ]; then
+    if [ -z "$presolved" ] && [ "$agent" = "claude" ]; then
       local tpath0 lp parent_sid pf psid pt is_continuation jstate jparent
       is_continuation=""
-      tpath0=$(jq -r '.transcript_path // ""' <<<"$s")
+      tpath0="$tpath"
       parent_sid=""
       # best-available source first: the daemon's job state records the fork
       # parent directly (spare-pool /fork sessions). NOTE: this file is an
@@ -723,28 +803,26 @@ cmd_sessions_json() {
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
     # turn fires no Stop hook) — a rollout file untouched for 5 minutes
     # means the turn is over
-    if [ "$(jq -r '.agent // ""' <<<"$s")" = "codex" ] \
-       && [ "$(jq -r '.status' <<<"$s")" = "running" ]; then
-      local tpath tmtime
-      tpath=$(jq -r '.transcript_path // ""' <<<"$s")
+    if [ "$agent" = "codex" ] && [ "$status" = "running" ]; then
+      local tmtime
       if [ -n "$tpath" ] && [ -f "$tpath" ]; then
         tmtime=$(stat -f %m "$tpath" 2>/dev/null || echo 0)
         [ $((now - tmtime)) -gt 300 ] && s=$(jq -c '.status = "done"' <<<"$s")
       fi
     fi
-    bg=$(jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | length' <<<"$agents_json")
-    if [ "$bg" != "0" ]; then
+    if case " $agents_sids " in (*" $sid "*) true ;; (*) false ;; esac; then
       # daemon-listed → real session
       printf '%s\n' "$s"
     elif [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
       # dead pool-owned sessions were never real terminals — drop, don't
       # revive. Legacy records (no owner recorded) count as real only if
       # they at least earned a title.
-      local owner title
-      owner=$(jq -r '.owner // ""' <<<"$s")
-      title=$(jq -r '.title // ""' <<<"$s")
-      if [ "$owner" = "client" ] || { [ -z "$owner" ] && [ -n "$title" ]; }; then
-        jq -c '.status = "gone"' <<<"$s"
+      if [ "$owner" = "client" ] || { [ -z "$owner" ] && [ -n "$has_title" ]; }; then
+        if [ "$status" = "gone" ]; then
+          printf '%s\n' "$s"
+        else
+          jq -c '.status = "gone"' <<<"$s"
+        fi
       fi
     else
       # alive but unknown to the daemon: real only if owned by a real client.
@@ -789,10 +867,8 @@ cmd_sessions_json() {
   # (their record says so) — must not resurface as untracked daemon rows
   local fork_parents_json ended_json hidden_json
   fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
-  ended_json=$({ for rf in "$STATE_DIR"/*.json; do
-      [ -e "$rf" ] || continue
-      jq -r 'select(.status == "ended") | .session_id' "$rf" 2>/dev/null
-    done; } | jq -R . | jq -sc 'map(select(length > 0))' 2>/dev/null || echo '[]')
+  ended_json=$(jq -c '[.[] | select(.status == "ended") | .session_id]' \
+    <<<"$all_records" 2>/dev/null || echo '[]')
   hidden_json=$(jq -c -n --argjson a "$fork_parents_json" --argjson b "$ended_json" '$a + $b')
   extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
              --argjson forked "$hidden_json" '
@@ -1370,9 +1446,59 @@ APPLESCRIPT
       | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
     cat "$USAGE_CACHE"
     ;;
+  tidy)
+    # cst tidy [ai] [all] — auto-group sessions (Arc Tidy style).
+    #   default: ungrouped only, by repo/folder from cwd
+    #   ai:  semantic clusters via claude -p
+    #   all: regroup everything — existing (manual) assignments overwritten
+    MODE=""; ALL=""
+    for a in "${@:2}"; do case "$a" in (ai) MODE=ai ;; (all) ALL=1 ;; esac; done
+    list=$(cmd_sessions_json 2>/dev/null \
+      | jq -c --arg all "$ALL" \
+          '[.[] | select($all != "" or (.group // "") == "")
+                | {sid: .session_id, title: (.title // ""), cwd: (.cwd // "")}]')
+    cnt=$(jq 'length' <<<"$list")
+    if [ "$cnt" = "0" ]; then echo "no ungrouped sessions"; exit 0; fi
+    existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
+    jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
+    assigns='{}'
+    if [ "$MODE" = "ai" ]; then
+      gnames=$(jq -r '[.[]] | unique | join(", ")' <<<"$existing")
+      items=$(jq -r '.[] | "\(.sid)\t\(.title)\t\(.cwd)"' <<<"$list")
+      prompt="다음 AI 코딩 세션들을 주제별로 2~5개 그룹으로 묶어라. 그룹명은 짧은 한국어. 기존 그룹명(${gnames:-없음})이 어울리면 재사용. 오직 JSON 객체 하나만 출력: {\"<세션id>\": \"<그룹명>\", ...}. 다른 텍스트 금지.
+
+세션 목록 (id, 제목, 경로):
+$items"
+      raw=$(CST_INTERNAL=1 claude -p "$prompt" 2>/dev/null | sed 's/^```json//; s/^```//; s/```$//' | tr -d '\r' || true)
+      if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$raw"; then
+        # reuse existing group names case-insensitively — the model tends to
+        # invent "ADP" next to an existing "adp"
+        assigns=$(jq -c --argjson ex "$existing" '
+          ([$ex[]] | unique | map({key: ascii_downcase, value: .}) | from_entries) as $canon
+          | with_entries(select((.value | type) == "string" and .value != ""))
+          | with_entries(.value = ($canon[.value | ascii_downcase] // .value))' <<<"$raw")
+      else
+        echo "ai grouping failed — falling back to repo grouping" >&2
+      fi
+    fi
+    if [ "$assigns" = "{}" ]; then
+      # deterministic: repo name (first path segment after /GitHub/), else
+      # the cwd basename
+      assigns=$(jq -c 'map({key: .sid,
+        value: (.cwd
+          | if test("/GitHub/") then (split("/GitHub/")[1] | split("/")[0])
+            elif . == "" then "기타"
+            else (split("/") | map(select(. != "")) | last // "기타") end)})
+        | from_entries' <<<"$list")
+    fi
+    jq -n --argjson a "$existing" --argjson b "$assigns" '$a + $b' >"$GROUPS_FILE.tmp.$$" \
+      && mv "$GROUPS_FILE.tmp.$$" "$GROUPS_FILE"
+    echo "grouped $(jq 'length' <<<"$assigns") sessions:"
+    jq -r 'to_entries | group_by(.value) | .[] | "  \(.[0].value): \(length)"' <<<"$assigns"
+    ;;
   icon)
     # cst icon <key|emoji|image-path> — set the menubar/search icon.
-    #   keys: generic claude codex cat ghost robot slime
+    #   keys: claude codex
     #   image: png/gif path (gif animates) · anything else: treated as emoji
     [ $# -ge 2 ] || { echo "usage: cst icon <key|emoji|image.png|image.gif>" >&2; exit 1; }
     APPID="com.dean.agents-session-tracker"
@@ -1391,7 +1517,7 @@ APPLESCRIPT
       echo "icon: custom image ($arg)"
     else
       case "$arg" in
-        (generic|claude|codex|cat|ghost|robot|slime)
+        (claude|codex)
           defaults write "$APPID" menubarAgent "$arg"
           echo "icon: $arg" ;;
         (*)
