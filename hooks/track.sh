@@ -61,7 +61,8 @@ if [ -n "$transcript" ] && [ -f "$transcript" ] && [ "${have#*t}" = "$have" ]; t
     title=$( (head -n 80 "$transcript" 2>/dev/null \
       | jq -r 'select(.type=="user") | .message.content
                | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end' 2>/dev/null \
-      | grep -vE '^\s*(<|$)' | grep -v '^This session is being continued' \
+      | grep -vE '^\s*(<|$)' \
+      | grep -vE '^(This session is being continued|Summary:|Analysis:|Please continue)' \
       | head -n 1 | cut -c1-80) || true)
     if [ -z "$title" ]; then
       title=$( (head -n 5 "$transcript" 2>/dev/null \
