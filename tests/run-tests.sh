@@ -323,6 +323,61 @@ sleep 1
 t "T90 send routes claude" "1" "$(grep -c 'claude -p --resume s-send-cl' "$SANDBOX/calls.log" 2>/dev/null)"
 t "T91 send routes codex"  "1" "$(grep -c 'codex exec resume s-send-cx' "$SANDBOX/calls.log" 2>/dev/null)"
 
+# ══ exception layers: ended dismissal · continuation lineage ·
+# ══ codex stale decay (the newest special-case rules) ════════════
+rm -f "$STATE"/*.json "$CST_STATE_DIR/agents-cache.json"
+
+# stub daemon now returns an --all list including a completed session
+cat >"$SANDBOX/.local/bin/claude" <<EOF
+#!/bin/bash
+if [ "\${1:-}" = "agents" ]; then
+  case "\$*" in
+    (*--all*) echo '[{"sessionId":"qa-ended-01","kind":"interactive","cwd":"/tmp","name":"tmp-qa"}]' ;;
+    (*)       echo '[]' ;;
+  esac
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$SANDBOX/.local/bin/claude"
+
+# T92: a completed daemon session with NO record synthesizes as gone
+out=$("$CST" sessions-json)
+t "T92 completed daemon session appears" "gone" \
+  "$(jq -r '.[] | select(.session_id=="qa-ended-01") | .status' <<<"$out")"
+
+# T93: once its record says ended, it must stay dismissed
+mkrec "qa-ended-01" '{status:"ended", owner:"client", pid:99999}'
+out=$("$CST" sessions-json)
+t "T93 ended record suppresses resurrection" "0" \
+  "$(jq -r '[.[] | select(.session_id=="qa-ended-01")] | length' <<<"$out")"
+
+# T94: continuation lineage — child transcript cites the parent's path
+PDIR="$SANDBOX/.claude/projects/-tmp-qa"
+PSID="aaaa1111-2222-3333-4444-555566667777"
+CSID="bbbb1111-2222-3333-4444-555566667777"
+printf '{"type":"user","sessionId":"%s","message":{"content":"parent work"}}\n' "$PSID" >"$PDIR/$PSID.jsonl"
+{
+  printf '{"type":"user","sessionId":"%s","message":{"content":"This session is being continued from a previous conversation. read the full transcript at: %s/%s.jsonl"}}\n' "$CSID" "$PDIR" "$PSID"
+} >"$PDIR/$CSID.jsonl"
+mkrec "$PSID" "{status:\"done\", owner:\"client\", pid:$LIVE1, transcript_path:\"$PDIR/$PSID.jsonl\"}"
+mkrec "$CSID" "{status:\"done\", owner:\"client\", pid:$LIVE2, transcript_path:\"$PDIR/$CSID.jsonl\"}"
+out=$("$CST" sessions-json)
+t "T94 continuation parent resolved" "$PSID" \
+  "$(jq -r --arg s "$CSID" '.[] | select(.session_id==$s) | .parent // "none"' <<<"$out")"
+t "T95 continuation flag set" "true" \
+  "$(jq -r --arg s "$CSID" '.[] | select(.session_id==$s) | .continuation // false' <<<"$out")"
+
+# T96: codex running decays to done when the rollout is stale
+CXSID="cccc1111-2222-3333-4444-555566667777"
+CXT="$SANDBOX/.codex/sessions/2026/08/27/rollout-2026-08-27T09-00-00-$CXSID.jsonl"
+printf '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n' >"$CXT"
+touch -t 202608270900 "$CXT"
+mkrec "$CXSID" "{status:\"running\", owner:\"client\", pid:$LIVE1, agent:\"codex\", transcript_path:\"$CXT\"}"
+out=$("$CST" sessions-json)
+t "T96 stale codex running decays" "done" \
+  "$(jq -r --arg s "$CXSID" '.[] | select(.session_id==$s) | .status' <<<"$out")"
+
 # ── teardown ─────────────────────────────────────────────────────
 kill "$LIVE1" "$LIVE2" 2>/dev/null
 echo

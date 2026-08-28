@@ -408,6 +408,13 @@ cmd_jump() {
       # no tracker record — the daemon may still know this session
       if resolve_by_session "$sid" && jump_resolved; then exit 0; fi
       if [ -n "$(bg_agent_status "$sid")" ]; then jump_bg "$sid" && exit 0; fi
+      # completed-but-resumable daemon job (rows synthesized from --all):
+      # reopen it in a resume tab at its recorded cwd
+      acwd=$(claude agents --json --all 2>/dev/null \
+        | jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | (first // {}).cwd // empty')
+      if [ -n "$acwd" ]; then
+        open_resume_tab "$acwd" "$sid" >/dev/null 2>&1 && exit 0
+      fi
       echo "unknown session: $sid" >&2; exit 1
     fi
   fi
@@ -644,16 +651,24 @@ cmd_sessions_json() {
     # the record; spare-pool forks have no --fork-session cmdline to read
     if [ "$(jq -r '.parent_resolved // empty' <<<"$s")" != "true" ] \
        && [ "$(jq -r '.agent // "claude"' <<<"$s")" = "claude" ]; then
-      local tpath0 lp parent_sid pf psid pt is_continuation
+      local tpath0 lp parent_sid pf psid pt is_continuation jstate jparent
       is_continuation=""
       tpath0=$(jq -r '.transcript_path // ""' <<<"$s")
       parent_sid=""
+      # best-available source first: the daemon's job state records the fork
+      # parent directly (spare-pool /fork sessions). NOTE: this file is an
+      # undocumented internal — transcript heuristics below stay as fallback
+      jstate="$HOME/.claude/jobs/${sid:0:8}/state.json"
+      if [ -f "$jstate" ]; then
+        jparent=$(jq -r '.forkParentSessionId // empty' "$jstate" 2>/dev/null || true)
+        [ -n "$jparent" ] && [ "$jparent" != "$sid" ] && parent_sid="$jparent"
+      fi
       # the recorded path goes stale when a session's cwd changes (transcripts
       # live under a per-project dir) — relocate by session id
       if [ -n "$tpath0" ] && [ ! -f "$tpath0" ]; then
         tpath0=$(ls "$HOME/.claude/projects"/*/"$sid.jsonl" 2>/dev/null | head -1 || true)
       fi
-      if [ -n "$tpath0" ] && [ -f "$tpath0" ]; then
+      if [ -z "$parent_sid" ] && [ -n "$tpath0" ] && [ -f "$tpath0" ]; then
         lp=$(head -n 12 "$tpath0" 2>/dev/null \
           | jq -r 'select(.logicalParentUuid) | .logicalParentUuid' 2>/dev/null | head -1 || true)
         if [ -z "$lp" ]; then
@@ -689,18 +704,20 @@ cmd_sessions_json() {
             fi
           done
         fi
-        s=$(jq -c --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+      fi
+      # cache whatever was resolved (job state, lp, or citation) so the
+      # scan doesn't repeat every refresh
+      s=$(jq -c --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+        '.parent_resolved = true
+         | if $p != "" then .parent = $p else . end
+         | if $cont == "true" then .continuation = true else . end' <<<"$s")
+      rf0="$STATE_DIR/$sid.json"
+      if [ -f "$rf0" ]; then
+        jq --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
           '.parent_resolved = true
            | if $p != "" then .parent = $p else . end
-           | if $cont == "true" then .continuation = true else . end' <<<"$s")
-        rf0="$STATE_DIR/$sid.json"
-        if [ -f "$rf0" ]; then
-          jq --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
-            '.parent_resolved = true
-             | if $p != "" then .parent = $p else . end
-             | if $cont == "true" then .continuation = true else . end' \
-            "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0"
-        fi
+           | if $cont == "true" then .continuation = true else . end' \
+          "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0"
       fi
     fi
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
@@ -768,11 +785,17 @@ cmd_sessions_json() {
     done <<<"$lineage"
   fi
 
-  # fork parents hidden above must not resurface as untracked daemon rows
-  local fork_parents_json
+  # fork parents hidden above — and sessions the user explicitly ended
+  # (their record says so) — must not resurface as untracked daemon rows
+  local fork_parents_json ended_json hidden_json
   fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
+  ended_json=$({ for rf in "$STATE_DIR"/*.json; do
+      [ -e "$rf" ] || continue
+      jq -r 'select(.status == "ended") | .session_id' "$rf" 2>/dev/null
+    done; } | jq -R . | jq -sc 'map(select(length > 0))' 2>/dev/null || echo '[]')
+  hidden_json=$(jq -c -n --argjson a "$fork_parents_json" --argjson b "$ended_json" '$a + $b')
   extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
-             --argjson forked "$fork_parents_json" '
+             --argjson forked "$hidden_json" '
     [.[] | select([.sessionId] | inside($tracked) | not)
          | select([.sessionId] | inside($forked) | not) | {
       session_id: .sessionId,
@@ -865,10 +888,37 @@ case "${1:-list}" in
       t="$HOME/.claude/projects/$slug/$sid.jsonl"
     fi
     [ -f "$t" ] || exit 0
-    tail -n 300 "$t" 2>/dev/null \
-      | jq -r 'select(.type == "assistant") | .message.content
-               | if type == "array" then (map(select(.type == "text") | .text) | join("")) else tostring end' 2>/dev/null \
-      | grep -v '^\s*$' | tail -n 8 | head -c 600 || true
+    case "$t" in
+      (*/.codex/*)
+        tail -n 300 "$t" 2>/dev/null \
+          | jq -r 'select(.type == "response_item") | .payload
+                   | select(.type == "message" and .role == "assistant")
+                   | ((.content // []) | map(select(.type == "output_text") | .text) | join(""))' 2>/dev/null \
+          | grep -v '^\s*$' | tail -n 8 | head -c 600 || true ;;
+      (*)
+        tail -n 300 "$t" 2>/dev/null \
+          | jq -r 'select(.type == "assistant") | .message.content
+                   | if type == "array" then (map(select(.type == "text") | .text) | join("")) else tostring end' 2>/dev/null \
+          | grep -v '^\s*$' | tail -n 8 | head -c 600 || true ;;
+    esac
+    ;;
+  input-kind)
+    # cst input-kind <sid> — what kind of reply the session is waiting on:
+    # question (AskUserQuestion) | plan (ExitPlanMode) | reply (anything else)
+    [ $# -ge 2 ] || { echo "reply"; exit 0; }
+    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    t=""
+    [ -n "$f" ] && t=$(jq -r '.transcript_path // empty' "$f")
+    if [ -z "$t" ] || [ ! -f "$t" ]; then echo "reply"; exit 0; fi
+    last_tool=$(tail -n 120 "$t" 2>/dev/null \
+      | jq -r 'select(.type=="assistant") | .message.content
+               | if type=="array" then (map(select(.type=="tool_use") | .name) | join(",")) else empty end' 2>/dev/null \
+      | grep -v '^$' | tail -1 || true)
+    case "$last_tool" in
+      (*AskUserQuestion*) echo "question" ;;
+      (*ExitPlanMode*)    echo "plan" ;;
+      (*)                 echo "reply" ;;
+    esac
     ;;
   send)
     # cst send <session-id> <message…> — run one headless turn in the
@@ -1259,7 +1309,11 @@ APPLESCRIPT
     ;;
   usage-json)
     # cst usage-json — quota snapshot for the panel footer.
-    #   codex: official rate_limits from the newest rollout event
+    #   codex: official rate_limits from the newest rollout event.
+    #   NOTE: rollout files are undocumented and slated for migration to
+    #   thread_history_1.sqlite (background_paginated_rollout_migration
+    #   flag) — all reads here degrade gracefully; add a sqlite fallback
+    #   when that flag flips
     #   claude: local estimate — tokens in the last 5h across transcripts
     USAGE_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/usage-cache.json"
     if [ -f "$USAGE_CACHE" ]; then
@@ -1315,6 +1369,41 @@ APPLESCRIPT
         claude_official: $clo, codex: $codex}' \
       | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
     cat "$USAGE_CACHE"
+    ;;
+  icon)
+    # cst icon <key|emoji|image-path> — set the menubar/search icon.
+    #   keys: generic claude codex cat ghost robot slime
+    #   image: png/gif path (gif animates) · anything else: treated as emoji
+    [ $# -ge 2 ] || { echo "usage: cst icon <key|emoji|image.png|image.gif>" >&2; exit 1; }
+    APPID="com.dean.agents-session-tracker"
+    ICON_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}"
+    arg="$2"
+    if [ -f "$arg" ]; then
+      case "$arg" in
+        (*.gif|*.GIF)
+          cp "$arg" "$ICON_DIR/icon.gif" && rm -f "$ICON_DIR/icon.png" ;;
+        (*)
+          sips -s format png "$arg" --out "$ICON_DIR/icon.png" >/dev/null 2>&1 \
+            || cp "$arg" "$ICON_DIR/icon.png"
+          rm -f "$ICON_DIR/icon.gif" ;;
+      esac
+      defaults write "$APPID" menubarAgent custom
+      echo "icon: custom image ($arg)"
+    else
+      case "$arg" in
+        (generic|claude|codex|cat|ghost|robot|slime)
+          defaults write "$APPID" menubarAgent "$arg"
+          echo "icon: $arg" ;;
+        (*)
+          defaults write "$APPID" menubarEmoji "$arg"
+          defaults write "$APPID" menubarAgent emoji
+          echo "icon: emoji $arg" ;;
+      esac
+    fi
+    # apply by restarting the app (one-shot — no polling in the app)
+    pkill -f "MacOS/AgentsSessionTracker" 2>/dev/null || true
+    sleep 0.4
+    open "$HOME/.claude/session-tracker/AgentsSessionTracker.app" 2>/dev/null || true
     ;;
   stats-json)
     # cst stats-json — fun usage stats for the panel (1h cache).

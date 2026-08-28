@@ -23,6 +23,7 @@ struct Session: Decodable, Identifiable, Equatable {
     let agent: String?
     let model: String?
     let parent: String?
+    let continuation: Bool?
     var id: String { session_id }
     var pinned: Bool { pin_order != nil }
 }
@@ -101,6 +102,9 @@ final class Model: ObservableObject {
                 if !self.firstLoad {
                     for s in parsed {
                         let old = self.prevStatuses[s.session_id]
+                        if old != s.status, s.status == "running" {
+                            appDelegate?.runStart[s.session_id] = Date()
+                        }
                         if old != s.status, ["waiting", "finished", "input"].contains(s.status) {
                             appDelegate?.notify(session: s)
                         }
@@ -607,6 +611,22 @@ func customIconFrames(height: CGFloat) -> [NSImage] {
 
 func customIconImage(height: CGFloat) -> NSImage? { customIconFrames(height: height).first }
 
+// any emoji as the icon — rendered into an NSImage for the menubar
+var savedEmojiIcon: String {
+    UserDefaults.standard.string(forKey: "menubarEmoji") ?? ""
+}
+func emojiNSImage(_ emoji: String, height: CGFloat) -> NSImage {
+    let size = NSSize(width: height + 2, height: height + 2)
+    let out = NSImage(size: size)
+    out.lockFocus()
+    let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: height * 0.86)]
+    let str = NSAttributedString(string: emoji, attributes: attrs)
+    let b = str.size()
+    str.draw(at: NSPoint(x: (size.width - b.width) / 2, y: (size.height - b.height) / 2))
+    out.unlockFocus()
+    return out
+}
+
 // card-grid icon picker shown under the status item on right-click
 struct IconPickerView: View {
     let current: String
@@ -619,6 +639,7 @@ struct IconPickerView: View {
                 .tracking(1.4)
             let choices = iconChoices
                 + (customIconExists ? [("custom", "이미지", appIconMap, NSColor.clear)] : [])
+                + (savedEmojiIcon.isEmpty ? [] : [("emoji", "이모지", appIconMap, NSColor.clear)])
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(66), spacing: 8), count: 4),
                       spacing: 8) {
                 ForEach(choices, id: \.key) { c in
@@ -638,9 +659,82 @@ struct IconPickerView: View {
                     .onTapGesture { onPick(c.key) }
                 }
             }
+            Divider().padding(.vertical, 2)
+            HStack {
+                Spacer()
+                Button {
+                    appDelegate?.showSettings()
+                } label: {
+                    Label("설정…", systemImage: "gearshape")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
         }
         .padding(12)
         .background(VisualEffect().clipShape(RoundedRectangle(cornerRadius: 12)))
+    }
+}
+
+// dedicated settings window: hotkeys + general toggles
+struct SettingsView: View {
+    @ObservedObject var model: Model
+    @State private var panelHK = appDelegate?.currentHotkeyLabel() ?? "⌥Space"
+    @State private var attnHK = appDelegate?.currentAttentionLabel() ?? "⌘⌥A"
+    @State private var recording: String? = nil  // "panel" | "attn"
+    @AppStorage("notifyWaiting") private var notifyWaiting = true
+    @AppStorage("notifyInput") private var notifyInput = true
+    @AppStorage("notifyFinished") private var notifyFinished = true
+
+    func hotkeyButton(_ id: String, _ label: String, apply: @escaping (Int, Int) -> Void,
+                      refresh: @escaping () -> String) -> some View {
+        Button {
+            recording = id
+            appDelegate?.beginKeyCapture { k, m in
+                if k >= 0 { apply(k, m) }
+                if id == "panel" { panelHK = refresh() } else { attnHK = refresh() }
+                recording = nil
+            }
+        } label: {
+            Text(recording == id ? "새 조합을 누르세요… (Esc 취소)" : label)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6)
+                    .fill(recording == id ? claudeOrange.opacity(0.25) : Color.primary.opacity(0.07)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    var body: some View {
+        Form {
+            Section("단축키") {
+                LabeledContent("패널 열기/닫기") {
+                    hotkeyButton("panel", panelHK,
+                                 apply: { appDelegate?.setHotkey(keyCode: $0, carbonMods: $1) },
+                                 refresh: { appDelegate?.currentHotkeyLabel() ?? "" })
+                }
+                LabeledContent("어텐션 세션으로 점프") {
+                    hotkeyButton("attn", attnHK,
+                                 apply: { appDelegate?.setAttentionHotkey(keyCode: $0, carbonMods: $1) },
+                                 refresh: { appDelegate?.currentAttentionLabel() ?? "" })
+                }
+                Text("패널 안: ⌘1–9 점프 · ⌃X 중지/종료 · ⌃R 이름 · ⌃P 핀 · Tab 프롬프트")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Section("일반") {
+                Picker("새 세션 기본 에이전트", selection: $model.mainAgent) {
+                    Text("claude").tag("claude")
+                    Text("codex").tag("codex")
+                }
+                .pickerStyle(.segmented)
+                Toggle("알림: 승인 필요", isOn: $notifyWaiting)
+                Toggle("알림: 답변 대기", isOn: $notifyInput)
+                Toggle("알림: 작업 완료", isOn: $notifyFinished)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 400, height: 340)
     }
 }
 
@@ -652,6 +746,10 @@ struct PixelAppIcon: View {
         let px = quantizedPixel(pixel, scale: scale)
         if choice == "codex" {
             CodexLogoIcon().frame(width: px * 10, height: px * 10)
+        } else if choice == "emoji", !savedEmojiIcon.isEmpty {
+            Text(savedEmojiIcon)
+                .font(.system(size: px * 9))
+                .frame(height: px * 10)
         } else if choice == "custom", !customIconFrames(height: px * 10).isEmpty {
             let frames = customIconFrames(height: px * 10)
             if frames.count > 1 {
@@ -1520,7 +1618,7 @@ struct PanelView: View {
                            bg: s.bg, kind: s.kind, group: s.group, pin_order: s.pin_order,
                            group_color: s.group_color, group_order: s.group_order,
                            sort_order: s.sort_order, agent: s.agent, model: s.model,
-                           parent: s.parent)
+                           parent: s.parent, continuation: s.continuation)
         }
     }
 
@@ -1836,10 +1934,21 @@ struct PanelView: View {
         // manually placed child (drag → sort_order) escapes the nest
         let parentIds = Set(rest.map { $0.session_id })
             .union(pinnedSessions.map { $0.session_id })
+        // a hidden parent (dead original) is represented by its live
+        // continuation — nest siblings under that row instead
+        func displayParent(_ s: Session) -> String? {
+            guard let p = s.parent else { return nil }
+            if parentIds.contains(p) { return p }
+            if let proxy = (rest + pinnedSessions).first(where: {
+                $0.session_id != s.session_id && $0.parent == p && ($0.continuation ?? false)
+            }) {
+                return proxy.session_id
+            }
+            return nil
+        }
         let children = Dictionary(grouping: rest.filter {
-            guard $0.sort_order == nil, let p = $0.parent else { return false }
-            return parentIds.contains(p)
-        }, by: { $0.parent! })
+            $0.sort_order == nil && displayParent($0) != nil
+        }, by: { displayParent($0)! })
         let nestedIds = Set(children.values.flatMap { $0 }.map { $0.session_id })
         func appendWithChildren(_ s: Session) {
             out.append(.session(s, indented: false))
@@ -2170,8 +2279,13 @@ struct PanelView: View {
                                   renameCommit: { newName in
                                       model.renameSession(s.session_id, to: newName)
                                       renamingSession = nil
+                                      // hand the keyboard back so ↩ jumps again
+                                      searchFocused = true
                                   },
-                                  renameCancel: { renamingSession = nil })
+                                  renameCancel: {
+                                      renamingSession = nil
+                                      searchFocused = true
+                                  })
                 .padding(.leading, indented ? 16 : 0)
                 .id(r.id)
             if s.pinned && !searching {
@@ -2888,11 +3002,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        // Raycast behavior: clicking elsewhere dismisses the panel
+        // Raycast behavior: clicking elsewhere dismisses the panel — but a
+        // macOS permission/security dialog stealing focus must not
         if (notification.object as? NSWindow) === iconPanel {
             iconPanel?.orderOut(nil)
-        } else {
-            hidePanel()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+            let systemDialogs = [
+                "com.apple.SecurityAgent",
+                "com.apple.UserNotificationCenter",
+                "com.apple.coreservices.uiagent",
+                "com.apple.universalaccessAuthWarn",
+            ]
+            if systemDialogs.contains(front) { return }
+            self.hidePanel()
         }
     }
 
@@ -2928,9 +3054,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID,
                             GetEventDispatcherTarget(), 0, &hotKeyRef)
 
-        // ⌘⌥A — jump straight to the top attention session
+        // attention jump — default ⌘⌥A, user-configurable in settings
+        let aKey = defaults?.object(forKey: "attentionKeyCode") as? Int ?? kVK_ANSI_A
+        let aMods = defaults?.object(forKey: "attentionModifiers") as? Int ?? (cmdKey | optionKey)
         let attentionID = EventHotKeyID(signature: OSType(0x43535453), id: 2)
-        RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(cmdKey | optionKey), attentionID,
+        RegisterEventHotKey(UInt32(aKey), UInt32(aMods), attentionID,
                             GetEventDispatcherTarget(), 0, &attentionHotKeyRef)
 
         // number jumps are panel-local (handled by the key monitor while the
@@ -2939,6 +3067,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     var attentionHotKeyRef: EventHotKeyRef?
     var digitHotKeyRefs: [EventHotKeyRef?] = []
+
+    // ── settings window ──────────────────────────────────────────
+    var settingsWindow: NSWindow?
+    func showSettings() {
+        iconPanel?.orderOut(nil)
+        hidePanel()
+        if settingsWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 320),
+                             styleMask: [.titled, .closable],
+                             backing: .buffered, defer: false)
+            w.title = "설정"
+            w.isReleasedWhenClosed = false
+            w.contentViewController = NSHostingController(rootView: SettingsView(model: model))
+            settingsWindow = w
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.center()
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    // ── user-configurable panel hotkey ───────────────────────────
+    static let keyNames: [Int: String] = [
+        kVK_Space: "Space", kVK_Return: "↩", kVK_Tab: "⇥",
+        kVK_ANSI_A: "A", kVK_ANSI_B: "B", kVK_ANSI_C: "C", kVK_ANSI_D: "D",
+        kVK_ANSI_E: "E", kVK_ANSI_F: "F", kVK_ANSI_G: "G", kVK_ANSI_H: "H",
+        kVK_ANSI_I: "I", kVK_ANSI_J: "J", kVK_ANSI_K: "K", kVK_ANSI_L: "L",
+        kVK_ANSI_M: "M", kVK_ANSI_N: "N", kVK_ANSI_O: "O", kVK_ANSI_P: "P",
+        kVK_ANSI_Q: "Q", kVK_ANSI_R: "R", kVK_ANSI_S: "S", kVK_ANSI_T: "T",
+        kVK_ANSI_U: "U", kVK_ANSI_V: "V", kVK_ANSI_W: "W", kVK_ANSI_X: "X",
+        kVK_ANSI_Y: "Y", kVK_ANSI_Z: "Z",
+        kVK_ANSI_0: "0", kVK_ANSI_1: "1", kVK_ANSI_2: "2", kVK_ANSI_3: "3",
+        kVK_ANSI_4: "4", kVK_ANSI_5: "5", kVK_ANSI_6: "6", kVK_ANSI_7: "7",
+        kVK_ANSI_8: "8", kVK_ANSI_9: "9",
+        kVK_ANSI_Grave: "`", kVK_ANSI_Minus: "-", kVK_ANSI_Equal: "=",
+        kVK_ANSI_Slash: "/", kVK_ANSI_Period: ".", kVK_ANSI_Comma: ",",
+        kVK_ANSI_Semicolon: ";",
+    ]
+
+    func currentHotkeyLabel() -> String {
+        let d = UserDefaults(suiteName: "com.dean.claude-sessions")
+        let key = d?.object(forKey: "hotkeyKeyCode") as? Int ?? kVK_Space
+        let mods = d?.object(forKey: "hotkeyModifiers") as? Int ?? optionKey
+        var s = ""
+        if mods & controlKey != 0 { s += "⌃" }
+        if mods & optionKey != 0 { s += "⌥" }
+        if mods & shiftKey != 0 { s += "⇧" }
+        if mods & cmdKey != 0 { s += "⌘" }
+        return s + (Self.keyNames[key] ?? "key\(key)")
+    }
+
+    func setHotkey(keyCode: Int, carbonMods: Int) {
+        let d = UserDefaults(suiteName: "com.dean.claude-sessions")
+        d?.set(keyCode, forKey: "hotkeyKeyCode")
+        d?.set(carbonMods, forKey: "hotkeyModifiers")
+        if let r = hotKeyRef { UnregisterEventHotKey(r); hotKeyRef = nil }
+        let hotKeyID = EventHotKeyID(signature: OSType(0x43535453), id: 1)
+        RegisterEventHotKey(UInt32(keyCode), UInt32(carbonMods), hotKeyID,
+                            GetEventDispatcherTarget(), 0, &hotKeyRef)
+    }
+
+    var recordMonitor: Any?
+    // capture one modifier+key combo; esc → (-1, 0)
+    func beginKeyCapture(_ done: @escaping (Int, Int) -> Void) {
+        if let m = recordMonitor { NSEvent.removeMonitor(m); recordMonitor = nil }
+        recordMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] ev in
+            guard let self else { return ev }
+            func finish(_ k: Int, _ m: Int) {
+                if let mon = self.recordMonitor { NSEvent.removeMonitor(mon); self.recordMonitor = nil }
+                done(k, m)
+            }
+            if ev.keyCode == 53 { finish(-1, 0); return nil } // esc = cancel
+            var carbon = 0
+            if ev.modifierFlags.contains(.command) { carbon |= cmdKey }
+            if ev.modifierFlags.contains(.option) { carbon |= optionKey }
+            if ev.modifierFlags.contains(.control) { carbon |= controlKey }
+            if ev.modifierFlags.contains(.shift) { carbon |= shiftKey }
+            guard carbon != 0 else { return ev } // a bare key can't be global
+            finish(Int(ev.keyCode), carbon)
+            return nil
+        }
+    }
+
+    func beginHotkeyCapture(_ done: @escaping (String) -> Void) {
+        beginKeyCapture { [weak self] k, m in
+            guard let self else { return }
+            if k >= 0 { self.setHotkey(keyCode: k, carbonMods: m) }
+            done(self.currentHotkeyLabel())
+        }
+    }
+
+    // ── attention-jump hotkey (default ⌘⌥A) ─────────────────────
+    func comboLabel(keyCode: Int, carbonMods: Int) -> String {
+        var s = ""
+        if carbonMods & controlKey != 0 { s += "⌃" }
+        if carbonMods & optionKey != 0 { s += "⌥" }
+        if carbonMods & shiftKey != 0 { s += "⇧" }
+        if carbonMods & cmdKey != 0 { s += "⌘" }
+        return s + (Self.keyNames[keyCode] ?? "key\(keyCode)")
+    }
+
+    func currentAttentionLabel() -> String {
+        let d = UserDefaults(suiteName: "com.dean.claude-sessions")
+        let key = d?.object(forKey: "attentionKeyCode") as? Int ?? kVK_ANSI_A
+        let mods = d?.object(forKey: "attentionModifiers") as? Int ?? (cmdKey | optionKey)
+        return comboLabel(keyCode: key, carbonMods: mods)
+    }
+
+    func setAttentionHotkey(keyCode: Int, carbonMods: Int) {
+        let d = UserDefaults(suiteName: "com.dean.claude-sessions")
+        d?.set(keyCode, forKey: "attentionKeyCode")
+        d?.set(carbonMods, forKey: "attentionModifiers")
+        if let r = attentionHotKeyRef { UnregisterEventHotKey(r); attentionHotKeyRef = nil }
+        let id = EventHotKeyID(signature: OSType(0x43535453), id: 2)
+        RegisterEventHotKey(UInt32(keyCode), UInt32(carbonMods), id,
+                            GetEventDispatcherTarget(), 0, &attentionHotKeyRef)
+    }
 
     func jumpIndex(_ n: Int) {
         if let handler = model.hotkeyNumber {
@@ -2965,20 +3209,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
+    // start-of-turn timestamps, for the "(4m 32s)" tag on completion
+    var runStart: [String: Date] = [:]
+
     func notify(session s: Session) {
         guard notificationsReady else { return }
-        let body: String
+        let d = UserDefaults.standard
         switch s.status {
-        case "waiting": body = "승인이 필요해요"
-        case "input": body = "답을 기다리고 있어요"
-        default: body = "작업 완료 — 결과를 확인하세요"
+        case "waiting": guard d.object(forKey: "notifyWaiting") as? Bool ?? true else { return }
+        case "input": guard d.object(forKey: "notifyInput") as? Bool ?? true else { return }
+        default: guard d.object(forKey: "notifyFinished") as? Bool ?? true else { return }
         }
-        let content = UNMutableNotificationContent()
-        content.title = s.title ?? ((s.cwd ?? "session") as NSString).lastPathComponent
-        content.body = body
-        content.userInfo = ["sid": s.session_id]
-        let req = UNNotificationRequest(identifier: s.session_id, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        var title = s.title ?? ((s.cwd ?? "session") as NSString).lastPathComponent
+        if s.status == "finished", let start = runStart[s.session_id] {
+            let e = Int(Date().timeIntervalSince(start))
+            title += e >= 60 ? " (\(e / 60)m \(e % 60)s)" : " (\(e)s)"
+        }
+        // body = the session state, plain English. "input" is refined by
+        // what the session actually asked for (question / plan / reply)
+        let sid = s.session_id
+        let status = s.status
+        DispatchQueue.global().async {
+            let body: String
+            switch status {
+            case "waiting": body = "Needs approval"
+            case "input":
+                let kind = runCST(["input-kind", sid], capture: true)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                switch kind {
+                case "question": body = "Question — pick an option"
+                case "plan": body = "Plan approval needed"
+                default: body = "Waiting for your reply"
+                }
+            default: body = "Finished"
+            }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.userInfo = ["sid": sid]
+            let req = UNNotificationRequest(identifier: sid, content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(req)
+        }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -3009,6 +3280,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func buildMenubarImages() {
         let empty = String(repeating: ".", count: 16)
+        // emoji icon: bounce between two vertical offsets like the mascots
+        if menubarAgent == "emoji", !savedEmojiIcon.isEmpty {
+            let img = emojiNSImage(savedEmojiIcon, height: 16)
+            func offsetFrame(_ dy: CGFloat) -> NSImage {
+                let out = NSImage(size: NSSize(width: img.size.width, height: 20))
+                out.lockFocus()
+                img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: img.size.height),
+                         from: .zero, operation: .sourceOver, fraction: 1)
+                out.unlockFocus()
+                return out
+            }
+            menubarStaticImage = offsetFrame(1)
+            menubarStatusFrames = [
+                "running": [offsetFrame(2), offsetFrame(0)],
+                "waiting": [offsetFrame(2), offsetFrame(0)],
+            ]
+            return
+        }
         // custom image: a GIF animates with its own frames, a PNG bounces
         if menubarAgent == "custom" {
             let frames = customIconFrames(height: 16)
@@ -3103,6 +3392,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 self?.setMenubarAgent(key)
                 self?.iconPanel?.orderOut(nil)
             })
+        if let v = p.contentViewController?.view {
+            p.setContentSize(v.fittingSize)
+        }
         p.layoutIfNeeded()
         if let btn = statusItem.button, let win = btn.window {
             let f = win.frame

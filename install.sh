@@ -30,7 +30,7 @@ mkdir -p "$(dirname "$SETTINGS")"
 cp "$SETTINGS" "$SETTINGS.bak-cst"
 jq --arg cmd "/bin/bash $TRACK" '
   .hooks = (.hooks // {})
-  | reduce ("SessionStart","UserPromptSubmit","PreToolUse","Notification","Stop","SessionEnd") as $ev (.;
+  | reduce ("SessionStart","UserPromptSubmit","PreToolUse","PermissionRequest","Notification","Stop","SessionEnd") as $ev (.;
       .hooks[$ev] = (
         ((.hooks[$ev] // []) | map(select((.hooks // []) | any(.command == $cmd) | not)))
         + [{hooks: [{type: "command", command: $cmd}]}]))
@@ -40,8 +40,12 @@ echo "registered claude hooks (backup: $SETTINGS.bak-cst)"
 # ── menubar app ──────────────────────────────────────────────────
 mkdir -p "$APP/Contents/MacOS"
 cp "$REPO_DIR/menubar/Info.plist" "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"
+cp "$REPO_DIR/menubar/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 echo "building AgentsSessionTracker.app (first build takes ~30s)…"
 swiftc -O -o "$APP/Contents/MacOS/AgentsSessionTracker" "$REPO_DIR/menubar/AgentsSessionTracker.swift"
+# ad-hoc signature — notification registration doesn't stick without one
+codesign --force --deep -s - "$APP" 2>/dev/null || true
 echo "built: $APP"
 
 # ── starter custom commands (kept if one already exists) ─────────
@@ -77,6 +81,8 @@ if [ "${1:-}" = "--codex" ]; then
   CODEX_HOOKS="$HOME/.codex/hooks.json"
   mkdir -p "$HOME/.codex"
   [ -f "$CODEX_HOOKS" ] && cp "$CODEX_HOOKS" "$CODEX_HOOKS.bak-cst"
+  # NOTE: codex trust keys embed positional indices — never REORDER this
+  # event list (append only), or every user gets re-prompted to trust
   jq -n --arg cmd "/bin/bash $TRACK" '
     {hooks: (reduce ("SessionStart","UserPromptSubmit","PreToolUse","PermissionRequest","Stop","SessionEnd") as $ev ({};
       .[$ev] = [{hooks: [{type: "command", command: $cmd}]}]))}
