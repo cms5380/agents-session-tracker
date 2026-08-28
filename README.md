@@ -78,6 +78,31 @@ cd agents-session-tracker
 
 첫 실행 시 알림 권한과 iTerm2 자동화(Automation) 권한을 승인하면 된다.
 
+### AI 에이전트에게 설치 시키기
+
+Claude Code 등 AI 에이전트에 이 저장소 URL을 주고 "설치해줘"라고 하면 된다.
+에이전트를 위한 정확한 절차:
+
+```sh
+# 1. 설치 (brew 또는 소스 — 위 참조)
+brew install cms5380/tap/agents-session-tracker
+agents-session-tracker-setup            # Codex 사용자는 --codex 추가
+
+# 2. 검증
+~/.claude/session-tracker/cst sessions-json | jq 'type'   # "array" 나오면 정상
+pgrep -f MacOS/AgentsSessionTracker                        # 앱 프로세스 존재 확인
+jq '.hooks | keys' ~/.claude/settings.json                 # 훅 6종 등록 확인
+```
+
+**사람(사용자)의 GUI 승인이 필요한 단계** — 에이전트는 아래를 사용자에게 안내할 것:
+1. 첫 알림 시 macOS **알림 권한** 허용
+2. 첫 점프 시 **iTerm2 자동화(Automation)** 권한 허용
+3. `--codex` 사용 시: `codex`를 한 번 실행해 **훅 신뢰(trust) 프롬프트** 승인
+
+문제 해결: 패널이 안 뜨면 `open ~/.claude/session-tracker/AgentsSessionTracker.app`,
+세션이 안 보이면 새 claude 세션을 하나 시작해 훅이 레코드를 쓰는지
+`ls ~/.local/state/claude-session-tracker/sessions/`로 확인.
+
 ## 단축키
 
 | 키 | 동작 |
