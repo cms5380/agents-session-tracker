@@ -10,14 +10,24 @@ mkdir -p "$STATE_DIR"
 [ -n "${CST_INTERNAL:-}" ] && exit 0
 
 input=$(cat)
-session_id=$(jq -r '.session_id // empty' <<<"$input")
+# one jq for the whole payload — this runs on every tool call, so a field-at-
+# a-time parse (6 spawns) was the hook's dominant cost. Message goes last and
+# is slurped by the loop below because it may itself span lines.
+message=""
+# trailing empty fields vanish with the trailing newlines of $( ), so every
+# read must tolerate EOF — otherwise set -e kills the hook mid-parse
+session_id=""; event=""; cwd=""; transcript=""; model=""
+{
+  IFS= read -r session_id || true
+  IFS= read -r event || true
+  IFS= read -r cwd || true
+  IFS= read -r transcript || true
+  IFS= read -r model || true
+  while IFS= read -r _line; do message="$message$_line"; done
+} <<<"$(jq -r '[(.session_id // ""), (.hook_event_name // ""), (.cwd // ""),
+                (.transcript_path // ""), (.model // ""), (.message // "")]
+               | join("\n")' <<<"$input" 2>/dev/null)"
 [ -n "$session_id" ] || exit 0
-
-event=$(jq -r '.hook_event_name // empty' <<<"$input")
-cwd=$(jq -r '.cwd // empty' <<<"$input")
-message=$(jq -r '.message // empty' <<<"$input")
-transcript=$(jq -r '.transcript_path // empty' <<<"$input")
-model=$(jq -r '.model // empty' <<<"$input")
 
 # which agent produced this session — codex writes rollout files under
 # ~/.codex/sessions and speaks the same hook protocol
@@ -37,10 +47,11 @@ fi
 file="$STATE_DIR/$session_id.json"
 existing="{}"
 [ -f "$file" ] && existing=$(cat "$file")
-# a torn record (crashed writer) must not wedge the hook — start fresh
-jq -e . >/dev/null 2>&1 <<<"$existing" || existing="{}"
+# a torn record (crashed writer) must not wedge the hook — the same jq that
+# reports what the record already knows doubles as the validity check
 have=$(jq -r '(if (.title // "") != "" then "t" else "" end)
-              + (if (.model // "") != "" then "m" else "" end)' <<<"$existing")
+              + (if (.model // "") != "" then "m" else "" end)' <<<"$existing" 2>/dev/null) \
+  || { existing="{}"; have=""; }
 
 # human-readable session title: first user prompt (immutable), else the
 # transcript summary — summaries evolve every few turns and made names churn
