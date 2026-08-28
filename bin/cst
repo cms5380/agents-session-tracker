@@ -651,16 +651,23 @@ cmd_sessions_json() {
     # the record; spare-pool forks have no --fork-session cmdline to read
     if [ "$(jq -r '.parent_resolved // empty' <<<"$s")" != "true" ] \
        && [ "$(jq -r '.agent // "claude"' <<<"$s")" = "claude" ]; then
-      local tpath0 lp parent_sid pf psid pt is_continuation
+      local tpath0 lp parent_sid pf psid pt is_continuation jstate jparent
       is_continuation=""
       tpath0=$(jq -r '.transcript_path // ""' <<<"$s")
       parent_sid=""
+      # authoritative source first: the daemon's job state records the fork
+      # parent directly (spare-pool /fork sessions)
+      jstate="$HOME/.claude/jobs/${sid:0:8}/state.json"
+      if [ -f "$jstate" ]; then
+        jparent=$(jq -r '.forkParentSessionId // empty' "$jstate" 2>/dev/null || true)
+        [ -n "$jparent" ] && [ "$jparent" != "$sid" ] && parent_sid="$jparent"
+      fi
       # the recorded path goes stale when a session's cwd changes (transcripts
       # live under a per-project dir) — relocate by session id
       if [ -n "$tpath0" ] && [ ! -f "$tpath0" ]; then
         tpath0=$(ls "$HOME/.claude/projects"/*/"$sid.jsonl" 2>/dev/null | head -1 || true)
       fi
-      if [ -n "$tpath0" ] && [ -f "$tpath0" ]; then
+      if [ -z "$parent_sid" ] && [ -n "$tpath0" ] && [ -f "$tpath0" ]; then
         lp=$(head -n 12 "$tpath0" 2>/dev/null \
           | jq -r 'select(.logicalParentUuid) | .logicalParentUuid' 2>/dev/null | head -1 || true)
         if [ -z "$lp" ]; then
@@ -696,18 +703,20 @@ cmd_sessions_json() {
             fi
           done
         fi
-        s=$(jq -c --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+      fi
+      # cache whatever was resolved (job state, lp, or citation) so the
+      # scan doesn't repeat every refresh
+      s=$(jq -c --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+        '.parent_resolved = true
+         | if $p != "" then .parent = $p else . end
+         | if $cont == "true" then .continuation = true else . end' <<<"$s")
+      rf0="$STATE_DIR/$sid.json"
+      if [ -f "$rf0" ]; then
+        jq --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
           '.parent_resolved = true
            | if $p != "" then .parent = $p else . end
-           | if $cont == "true" then .continuation = true else . end' <<<"$s")
-        rf0="$STATE_DIR/$sid.json"
-        if [ -f "$rf0" ]; then
-          jq --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
-            '.parent_resolved = true
-             | if $p != "" then .parent = $p else . end
-             | if $cont == "true" then .continuation = true else . end' \
-            "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0"
-        fi
+           | if $cont == "true" then .continuation = true else . end' \
+          "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0"
       fi
     fi
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
