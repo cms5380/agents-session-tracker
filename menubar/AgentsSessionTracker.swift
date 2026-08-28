@@ -696,42 +696,153 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    var body: some View {
-        Form {
-            Section("단축키") {
-                LabeledContent("패널 열기/닫기") {
-                    hotkeyButton("panel", panelHK,
-                                 apply: { appDelegate?.setHotkey(keyCode: $0, carbonMods: $1) },
-                                 refresh: { appDelegate?.currentHotkeyLabel() ?? "" })
-                }
-                LabeledContent("어텐션 세션으로 점프") {
-                    hotkeyButton("attn", attnHK,
-                                 apply: { appDelegate?.setAttentionHotkey(keyCode: $0, carbonMods: $1) },
-                                 refresh: { appDelegate?.currentAttentionLabel() ?? "" })
-                }
-                Text("패널 안: ⌘1–9 점프 · ⌃X 중지/종료 · ⌃R 이름 · ⌃P 핀 · Tab 프롬프트")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+    @State private var tab = "general"
+
+    private let tabs: [(id: String, label: String, icon: String)] = [
+        ("general", "일반", "gearshape.fill"),
+        ("hotkeys", "단축키", "command"),
+        ("notifications", "알림", "bell.badge.fill"),
+        ("about", "정보", "info.circle.fill"),
+    ]
+
+    // System Settings-style toolbar tab: icon over label, tinted when active
+    private func tabButton(_ t: (id: String, label: String, icon: String)) -> some View {
+        let active = tab == t.id
+        return Button {
+            tab = t.id
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: t.icon)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(height: 17)
+                Text(t.label)
+                    .font(.system(size: 10, weight: active ? .semibold : .regular))
             }
-            Section("일반") {
-                Picker("새 세션 기본 에이전트", selection: $model.mainAgent) {
-                    Text("claude").tag("claude")
-                    Text("codex").tag("codex")
-                }
-                .pickerStyle(.segmented)
-                Picker("새 탭 기본 터미널", selection: $defaultTerminal) {
-                    Text("자동").tag("")
-                    Text("iTerm2").tag("iterm")
-                    Text("Terminal").tag("terminal")
-                    Text("Ghostty").tag("ghostty")
-                }
-                .pickerStyle(.segmented)
-                Toggle("알림: 승인 필요", isOn: $notifyWaiting)
-                Toggle("알림: 답변 대기", isOn: $notifyInput)
-                Toggle("알림: 작업 완료", isOn: $notifyFinished)
-            }
+            .frame(width: 58, height: 44)
+            .foregroundStyle(active ? Color.accentColor : Color.secondary)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(active ? Color.accentColor.opacity(0.13) : Color.clear))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
-        .formStyle(.grouped)
-        .frame(width: 400, height: 380)
+        .buttonStyle(.plain)
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                ForEach(tabs, id: \.id) { tabButton($0) }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(.bar)
+
+            Divider()
+
+            Group {
+                switch tab {
+                case "hotkeys":
+                    Form {
+                        Section("전역 단축키") {
+                            LabeledContent("패널 열기/닫기") {
+                                hotkeyButton("panel", panelHK,
+                                             apply: { appDelegate?.setHotkey(keyCode: $0, carbonMods: $1) },
+                                             refresh: { appDelegate?.currentHotkeyLabel() ?? "" })
+                            }
+                            LabeledContent("어텐션 세션으로 점프") {
+                                hotkeyButton("attn", attnHK,
+                                             apply: { appDelegate?.setAttentionHotkey(keyCode: $0, carbonMods: $1) },
+                                             refresh: { appDelegate?.currentAttentionLabel() ?? "" })
+                            }
+                        }
+                        Section("패널 안에서") {
+                            keyRow("↩ / ⌘1–9", "세션 점프")
+                            keyRow("Tab", "퀵 프롬프트 · 커맨드 자동완성")
+                            keyRow("⌃X", "중지 → 한 번 더: 완전 종료")
+                            keyRow("⌃R · ⌃P · ⌃C", "이름 변경 · 핀 · resume 복사")
+                            keyRow("/", "스킬 팔레트")
+                        }
+                    }
+                    .formStyle(.grouped)
+                case "notifications":
+                    Form {
+                        Section {
+                            Toggle("승인 필요 (Needs approval)", isOn: $notifyWaiting)
+                            Toggle("답변 대기 (Waiting for reply)", isOn: $notifyInput)
+                            Toggle("작업 완료 (Finished)", isOn: $notifyFinished)
+                        } footer: {
+                            Text("알림을 클릭하면 해당 세션의 터미널로 점프합니다. 세션을 확인하면 남은 배너는 자동으로 지워집니다.")
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .formStyle(.grouped)
+                case "about":
+                    VStack(spacing: 10) {
+                        Spacer()
+                        if let icon = NSApp.applicationIconImage {
+                            Image(nsImage: icon)
+                                .resizable().frame(width: 76, height: 76)
+                        }
+                        Text("Agents Session Tracker")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        Text("v\(appVersion) · Claude Code & Codex 세션 트래커")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            Link("GitHub", destination:
+                                URL(string: "https://github.com/cms5380/agents-session-tracker")!)
+                            Text("·").foregroundStyle(.secondary)
+                            Text("brew install cms5380/tap/agents-session-tracker")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        .font(.system(size: 11.5))
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                default:
+                    Form {
+                        Section("새 세션") {
+                            Picker("기본 에이전트", selection: $model.mainAgent) {
+                                Text("claude").tag("claude")
+                                Text("codex").tag("codex")
+                            }
+                            .pickerStyle(.segmented)
+                            Picker("기본 터미널", selection: $defaultTerminal) {
+                                Text("자동").tag("")
+                                Text("iTerm2").tag("iterm")
+                                Text("Terminal").tag("terminal")
+                                Text("Ghostty").tag("ghostty")
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        Section {
+                            LabeledContent("메뉴바 아이콘") {
+                                Text("메뉴바 아이콘 우클릭으로 변경")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .formStyle(.grouped)
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(width: 440, height: 360)
+    }
+
+    private func keyRow(_ keys: String, _ desc: String) -> some View {
+        LabeledContent {
+            Text(desc).font(.system(size: 11.5)).foregroundStyle(.secondary)
+        } label: {
+            Text(keys)
+                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.07)))
+        }
     }
 }
 
