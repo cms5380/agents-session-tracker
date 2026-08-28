@@ -1293,8 +1293,22 @@ case "${1:-list}" in
     cat "$STATS_CACHE"
     ;;
   skills-json)
-    # list available skills / slash commands as [{name, description}]
-    out='[]'
+    # list available skills / slash commands as [{name, description}].
+    # Built-in skills live inside the claude binary (no SKILL.md on disk),
+    # so seed the well-known ones statically.
+    out=$(jq -n '[
+      {name: "simplify",       description: "변경 코드 단순화/정리 리뷰 후 적용"},
+      {name: "code-review",    description: "변경분 버그 중심 코드 리뷰"},
+      {name: "security-review", description: "브랜치 변경분 보안 리뷰"},
+      {name: "init",           description: "CLAUDE.md 생성"},
+      {name: "run",            description: "앱 실행해서 변경 확인"},
+      {name: "loop",           description: "프롬프트/커맨드 주기 실행"},
+      {name: "fork",           description: "현재 세션 포크 (백그라운드)"},
+      {name: "compact",        description: "컨텍스트 압축"},
+      {name: "usage",          description: "플랜 사용량 확인"},
+      {name: "model",          description: "모델 변경"},
+      {name: "resume",         description: "세션 재개 선택"}
+    ]')
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       case "$f" in
