@@ -52,6 +52,15 @@ macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패�
 
 ## 설치
 
+### Homebrew
+
+```sh
+brew install cms5380/tap/agents-session-tracker
+agents-session-tracker-setup          # Codex도 쓰면: agents-session-tracker-setup --codex
+```
+
+### 소스에서
+
 ```sh
 git clone https://github.com/cms5380/agents-session-tracker.git
 cd agents-session-tracker
