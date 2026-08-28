@@ -711,14 +711,18 @@ cmd_sessions_json() {
   # whitespace IFS collapses adjacent separators (empty fields would shift).
   local agents_sids
   agents_sids=$(jq -r '[.[].sessionId] | join(" ")' <<<"$agents_json")
-  sessions=$(jq -c '.[]' <<<"$sessions" | while IFS= read -r s; do
-    local sid pid agent status owner has_title presolved tpath tu pcmd
-    IFS=$'\t' read -r sid pid agent status owner has_title presolved tu tpath <<<"$(jq -r \
-      '[.session_id, (.pid // "" | tostring), (.agent // "claude"), (.status // ""),
-        (.owner // ""), (if (.title // "") != "" then "1" else "" end),
+  # the loop only decides keep / drop / status-override per record; the list
+  # itself is rebuilt in one jq at the end, so no record is re-serialized
+  # through the shell (embedding JSON in TSV would mangle its escapes)
+  local decisions
+  decisions=$(jq -r '.[] | [.session_id, (.pid // "" | tostring), (.agent // "claude"),
+        (.status // ""), (.owner // ""),
+        (if (.title // "") != "" then "1" else "" end),
         (if .parent_resolved == true then "1" else "" end),
         (.updated_at // 0 | tostring), (.transcript_path // "")]
-       | map(if . == "" then "-" else . end) | @tsv' <<<"$s")"
+       | map(if . == "" then "-" else . end) | @tsv' <<<"$sessions" \
+    | while IFS=$'\t' read -r sid pid agent status owner has_title presolved tu tpath; do
+    local pcmd ovr="" rflag=""
     if [ "$pid" = "-" ]; then pid=""; fi
     if [ "$owner" = "-" ]; then owner=""; fi
     if [ "$has_title" = "-" ]; then has_title=""; fi
@@ -803,17 +807,13 @@ cmd_sessions_json() {
       fi
       # cache whatever was resolved (job state, lp, or citation) so the
       # scan doesn't repeat every refresh
-      s=$(jq -c --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
-        '.parent_resolved = true
-         | if $p != "" then .parent = $p else . end
-         | if $cont == "true" then .continuation = true else . end' <<<"$s")
       rf0="$STATE_DIR/$sid.json"
       if [ -f "$rf0" ]; then
         jq --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
           '.parent_resolved = true
            | if $p != "" then .parent = $p else . end
            | if $cont == "true" then .continuation = true else . end' \
-          "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0"
+          "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0" && rflag="R"
       fi
     fi
     # codex has no daemon to correct a stale "running" (an Esc-interrupted
@@ -823,22 +823,18 @@ cmd_sessions_json() {
       local tmtime
       if [ -n "$tpath" ] && [ -f "$tpath" ]; then
         tmtime=$(stat -f %m "$tpath" 2>/dev/null || echo 0)
-        [ $((now - tmtime)) -gt 300 ] && s=$(jq -c '.status = "done"' <<<"$s")
+        [ $((now - tmtime)) -gt 300 ] && ovr="done"
       fi
     fi
     if case " $agents_sids " in (*" $sid "*) true ;; (*) false ;; esac; then
       # daemon-listed → real session
-      printf '%s\n' "$s"
+      printf '%s\t%s\t%s\n' "$sid" "$ovr" "$rflag"
     elif [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
       # dead pool-owned sessions were never real terminals — drop, don't
       # revive. Legacy records (no owner recorded) count as real only if
       # they at least earned a title.
       if [ "$owner" = "client" ] || { [ -z "$owner" ] && [ -n "$has_title" ]; }; then
-        if [ "$status" = "gone" ]; then
-          printf '%s\n' "$s"
-        else
-          jq -c '.status = "gone"' <<<"$s"
-        fi
+        printf '%s\tgone\t%s\n' "$sid" "$rflag"
       fi
     else
       # alive but unknown to the daemon: real only if owned by a real client.
@@ -849,13 +845,24 @@ cmd_sessions_json() {
           # pool-hosted but with a title = a real conversation claimed a
           # spare (e.g. a fresh bg-job fork the daemon hasn't listed yet);
           # titleless pool records are pre-warm phantoms — drop those
-          if [ -n "$(jq -r '.title // ""' <<<"$s")" ]; then
-            printf '%s\n' "$s"
-          fi ;;
-        (*) printf '%s\n' "$s" ;;
+          [ -n "$has_title" ] && printf '%s\t%s\t%s\n' "$sid" "$ovr" "$rflag" ;;
+        (*) printf '%s\t%s\t%s\n' "$sid" "$ovr" "$rflag" ;;
       esac
     fi
-  done | jq -s '.')
+  done)
+  # rebuild from the untouched records: keep the decided sids in order,
+  # applying status overrides, and fold in lineage resolved this pass
+  # lineage resolved this pass was written to the record files — re-read so
+  # the parent link shows up now rather than on the next refresh
+  case "$decisions" in
+    (*"$(printf '\t')R"*) all_records=$(jq -c -s '.' "$STATE_DIR"/*.json 2>/dev/null || printf '%s' "$all_records") ;;
+  esac
+  sessions=$(jq -c -n --arg dec "$decisions" --argjson all "$all_records" '
+    ($dec | split("\n") | map(select(length > 0) | split("\t"))
+          | map({key: .[0], value: (.[1] // "")}) | from_entries) as $keep
+    | [ $all[] | select(.session_id | in($keep))
+              | if ($keep[.session_id] // "") != "" then .status = $keep[.session_id] else . end ]
+    | sort_by(-.updated_at)')
 
   # a parent the loop above just hid hands its pin/name/order slot to the fork
   # that superseded it, so a pinned conversation stays pinned across a fork
@@ -882,12 +889,13 @@ cmd_sessions_json() {
   # fork parents hidden above — and sessions the user explicitly ended
   # (their record says so) — must not resurface as untracked daemon rows
   local fork_parents_json ended_json hidden_json
-  fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 | jq -R . | jq -sc '.' 2>/dev/null || echo '[]')
+  fork_parents_json=$(printf '%s\n' "$fork_pairs" | cut -d: -f1 \
+    | jq -R -s -c 'split("\n") | map(select(length > 0))' 2>/dev/null || echo '[]')
   ended_json=$(jq -c '[.[] | select(.status == "ended") | .session_id]' \
     <<<"$all_records" 2>/dev/null || echo '[]')
   hidden_json=$(jq -c -n --argjson a "$fork_parents_json" --argjson b "$ended_json" '$a + $b')
-  extra=$(jq -c --argjson tracked "$(jq '[.[].session_id]' <<<"$sessions")" \
-             --argjson forked "$hidden_json" '
+  extra=$(jq -c --argjson tracked_src "$sessions" --argjson forked "$hidden_json" '
+    ([$tracked_src[].session_id]) as $tracked |
     [.[] | select([.sessionId] | inside($tracked) | not)
          | select([.sessionId] | inside($forked) | not) | {
       session_id: .sessionId,
@@ -904,30 +912,36 @@ cmd_sessions_json() {
 
   # annotate tracked rows with the daemon's kind + name so UIs can label
   # daemon-hosted sessions correctly; attach user-defined group names
-  local groups_json names_json pins_json
-  groups_json=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
-  jq -e . >/dev/null 2>&1 <<<"$groups_json" || groups_json='{}'
-  names_json=$(cat "$NAMES_FILE" 2>/dev/null || echo '{}')
-  jq -e . >/dev/null 2>&1 <<<"$names_json" || names_json='{}'
-  pins_json=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
-  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pins_json" || pins_json='[]'
-  local colors_json order_json
-  colors_json=$(cat "$COLORS_FILE" 2>/dev/null || echo '{}')
-  jq -e . >/dev/null 2>&1 <<<"$colors_json" || colors_json='{}'
-  order_json=$(cat "$GORDER_FILE" 2>/dev/null || echo '[]')
-  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$order_json" || order_json='[]'
-  local sorder_json
-  sorder_json=$(cat "$SORDER_FILE" 2>/dev/null || echo '[]')
-  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$sorder_json" || sorder_json='[]'
+  # all six sid-keyed asset files in one jq pass — each is parsed inside a
+  # try so a torn write falls back to its empty default instead of blanking
+  # the list (the old cat+validate pair per file cost 12 spawns)
+  local assets
+  for f in "$GROUPS_FILE" "$NAMES_FILE" "$COLORS_FILE"; do
+    [ -f "$f" ] || printf '{}' >"$f" 2>/dev/null || true
+  done
+  for f in "$PINS_FILE" "$GORDER_FILE" "$SORDER_FILE"; do
+    [ -f "$f" ] || printf '[]' >"$f" 2>/dev/null || true
+  done
+  assets=$(jq -n -c \
+    --rawfile g "$GROUPS_FILE" --rawfile n "$NAMES_FILE" --rawfile c "$COLORS_FILE" \
+    --rawfile p "$PINS_FILE" --rawfile o "$GORDER_FILE" --rawfile so "$SORDER_FILE" '
+    def obj(x): (try (x | fromjson) catch {}) | if type == "object" then . else {} end;
+    def arr(x): (try (x | fromjson) catch []) | if type == "array" then . else [] end;
+    {groups: obj($g), names: obj($n), colors: obj($c),
+     pins: arr($p), gorder: arr($o), sorder: arr($so)}' 2>/dev/null \
+    || printf '%s' '{"groups":{},"names":{},"colors":{},"pins":[],"gorder":[],"sorder":[]}')
+  local groups_json names_json pins_json colors_json order_json sorder_json
+  groups_json="$assets"; names_json="$assets"; pins_json="$assets"
+  colors_json="$assets"; order_json="$assets"; sorder_json="$assets"
   # fork lineage for the UI: a fork nests under its parent when both are shown
   local pairs_json
   pairs_json=$(printf '%s\n' "$fork_pairs" \
-    | awk -F: 'NF==2{printf "{\"p\":\"%s\",\"f\":\"%s\"}\n",$1,$2}' | jq -sc '.' 2>/dev/null || echo '[]')
+    | jq -R -s -c 'split("\n") | map(select(test(":")) | split(":") | {p: .[0], f: .[1]})' \
+      2>/dev/null || echo '[]')
   jq --argjson extra "$extra" --argjson agents "$agents_json" \
-     --argjson groups "$groups_json" --argjson names "$names_json" \
-     --argjson pins "$pins_json" --argjson colors "$colors_json" \
-     --argjson gorder "$order_json" --argjson sorder "$sorder_json" \
-     --argjson pairs "$pairs_json" '
+     --argjson a "$assets" --argjson pairs "$pairs_json" '
+    ($a.groups) as $groups | ($a.names) as $names | ($a.pins) as $pins
+    | ($a.colors) as $colors | ($a.gorder) as $gorder | ($a.sorder) as $sorder |
     map(. as $s
       | ($agents | map(select(.sessionId == $s.session_id)) | first // {}) as $a
       | $s + {kind: ($a.kind // $s.kind), title: ($s.title // $a.name)}
