@@ -67,6 +67,7 @@ final class Model: ObservableObject {
     var hotkeyNumber: ((Int) -> Void)?
     var enterKey: ((Bool) -> Void)?  // arg: ⌘ held (alternate agent)
     var isTextEditing: (() -> Bool)?  // an inline editor owns the keyboard
+    var cmdEnterInEditor: (() -> Bool)?  // ⌘↩ inside the quick-prompt bar
     var messageSelected: (() -> Void)?
     var actionKey: ((String) -> Bool)?
     var timer: Timer?
@@ -153,8 +154,8 @@ final class Model: ObservableObject {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
-    func sendMessage(_ sid: String, _ text: String) {
-        DispatchQueue.global().async { runCST(["send", sid, text]) }
+    func sendMessage(_ sid: String, _ text: String, viaTerminal: Bool = false) {
+        DispatchQueue.global().async { runCST([viaTerminal ? "type-into" : "send", sid, text]) }
     }
 
     func openAll(_ members: [Session]) {
@@ -2421,14 +2422,18 @@ struct PanelView: View {
             if let sess = messagingSession {
                 HStack(spacing: 8) {
                     Text("→ \((sess.title ?? "session").prefix(16))").font(.system(size: 11)).foregroundStyle(.secondary)
-                    TextField("message (headless turn)", text: $messageText)
+                    TextField("message (↩ 헤드리스 · ⌘↩ 터미널에 입력)", text: $messageText)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11))
                         .focused($msgFocused)
                         .onAppear { msgFocused = true }
                         .onSubmit {
                             let text = messageText.trimmingCharacters(in: .whitespaces)
-                            if !text.isEmpty { model.sendMessage(sess.session_id, text) }
+                            let viaTerminal = NSEvent.modifierFlags.contains(.command)
+                            if !text.isEmpty {
+                                model.sendMessage(sess.session_id, text, viaTerminal: viaTerminal)
+                                if viaTerminal { appDelegate?.hidePanel() }
+                            }
                             messagingSession = nil
                             messageText = ""
                         }
@@ -2601,6 +2606,16 @@ struct PanelView: View {
             model.isTextEditing = {
                 renamingSession != nil || editingCommand || messagingSession != nil
                     || renaming != nil || addingGroup
+            }
+            model.cmdEnterInEditor = {
+                guard let sess = messagingSession else { return false }
+                let text = messageText.trimmingCharacters(in: .whitespaces)
+                guard !text.isEmpty else { return false }
+                model.sendMessage(sess.session_id, text, viaTerminal: true)
+                messagingSession = nil
+                messageText = ""
+                appDelegate?.hidePanel()
+                return true
             }
             model.actionKey = { action in
                 if case .label? = rows[safe: selected] { selected = firstSelectable() }
@@ -2779,8 +2794,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel.isKeyWindow else { return event }
             // an inline editor (rename, command editor, quick prompt…) owns
-            // arrows and tab — don't steal them for list navigation
-            if self.model.isTextEditing?() == true { return event }
+            // arrows and tab — don't steal them for list navigation. ⌘↩ is
+            // ours though: send-to-terminal from the quick prompt.
+            if self.model.isTextEditing?() == true {
+                if event.keyCode == 36, event.modifierFlags.contains(.command),
+                   self.model.cmdEnterInEditor?() == true {
+                    return nil
+                }
+                return event
+            }
             switch event.keyCode {
             case 125: self.model.moveSelection?(1); return nil // down
             case 126: self.model.moveSelection?(-1); return nil // up

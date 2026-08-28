@@ -888,6 +888,48 @@ case "${1:-list}" in
     ) >/dev/null 2>&1 &
     disown 2>/dev/null || true
     ;;
+  type-into)
+    # cst type-into <session-id> <text…> — type text straight into the
+    # session's terminal (submits). Lets TUI-only slash commands (/resume…)
+    # work from the panel, unlike the headless `send`.
+    [ $# -ge 3 ] || { echo "usage: cst type-into <session-id> <text>" >&2; exit 1; }
+    sid="$2"; shift 2; msg="$*"
+    f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
+    iterm_id=""
+    [ -n "$f" ] && iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$f")
+    if [ -z "$iterm_id" ] && [ -n "$f" ]; then
+      tpid=$(jq -r '.pid // empty' "$f")
+      [ -n "$tpid" ] && iterm_id=$(ps eww -o command= -p "$tpid" 2>/dev/null | tr ' ' '\n' \
+        | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+    fi
+    if [ -z "$iterm_id" ]; then
+      osascript -e 'display notification "터미널 핸들이 없어 입력 불가 (헤드리스 전송을 쓰세요)" with title "Claude Sessions"' 2>/dev/null || true
+      exit 1
+    fi
+    uuid="${iterm_id##*:}"
+    osascript - "$uuid" "$msg" <<'APPLESCRIPT' >/dev/null 2>&1
+on run argv
+  set target to item 1 of argv
+  set msg to item 2 of argv
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if id of s is target then
+            tell s to write text msg
+            select s
+            select t
+            select w
+            activate
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+end run
+APPLESCRIPT
+    ;;
   run-command)
     # cst run-command <name> — execute a user command from commands.json.
     # Command strings starting with '@' run silently in the background
@@ -1306,7 +1348,8 @@ case "${1:-list}" in
       {name: "fork",           description: "현재 세션 포크 (백그라운드)"},
       {name: "compact",        description: "컨텍스트 압축"},
       {name: "usage",          description: "플랜 사용량 확인"},
-      {name: "model",          description: "모델 변경 (예: /model opus)"}
+      {name: "model",          description: "모델 변경 (예: /model opus)"},
+      {name: "resume",         description: "세션 재개 픽커 — ⌘↩(터미널 입력)로 보내야 동작"}
     ]')
     while IFS= read -r f; do
       [ -n "$f" ] || continue
