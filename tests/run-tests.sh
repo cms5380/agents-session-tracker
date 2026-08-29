@@ -24,7 +24,7 @@ exit 0
 EOF
 chmod +x "$SANDBOX/.local/bin/claude" "$SANDBOX/.local/bin/codex"
 
-CST="$REPO/bin/cst"
+CST="$REPO/bin/ast"
 TRACK="$REPO/hooks/track.sh"
 PASS=0; FAIL=0; FAILED=()
 

@@ -1,8 +1,8 @@
 #!/bin/bash
-# cst — Claude Session Tracker CLI
-#   cst list              show tracked sessions
-#   cst jump <session-id> focus the terminal session (cmux / iTerm2 / tmux / Terminal.app)
-#   cst clean [hours]     drop ended sessions and sessions idle > N hours (default 24)
+# ast — Claude Session Tracker CLI
+#   ast list              show tracked sessions
+#   ast jump <session-id> focus the terminal session (cmux / iTerm2 / tmux / Terminal.app)
+#   ast clean [hours]     drop ended sessions and sessions idle > N hours (default 24)
 set -euo pipefail
 
 # SwiftBar/launchd run with a minimal PATH — make sure claude & friends resolve
@@ -1029,11 +1029,11 @@ cmd_sessions_json() {
 case "${1:-list}" in
   list) cmd_list ;;
   sessions-json) cmd_sessions_json ;;
-  jump) [ $# -ge 2 ] || { echo "usage: cst jump <session-id>" >&2; exit 1; }; cmd_jump "$2" ;;
-  copy-resume) [ $# -ge 2 ] || { echo "usage: cst copy-resume <session-id>" >&2; exit 1; }; cmd_copy_resume "$2" ;;
+  jump) [ $# -ge 2 ] || { echo "usage: ast jump <session-id>" >&2; exit 1; }; cmd_jump "$2" ;;
+  copy-resume) [ $# -ge 2 ] || { echo "usage: ast copy-resume <session-id>" >&2; exit 1; }; cmd_copy_resume "$2" ;;
   group)
-    # cst group <session-id> <group-name>   ("-" removes the assignment)
-    [ $# -ge 3 ] || { echo "usage: cst group <session-id> <name|->" >&2; exit 1; }
+    # ast group <session-id> <group-name>   ("-" removes the assignment)
+    [ $# -ge 3 ] || { echo "usage: ast group <session-id> <name|->" >&2; exit 1; }
     existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
     jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
     if [ "$3" = "-" ]; then
@@ -1044,8 +1044,8 @@ case "${1:-list}" in
     mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
     ;;
   peek)
-    # cst peek <session-id> — last assistant reply text (for hover preview)
-    [ $# -ge 2 ] || { echo "usage: cst peek <session-id>" >&2; exit 1; }
+    # ast peek <session-id> — last assistant reply text (for hover preview)
+    [ $# -ge 2 ] || { echo "usage: ast peek <session-id>" >&2; exit 1; }
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     [ -n "$f" ] || exit 0
     t=$(jq -r '.transcript_path // empty' "$f")
@@ -1070,7 +1070,7 @@ case "${1:-list}" in
     esac
     ;;
   input-kind)
-    # cst input-kind <sid> — what kind of reply the session is waiting on:
+    # ast input-kind <sid> — what kind of reply the session is waiting on:
     # question (AskUserQuestion) | plan (ExitPlanMode) | reply (anything else)
     [ $# -ge 2 ] || { echo "reply"; exit 0; }
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
@@ -1088,9 +1088,9 @@ case "${1:-list}" in
     esac
     ;;
   send)
-    # cst send <session-id> <message…> — run one headless turn in the
+    # ast send <session-id> <message…> — run one headless turn in the
     # background; the panel's status tracking shows the result
-    [ $# -ge 3 ] || { echo "usage: cst send <session-id> <message>" >&2; exit 1; }
+    [ $# -ge 3 ] || { echo "usage: ast send <session-id> <message>" >&2; exit 1; }
     sid="$2"; shift 2; msg="$*"
     f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
     cwd=$([ -n "$f" ] && jq -r '.cwd // empty' "$f" || echo "$HOME")
@@ -1106,12 +1106,12 @@ case "${1:-list}" in
     disown 2>/dev/null || true
     ;;
   type-into)
-    # cst type-into <session-id> <text…> — type text straight into the
+    # ast type-into <session-id> <text…> — type text straight into the
     # session's terminal (submits). Lets TUI-only slash commands (/resume…)
     # work from the panel, unlike the headless `send`.
     QUIET=""
     if [ "${2:-}" = "--quiet" ]; then QUIET=1; shift; fi
-    [ $# -ge 3 ] || { echo "usage: cst type-into [--quiet] <session-id> <text>" >&2; exit 1; }
+    [ $# -ge 3 ] || { echo "usage: ast type-into [--quiet] <session-id> <text>" >&2; exit 1; }
     sid="$2"; shift 2; msg="$*"
     f=$(ls "$STATE_DIR"/"$sid"*.json 2>/dev/null | head -1 || true)
     iterm_id=""
@@ -1163,10 +1163,10 @@ end run
 APPLESCRIPT
     ;;
   run-command)
-    # cst run-command <name> — execute a user command from commands.json.
+    # ast run-command <name> — execute a user command from commands.json.
     # Command strings starting with '@' run silently in the background
     # (with a completion notification); otherwise they open in a new tab.
-    [ $# -ge 2 ] || { echo "usage: cst run-command <name> [arg]" >&2; exit 1; }
+    [ $# -ge 2 ] || { echo "usage: ast run-command <name> [arg]" >&2; exit 1; }
     CMDS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/commands.json"
     cmd=$(jq -r --arg n "$2" '.[$n] // empty' "$CMDS_FILE" 2>/dev/null || true)
     [ -n "$cmd" ] || { echo "unknown command: $2" >&2; exit 1; }
@@ -1201,19 +1201,19 @@ APPLESCRIPT
     fi
     ;;
   new-session)
-    # cst new-session <dir> [claude|codex] — open a new session in a fresh tab
-    [ $# -ge 2 ] || { echo "usage: cst new-session <dir> [agent]" >&2; exit 1; }
+    # ast new-session <dir> [claude|codex] — open a new session in a fresh tab
+    [ $# -ge 2 ] || { echo "usage: ast new-session <dir> [agent]" >&2; exit 1; }
     agent_cmd="claude"
     [ "${3:-}" = "codex" ] && agent_cmd="codex"
     open_tab_with "cd $(shquote "$2") && $agent_cmd"
     ;;
   resume-tab)
-    # cst resume-tab <session-id> <cwd> — reopen an archived session in a tab
-    [ $# -ge 3 ] || { echo "usage: cst resume-tab <session-id> <cwd>" >&2; exit 1; }
+    # ast resume-tab <session-id> <cwd> — reopen an archived session in a tab
+    [ $# -ge 3 ] || { echo "usage: ast resume-tab <session-id> <cwd>" >&2; exit 1; }
     open_resume_tab "$3" "$2"
     ;;
   archive-search)
-    # cst archive-search <query> — full-text grep over claude + codex
+    # ast archive-search <query> — full-text grep over claude + codex
     # transcripts, newest first. Live sessions are included so the panel
     # can surface content matches on running work too.
     [ $# -ge 2 ] || { echo "[]"; exit 0; }
@@ -1308,9 +1308,9 @@ APPLESCRIPT
     printf '%s\n' "$out"
     ;;
   order-insert)
-    # cst order-insert <sid> <before-sid|end> — manual ordering within
+    # ast order-insert <sid> <before-sid|end> — manual ordering within
     # status sections (session-order.json)
-    [ $# -ge 3 ] || { echo "usage: cst order-insert <sid> <before-sid|end>" >&2; exit 1; }
+    [ $# -ge 3 ] || { echo "usage: ast order-insert <sid> <before-sid|end>" >&2; exit 1; }
     ORDER_FILE="$SORDER_FILE"
     existing=$(cat "$ORDER_FILE" 2>/dev/null || echo '[]')
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
@@ -1321,8 +1321,8 @@ APPLESCRIPT
       <<<"$existing" >"$ORDER_FILE.tmp" && mv "$ORDER_FILE.tmp" "$ORDER_FILE"
     ;;
   pin-insert)
-    # cst pin-insert <sid> <before-sid|end> — reorder pins
-    [ $# -ge 3 ] || { echo "usage: cst pin-insert <sid> <before-sid|end>" >&2; exit 1; }
+    # ast pin-insert <sid> <before-sid|end> — reorder pins
+    [ $# -ge 3 ] || { echo "usage: ast pin-insert <sid> <before-sid|end>" >&2; exit 1; }
     existing=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
     jq --arg sid "$2" --arg before "$3" '
@@ -1332,8 +1332,8 @@ APPLESCRIPT
       <<<"$existing" >"$PINS_FILE.tmp" && mv "$PINS_FILE.tmp" "$PINS_FILE"
     ;;
   group-color)
-    # cst group-color <group> <color|-> — colors.json (named accents)
-    [ $# -ge 3 ] || { echo "usage: cst group-color <group> <color|->" >&2; exit 1; }
+    # ast group-color <group> <color|-> — colors.json (named accents)
+    [ $# -ge 3 ] || { echo "usage: ast group-color <group> <color|->" >&2; exit 1; }
     existing=$(cat "$COLORS_FILE" 2>/dev/null || echo '{}')
     jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
     if [ "$3" = "-" ]; then
@@ -1344,8 +1344,8 @@ APPLESCRIPT
     mv "$COLORS_FILE.tmp" "$COLORS_FILE"
     ;;
   pin)
-    # cst pin <session-id> — toggle pin-to-top (pins.json keeps pin order)
-    [ $# -ge 2 ] || { echo "usage: cst pin <session-id>" >&2; exit 1; }
+    # ast pin <session-id> — toggle pin-to-top (pins.json keeps pin order)
+    [ $# -ge 2 ] || { echo "usage: ast pin <session-id>" >&2; exit 1; }
     existing=$(cat "$PINS_FILE" 2>/dev/null || echo '[]')
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
     jq --arg sid "$2" \
@@ -1353,8 +1353,8 @@ APPLESCRIPT
       <<<"$existing" >"$PINS_FILE.tmp" && mv "$PINS_FILE.tmp" "$PINS_FILE"
     ;;
   title)
-    # cst title <session-id> <custom-name>   ("-" reverts to the auto title)
-    [ $# -ge 3 ] || { echo "usage: cst title <session-id> <name|->" >&2; exit 1; }
+    # ast title <session-id> <custom-name>   ("-" reverts to the auto title)
+    [ $# -ge 3 ] || { echo "usage: ast title <session-id> <name|->" >&2; exit 1; }
     existing=$(cat "$NAMES_FILE" 2>/dev/null || echo '{}')
     jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
     if [ "$3" = "-" ]; then
@@ -1382,8 +1382,8 @@ APPLESCRIPT
     fi
     ;;
   group-move)
-    # cst group-move <name> <before-name|end> — reorder groups
-    [ $# -ge 3 ] || { echo "usage: cst group-move <name> <before|end>" >&2; exit 1; }
+    # ast group-move <name> <before-name|end> — reorder groups
+    [ $# -ge 3 ] || { echo "usage: ast group-move <name> <before|end>" >&2; exit 1; }
     ORDER_FILE="$GORDER_FILE"
     existing=$(cat "$ORDER_FILE" 2>/dev/null || echo '[]')
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$existing" || existing='[]'
@@ -1394,7 +1394,7 @@ APPLESCRIPT
       <<<"$existing" >"$ORDER_FILE.tmp" && mv "$ORDER_FILE.tmp" "$ORDER_FILE"
     ;;
   group-rename)
-    [ $# -ge 3 ] || { echo "usage: cst group-rename <old> <new>" >&2; exit 1; }
+    [ $# -ge 3 ] || { echo "usage: ast group-rename <old> <new>" >&2; exit 1; }
     existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
     jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
     jq --arg old "$2" --arg new "$3" \
@@ -1402,16 +1402,16 @@ APPLESCRIPT
       <<<"$existing" >"$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
     ;;
   group-dissolve)
-    [ $# -ge 2 ] || { echo "usage: cst group-dissolve <name>" >&2; exit 1; }
+    [ $# -ge 2 ] || { echo "usage: ast group-dissolve <name>" >&2; exit 1; }
     existing=$(cat "$GROUPS_FILE" 2>/dev/null || echo '{}')
     jq -e . >/dev/null 2>&1 <<<"$existing" || existing='{}'
     jq --arg g "$2" 'with_entries(select(.value != $g))' \
       <<<"$existing" >"$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
     ;;
   jump-index)
-    # cst jump-index <n> — open the Nth session in canonical order
+    # ast jump-index <n> — open the Nth session in canonical order
     # (waiting > finished > running > idle > gone, most recent first)
-    [ $# -ge 2 ] || { echo "usage: cst jump-index <n>" >&2; exit 1; }
+    [ $# -ge 2 ] || { echo "usage: ast jump-index <n>" >&2; exit 1; }
     sid=$(cmd_sessions_json | jq -r --argjson i "$(($2 - 1))" '
       def pr: if .status == "waiting" then 0 elif .status == "input" then 1
               elif .status == "finished" then 2 elif .status == "running" then 3
@@ -1436,10 +1436,10 @@ APPLESCRIPT
     cmd_jump "$sid"
     ;;
   stop-session)
-    # cst stop-session <session-id> — stop the session; it stays listed as 💤
+    # ast stop-session <session-id> — stop the session; it stays listed as 💤
     # (resumable). Fast: the record's own pid/handles avoid a daemon CLI
     # round-trip, and AppleScript runs in the background.
-    [ $# -ge 2 ] || { echo "usage: cst stop-session <session-id>" >&2; exit 1; }
+    [ $# -ge 2 ] || { echo "usage: ast stop-session <session-id>" >&2; exit 1; }
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     cpid=""; rowner=""
     if [ -n "$f" ]; then
@@ -1485,8 +1485,8 @@ APPLESCRIPT
     rm -f "$AGENTS_CACHE"
     ;;
   end)
-    # cst end <session-id> — stop (if needed), drop from view, close its tab
-    [ $# -ge 2 ] || { echo "usage: cst end <session-id>" >&2; exit 1; }
+    # ast end <session-id> — stop (if needed), drop from view, close its tab
+    [ $# -ge 2 ] || { echo "usage: ast end <session-id>" >&2; exit 1; }
     f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
     cpid=""
     [ -n "$f" ] && cpid=$(jq -r '.pid // empty' "$f")
@@ -1545,7 +1545,7 @@ APPLESCRIPT
     rm -f "$AGENTS_CACHE"
     ;;
   tidy)
-    # cst tidy [ai] [all] — auto-group sessions (Arc Tidy style).
+    # ast tidy [ai] [all] — auto-group sessions (Arc Tidy style).
     #   default: ungrouped only, by repo/folder from cwd
     #   ai:  semantic clusters via claude -p
     #   all: regroup everything — existing (manual) assignments overwritten
@@ -1595,10 +1595,10 @@ $items"
     jq -r 'to_entries | group_by(.value) | .[] | "  \(.[0].value): \(length)"' <<<"$assigns"
     ;;
   icon)
-    # cst icon <key|emoji|image-path> — set the menubar/search icon.
+    # ast icon <key|emoji|image-path> — set the menubar/search icon.
     #   keys: claude codex
     #   image: png/gif path (gif animates) · anything else: treated as emoji
-    [ $# -ge 2 ] || { echo "usage: cst icon <key|emoji|image.png|image.gif>" >&2; exit 1; }
+    [ $# -ge 2 ] || { echo "usage: ast icon <key|emoji|image.png|image.gif>" >&2; exit 1; }
     APPID="com.dean.agents-session-tracker"
     ICON_DIR="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}"
     arg="$2"
@@ -1667,11 +1667,11 @@ $items"
   focus-agent)
     # focus the terminal of an untracked interactive session: exact pid from
     # the daemon, cwd scan as fallback ($3=cwd)
-    [ $# -ge 2 ] || { echo "usage: cst focus-agent <session-id> [cwd]" >&2; exit 1; }
+    [ $# -ge 2 ] || { echo "usage: ast focus-agent <session-id> [cwd]" >&2; exit 1; }
     if resolve_by_session "$2" && jump_resolved; then exit 0; fi
     if [ -n "${3:-}" ] && resolve_live "$3" && jump_resolved; then exit 0; fi
     [ -n "${3:-}" ] && open_agents_tab "$3" >/dev/null 2>&1
     ;;
   clean) cmd_clean "${2:-}" ;;
-  *) echo "usage: cst [list|jump <id>|copy-resume <id>|clean [hours]]" >&2; exit 1 ;;
+  *) echo "usage: ast [list|jump <id>|copy-resume <id>|clean [hours]]" >&2; exit 1 ;;
 esac

@@ -19,10 +19,14 @@ command -v claude >/dev/null || echo "warn: claude CLI not found — install Cla
 
 # ── scripts ──────────────────────────────────────────────────────
 mkdir -p "$DEST"
-cp "$REPO_DIR/bin/cst" "$DEST/cst"
+cp "$REPO_DIR/bin/ast" "$DEST/ast"
 cp "$REPO_DIR/hooks/track.sh" "$TRACK"
-chmod +x "$DEST/cst" "$TRACK"
-echo "installed: $DEST/{cst,track.sh}"
+chmod +x "$DEST/ast" "$TRACK"
+# the CLI used to be called cst — keep the old name working for anything
+# (older app builds, user scripts, muscle memory) that still calls it
+rm -f "$DEST/cst"
+ln -s "$DEST/ast" "$DEST/cst"
+echo "installed: $DEST/{ast,track.sh}"
 
 # ── claude hooks (merged into ~/.claude/settings.json) ───────────
 mkdir -p "$(dirname "$SETTINGS")"

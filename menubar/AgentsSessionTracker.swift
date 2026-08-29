@@ -39,14 +39,14 @@ func namedColor(_ name: String?) -> Color {
     }
 }
 
-let cstPath = ("~/.claude/session-tracker/cst" as NSString).expandingTildeInPath
+let astPath = ("~/.claude/session-tracker/ast" as NSString).expandingTildeInPath
 
 let homeDirPath = NSHomeDirectory()
 
 @discardableResult
-func runCST(_ args: [String], capture: Bool = false) -> String {
+func runAST(_ args: [String], capture: Bool = false) -> String {
     let p = Process()
-    p.executableURL = URL(fileURLWithPath: cstPath)
+    p.executableURL = URL(fileURLWithPath: astPath)
     p.arguments = args
     let pipe = Pipe()
     if capture { p.standardOutput = pipe }
@@ -134,7 +134,7 @@ final class Model: ObservableObject {
     func refresh() {
         DispatchQueue.main.async { self.refreshing = true }
         DispatchQueue.global(qos: .utility).async {
-            let out = runCST(["sessions-json"], capture: true)
+            let out = runAST(["sessions-json"], capture: true)
             let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
             DispatchQueue.main.async {
                 self.refreshing = false
@@ -179,7 +179,7 @@ final class Model: ObservableObject {
 
     func loadSkills() {
         DispatchQueue.global(qos: .utility).async {
-            let out = runCST(["skills-json"], capture: true)
+            let out = runAST(["skills-json"], capture: true)
             let parsed = (try? JSONDecoder().decode([Skill].self, from: Data(out.utf8))) ?? []
             DispatchQueue.main.async {
                 if parsed != self.skills { self.skills = parsed }
@@ -201,7 +201,7 @@ final class Model: ObservableObject {
         }
         archiveSearching = true
         let work = DispatchWorkItem { [weak self] in
-            let out = runCST(["archive-search", q], capture: true)
+            let out = runAST(["archive-search", q], capture: true)
             let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
             DispatchQueue.main.async {
                 self?.archive = parsed
@@ -213,13 +213,13 @@ final class Model: ObservableObject {
     }
 
     func sendMessage(_ sid: String, _ text: String, viaTerminal: Bool = false) {
-        DispatchQueue.global().async { runCST([viaTerminal ? "type-into" : "send", sid, text]) }
+        DispatchQueue.global().async { runAST([viaTerminal ? "type-into" : "send", sid, text]) }
     }
 
     func openAll(_ members: [Session]) {
         DispatchQueue.global().async {
             for s in members {
-                runCST(["jump", s.session_id])
+                runAST(["jump", s.session_id])
                 usleep(900_000)
             }
         }
@@ -227,28 +227,28 @@ final class Model: ObservableObject {
 
     func groupMove(_ g: String, before: String) {
         DispatchQueue.global().async {
-            runCST(["group-move", g, before])
+            runAST(["group-move", g, before])
             self.refresh()
         }
     }
 
     func setGroupColor(_ g: String, _ color: String) {
         DispatchQueue.global().async {
-            runCST(["group-color", g, color])
+            runAST(["group-color", g, color])
             self.refresh()
         }
     }
 
     func pinInsert(_ sid: String, before: String) {
         DispatchQueue.global().async {
-            runCST(["pin-insert", sid, before])
+            runAST(["pin-insert", sid, before])
             self.refresh()
         }
     }
 
     func orderInsert(_ sid: String, before: String) {
         DispatchQueue.global().async {
-            runCST(["order-insert", sid, before])
+            runAST(["order-insert", sid, before])
             self.refresh()
         }
     }
@@ -260,68 +260,68 @@ final class Model: ObservableObject {
             .removeDeliveredNotifications(withIdentifiers: [s.session_id])
         if s.status == "archived" {
             let cwd = s.cwd ?? NSHomeDirectory()
-            DispatchQueue.global().async { runCST(["resume-tab", s.session_id, cwd]) }
+            DispatchQueue.global().async { runAST(["resume-tab", s.session_id, cwd]) }
         } else {
-            DispatchQueue.global().async { runCST(["jump", s.session_id]) }
+            DispatchQueue.global().async { runAST(["jump", s.session_id]) }
         }
     }
 
     func copyResume(_ s: Session) {
-        DispatchQueue.global().async { runCST(["copy-resume", s.session_id]) }
+        DispatchQueue.global().async { runAST(["copy-resume", s.session_id]) }
     }
 
     func assign(_ sid: String, to group: String?) {
         DispatchQueue.global().async {
-            runCST(["group", sid, group ?? "-"])
+            runAST(["group", sid, group ?? "-"])
             self.refresh()
         }
     }
 
     func togglePin(_ sid: String) {
         DispatchQueue.global().async {
-            runCST(["pin", sid])
+            runAST(["pin", sid])
             self.refresh()
         }
     }
 
     func renameSession(_ sid: String, to name: String) {
         DispatchQueue.global().async {
-            runCST(["title", sid, name.isEmpty ? "-" : name])
+            runAST(["title", sid, name.isEmpty ? "-" : name])
             self.refresh()
         }
     }
 
     func renameGroup(_ old: String, to new: String) {
         DispatchQueue.global().async {
-            runCST(["group-rename", old, new])
+            runAST(["group-rename", old, new])
             self.refresh()
         }
     }
 
     func dissolveGroup(_ name: String) {
         DispatchQueue.global().async {
-            runCST(["group-dissolve", name])
+            runAST(["group-dissolve", name])
             self.refresh()
         }
     }
 
     func stopSession(_ sid: String) {
         DispatchQueue.global().async {
-            runCST(["stop-session", sid])
+            runAST(["stop-session", sid])
             self.refresh()
         }
     }
 
     func endSession(_ sid: String) {
         DispatchQueue.global().async {
-            runCST(["end", sid])
+            runAST(["end", sid])
             self.refresh()
         }
     }
 
     func clean() {
         DispatchQueue.global().async {
-            runCST(["clean"])
+            runAST(["clean"])
             self.refresh()
         }
     }
@@ -334,7 +334,7 @@ final class Model: ObservableObject {
             var args = ["tidy"]
             if ai { args.append("ai") }
             if all { args.append("all") }
-            let out = runCST(args, capture: true)
+            let out = runAST(args, capture: true)
             self.refresh()
             if out.hasPrefix("no ungrouped") {
                 self.showToast("미분류 세션 없음 — 이미 다 정리됨")
@@ -346,7 +346,7 @@ final class Model: ObservableObject {
 
     func hub() {
         appDelegate?.hidePanel()
-        DispatchQueue.global().async { runCST(["hub"]) }
+        DispatchQueue.global().async { runAST(["hub"]) }
     }
 
     // which agent a plain "New Session" opens; the other stays one row away
@@ -361,7 +361,7 @@ final class Model: ObservableObject {
     func newSession(in dir: String, agent: String? = nil) {
         appDelegate?.hidePanel()
         let a = agent ?? mainAgent
-        DispatchQueue.global().async { runCST(["new-session", dir, a]) }
+        DispatchQueue.global().async { runAST(["new-session", dir, a]) }
     }
 
     func saveCommand(name: String, command: String) {
@@ -385,7 +385,7 @@ final class Model: ObservableObject {
 
     func runCommand(_ name: String, arg: String = "", prompt: String = "") {
         appDelegate?.hidePanel()
-        DispatchQueue.global().async { runCST(["run-command", name, arg, prompt]) }
+        DispatchQueue.global().async { runAST(["run-command", name, arg, prompt]) }
     }
 
     // recent project directories, most recently active first
@@ -3118,13 +3118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         if let handler = model.hotkeyNumber {
             handler(n)
         } else {
-            DispatchQueue.global().async { runCST(["jump-index", "\(n)"]) }
+            DispatchQueue.global().async { runAST(["jump-index", "\(n)"]) }
         }
     }
 
     func jumpAttention() {
         hidePanel()
-        DispatchQueue.global().async { runCST(["attention"]) }
+        DispatchQueue.global().async { runAST(["attention"]) }
     }
 
     // notifications require a real bundle — skipped when run as a bare binary
@@ -3164,7 +3164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             switch status {
             case "waiting": body = "Needs approval"
             case "input":
-                let kind = runCST(["input-kind", sid], capture: true)
+                let kind = runAST(["input-kind", sid], capture: true)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 switch kind {
                 case "question": body = "Question — pick an option"
@@ -3186,7 +3186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         if let sid = response.notification.request.content.userInfo["sid"] as? String {
-            DispatchQueue.global().async { runCST(["jump", sid]) }
+            DispatchQueue.global().async { runAST(["jump", sid]) }
         }
         completionHandler()
     }

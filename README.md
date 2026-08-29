@@ -29,7 +29,7 @@ macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패�
 - **New Session** — 최근 폴더별로 ↩(메인 에이전트) / ⌘↩(다른 에이전트) 새 세션
 - **Tidy (Arc식 자동 그룹)** — `tidy`: 미분류 세션을 저장소/폴더별로 그룹,
   `tidy ai`: claude가 주제별로 묶고 한국어 그룹명 생성. 기본은 미분류만
-  (수동 그룹 보호), ⌘↩ 또는 `cst tidy ai all`은 전체 재그룹
+  (수동 그룹 보호), ⌘↩ 또는 `ast tidy ai all`은 전체 재그룹
 
 ### 꾸미기
 - **마스코트 아이콘** — 메뉴바·검색창 아이콘을 우클릭 카드 픽커에서 선택
@@ -88,7 +88,7 @@ brew install cms5380/tap/agents-session-tracker
 agents-session-tracker-setup            # Codex 사용자는 --codex 추가
 
 # 2. 검증
-~/.claude/session-tracker/cst sessions-json | jq 'type'   # "array" 나오면 정상
+~/.claude/session-tracker/ast sessions-json | jq 'type'   # "array" 나오면 정상
 pgrep -f MacOS/AgentsSessionTracker                        # 앱 프로세스 존재 확인 (/Applications 설치)
 jq '.hooks | keys' ~/.claude/settings.json                 # 훅 6종 등록 확인
 ```
@@ -144,7 +144,7 @@ jq '.hooks | keys' ~/.claude/settings.json                 # 훅 6종 등록 확
 
 ```
 hooks/track.sh   # Claude/Codex 훅 — 세션 상태 + 터미널 식별자 기록
-bin/cst          # CLI — jump/send/stop/end/검색/그룹/핀/사용량 등 전부
+bin/ast          # CLI — jump/send/stop/end/검색/그룹/핀/사용량 등 전부
 menubar/         # SwiftUI 메뉴바 앱 (단일 파일, swiftc로 빌드)
 install.sh       # 설치 스크립트
 ```
