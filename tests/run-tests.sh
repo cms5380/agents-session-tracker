@@ -242,15 +242,6 @@ t "T53 codex title extracted" "코덱스 QA 프롬프트" "$(jq -r '.[0].title /
 AS=$("$CST" archive-search "zzz-no-match-zzz" 2>/dev/null)
 t "T54 no match → []"        "0" "$(jq 'length' <<<"$AS")"
 
-# ══ usage-json ═══════════════════════════════════════════════════
-rm -f "$CST_STATE_DIR/usage-cache.json"
-touch "$CXT" "$CLT"
-UJ=$("$CST" usage-json 2>/dev/null)
-t "T60 codex used_percent"   "42.5" "$(jq -r '.codex.primary.used_percent' <<<"$UJ")"
-t "T61 claude 5h input sum"  "100"  "$(jq -r '.claude.input' <<<"$UJ")"
-t "T62 claude 5h output sum (old excluded)" "200" "$(jq -r '.claude.output' <<<"$UJ")"
-t "T63 usage cache written"  "yes"  "$([ -f "$CST_STATE_DIR/usage-cache.json" ] && echo yes)"
-
 # ══ clean ════════════════════════════════════════════════════════
 mkrec "s-clean-ended" '{status:"ended", owner:"client"}'
 mkrec "s-clean-old"   "{status:\"done\", owner:\"client\", updated_at: $((NOW - 90000))}"

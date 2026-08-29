@@ -1542,69 +1542,6 @@ APPLESCRIPT
     fi
     rm -f "$AGENTS_CACHE"
     ;;
-  usage-json)
-    # cst usage-json — quota snapshot for the panel footer.
-    #   codex: official rate_limits from the newest rollout event.
-    #   NOTE: rollout files are undocumented and slated for migration to
-    #   thread_history_1.sqlite (background_paginated_rollout_migration
-    #   flag) — all reads here degrade gracefully; add a sqlite fallback
-    #   when that flag flips
-    #   claude: local estimate — tokens in the last 5h across transcripts
-    USAGE_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/usage-cache.json"
-    if [ -f "$USAGE_CACHE" ]; then
-      age=$(( $(date +%s) - $(stat -f %m "$USAGE_CACHE" 2>/dev/null || echo 0) ))
-      if [ "$age" -lt 300 ]; then cat "$USAGE_CACHE"; exit 0; fi
-    fi
-    codex_rl="null"
-    for t in $(ls -t "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -6); do
-      rl=$(tail -n 200 "$t" 2>/dev/null \
-        | jq -c 'select(.type=="event_msg") | .payload | select(.type=="token_count") | .rate_limits // empty' 2>/dev/null \
-        | tail -1 || true)
-      if [ -n "$rl" ]; then codex_rl="$rl"; break; fi
-    done
-    # transcript timestamps are UTC ISO strings
-    # official claude usage (CodexBar-style): the OAuth token stays inside
-    # this process — read from Keychain, sent only to Anthropic's usage
-    # endpoint, never logged
-    claude_official="null"
-    cl_tok=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
-      | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null || true)
-    if [ -n "$cl_tok" ]; then
-      resp=$(curl -sf --max-time 4 \
-        -H "Authorization: Bearer $cl_tok" \
-        -H "anthropic-beta: oauth-2025-04-20" \
-        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null || true)
-      if jq -e . >/dev/null 2>&1 <<<"$resp"; then claude_official="$resp"; fi
-    fi
-    unset cl_tok
-
-    cutoff=$(date -u -v-5H '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo "")
-    rows=""
-    while IFS= read -r t; do
-      [ -n "$t" ] || continue
-      part=$(tail -n 2000 "$t" 2>/dev/null \
-        | jq -r --arg cut "$cutoff" '
-            select(.type=="assistant" and (.timestamp // "") >= $cut)
-            | [(.message.model // "?"), (.message.usage.input_tokens // 0),
-               (.message.usage.output_tokens // 0)] | @tsv' 2>/dev/null || true)
-      [ -n "$part" ] && rows="$rows$part
-"
-    done < <(find "$HOME/.claude/projects" -name '*.jsonl' -not -name 'agent-*' -mmin -300 2>/dev/null)
-    by_model=$(printf '%s' "$rows" | awk -F'\t' '
-      $1 != "" && $1 !~ /^</ { i[$1]+=$2; o[$1]+=$3 }
-      END { for (m in i) printf "{\"model\":\"%s\",\"input\":%d,\"output\":%d}\n", m, i[m], o[m] }' \
-      | jq -sc 'sort_by(-.output)' 2>/dev/null || echo '[]')
-    cin=$(jq '[.[].input] | add // 0' <<<"$by_model")
-    cout=$(jq '[.[].output] | add // 0' <<<"$by_model")
-    jq -n --argjson codex "$codex_rl" \
-          --argjson cin "$cin" --argjson cout "$cout" \
-          --argjson bym "$by_model" \
-          --argjson clo "$claude_official" \
-      '{claude: {window_h: 5, input: $cin, output: $cout, by_model: $bym},
-        claude_official: $clo, codex: $codex}' \
-      | tee "$USAGE_CACHE.tmp.$$" >/dev/null && mv "$USAGE_CACHE.tmp.$$" "$USAGE_CACHE"
-    cat "$USAGE_CACHE"
-    ;;
   tidy)
     # cst tidy [ai] [all] — auto-group sessions (Arc Tidy style).
     #   default: ungrouped only, by repo/folder from cwd
@@ -1689,34 +1626,6 @@ $items"
     pkill -f "MacOS/AgentsSessionTracker" 2>/dev/null || true
     sleep 0.4
     open "/Applications/Agents Session Tracker.app" 2>/dev/null || true
-    ;;
-  stats-json)
-    # cst stats-json — fun usage stats for the panel (1h cache).
-    # Daily counts bucket transcripts by mtime (= sessions active that day).
-    STATS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/stats-cache.json"
-    if [ -f "$STATS_CACHE" ]; then
-      age=$(( $(date +%s) - $(stat -f %m "$STATS_CACHE" 2>/dev/null || echo 0) ))
-      if [ "$age" -lt 3600 ]; then cat "$STATS_CACHE"; exit 0; fi
-    fi
-    cl_days=$(find "$HOME/.claude/projects" -name '*.jsonl' -not -name 'agent-*' 2>/dev/null \
-      | xargs -I{} stat -f '%Sm' -t '%F' {} 2>/dev/null)
-    cx_days=$(find "$HOME/.codex/sessions" -name '*.jsonl' 2>/dev/null \
-      | xargs -I{} stat -f '%Sm' -t '%F' {} 2>/dev/null)
-    cl_total=$(printf '%s\n' "$cl_days" | grep -c . || true)
-    cx_total=$(printf '%s\n' "$cx_days" | grep -c . || true)
-    daily="[]"
-    for i in 13 12 11 10 9 8 7 6 5 4 3 2 1 0; do
-      d=$(date -v-"$i"d +%F)
-      n=$(printf '%s\n%s\n' "$cl_days" "$cx_days" | grep -cx "$d" || true)
-      daily=$(jq --arg d "$d" --argjson n "$n" '. + [{date: $d, count: $n}]' <<<"$daily")
-    done
-    usage=$(cat "${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/usage-cache.json" 2>/dev/null || echo '{}')
-    jq -e . >/dev/null 2>&1 <<<"$usage" || usage='{}'
-    jq -n --argjson cl "$cl_total" --argjson cx "$cx_total" \
-          --argjson daily "$daily" --argjson usage "$usage" \
-      '{claude_total: $cl, codex_total: $cx, daily: $daily, usage: $usage}' \
-      >"$STATS_CACHE.tmp.$$" && mv "$STATS_CACHE.tmp.$$" "$STATS_CACHE"
-    cat "$STATS_CACHE"
     ;;
   skills-json)
     # list available skills / slash commands as [{name, description}].

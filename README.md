@@ -31,14 +31,6 @@ macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패�
   `tidy ai`: claude가 주제별로 묶고 한국어 그룹명 생성. 기본은 미분류만
   (수동 그룹 보호), ⌘↩ 또는 `cst tidy ai all`은 전체 재그룹
 
-### 사용량·통계
-- **쿼터 게이지 (CodexBar식)** — Claude는 공식 OAuth usage API의 5시간/주간 사용률,
-  Codex는 rollout에 기록되는 공식 주간 사용률. 리셋 카운트다운 + 색상 게이지,
-  푸터에 상시 요약
-- **stats 카드** — `stats` 타이핑: 총 세션 수, 오늘/7일 활성, 14일 활동 차트,
-  모델별 최근 5시간 토큰
-- **모델 뱃지** — 각 세션 행에 사용 모델 표시 (`opus 5`, `gpt-5.6` …)
-
 ### 꾸미기
 - **마스코트 아이콘** — 메뉴바·검색창 아이콘을 우클릭 카드 픽커에서 선택
   (Claude/Codex). 메뉴바는 세션 상태 따라 바운스·`!!` 애니메이션
@@ -158,9 +150,6 @@ install.sh       # 설치 스크립트
 ```
 
 상태 저장: `~/.local/state/claude-session-tracker/`
-
-참고: Claude 쿼터 게이지는 키체인의 Claude Code OAuth 토큰을 `cst` 프로세스 안에서만
-읽어 Anthropic usage 엔드포인트에만 보낸다 — 어디에도 기록되지 않는다.
 
 ## 제거
 
