@@ -133,7 +133,6 @@ final class Model: ObservableObject {
 
     func refresh() {
         DispatchQueue.main.async { self.refreshing = true }
-        fetchUsage()
         DispatchQueue.global(qos: .utility).async {
             let out = runCST(["sessions-json"], capture: true)
             let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
@@ -358,124 +357,6 @@ final class Model: ObservableObject {
 
     // which pixel character fronts the app (menubar + search field)
     @Published var iconChoiceKey = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
-
-    // fun usage stats (cst stats-json, cached 1h on disk)
-    struct DailyStat: Decodable, Equatable { let date: String; let count: Int }
-    struct Stats: Decodable, Equatable {
-        let claude_total: Int
-        let codex_total: Int
-        let daily: [DailyStat]
-    }
-    @Published var stats: Stats? = nil
-    func fetchStats() {
-        DispatchQueue.global().async {
-            let out = runCST(["stats-json"], capture: true)
-            let parsed = try? JSONDecoder().decode(Stats.self, from: Data(out.utf8))
-            DispatchQueue.main.async { self.stats = parsed }
-        }
-    }
-
-    // quota snapshot — official percentages where available (CodexBar-style)
-    struct Gauge: Identifiable, Equatable {
-        let id: String       // "claude-5h" …
-        let provider: String // CLAUDE / CODEX
-        let window: String   // 5h / 7d
-        let pct: Double      // 0-100
-        let reset: String    // "↺ 3h" / ""
-    }
-    struct ModelUsage: Identifiable, Equatable {
-        let model: String
-        let tokens: Int
-        var id: String { model }
-    }
-    @Published var gauges: [Gauge] = []
-    @Published var modelUsage: [ModelUsage] = []
-    @Published var usageText = ""
-
-    // gauges move slowly and cst caches upstream for 5 minutes anyway — one
-    // spawn a minute is plenty (event-driven refreshes arrive in bursts)
-    private var lastUsageFetch = Date.distantPast
-    func fetchUsage() {
-        guard Date().timeIntervalSince(lastUsageFetch) > 60 else { return }
-        lastUsageFetch = Date()
-        DispatchQueue.global().async {
-            let out = runCST(["usage-json"], capture: true)
-            guard let data = out.data(using: .utf8),
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            else { return }
-            func resetText(secondsLeft d: Double) -> String {
-                guard d > 0 else { return "" }
-                if d >= 86400 { return "↺ \(Int(d / 86400))d" }
-                if d >= 3600 { return "↺ \(Int(d / 3600))h" }
-                return "↺ \(Int(d / 60))m"
-            }
-            let isoFrac = ISO8601DateFormatter()
-            isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let iso = ISO8601DateFormatter()
-            func resetFromISO(_ s: Any?) -> String {
-                guard let s = s as? String,
-                      let d = isoFrac.date(from: s) ?? iso.date(from: s) else { return "" }
-                return resetText(secondsLeft: d.timeIntervalSinceNow)
-            }
-            var g: [Gauge] = []
-            if let off = obj["claude_official"] as? [String: Any] {
-                if let w = off["five_hour"] as? [String: Any], let p = w["utilization"] as? Double {
-                    g.append(Gauge(id: "claude-5h", provider: "CLAUDE", window: "5h",
-                                   pct: p, reset: resetFromISO(w["resets_at"])))
-                }
-                if let w = off["seven_day"] as? [String: Any], let p = w["utilization"] as? Double {
-                    g.append(Gauge(id: "claude-7d", provider: "CLAUDE", window: "7d",
-                                   pct: p, reset: resetFromISO(w["resets_at"])))
-                }
-            }
-            if let x = obj["codex"] as? [String: Any] {
-                for (key, name) in [("secondary", "5h"), ("primary", "7d")] {
-                    if let w = x[key] as? [String: Any], let p = w["used_percent"] as? Double {
-                        var reset = ""
-                        if let r = w["resets_at"] as? Double {
-                            reset = resetText(secondsLeft: r - Date().timeIntervalSince1970)
-                        }
-                        // window_minutes tells the truth better than our label guess
-                        let win = (w["window_minutes"] as? Double).map {
-                            $0 >= 10080 ? "7d" : $0 >= 240 ? "5h" : "\(Int($0))m"
-                        } ?? name
-                        g.append(Gauge(id: "codex-\(key)", provider: "CODEX", window: win,
-                                       pct: p, reset: reset))
-                    }
-                }
-            }
-            // footer summary + local-estimate fallback when no official data
-            var parts: [String] = []
-            for gg in g where gg.window != "5h" || gg.pct > 0 {
-                if !parts.contains(where: { $0.hasPrefix(gg.provider.lowercased()) }) {
-                    parts.append("\(gg.provider.lowercased()) \(Int(gg.pct.rounded()))%/\(gg.window)")
-                }
-            }
-            if g.isEmpty, let c = obj["claude"] as? [String: Any] {
-                let tok = (c["input"] as? Int ?? 0) + (c["output"] as? Int ?? 0)
-                func fmtTok(_ n: Int) -> String {
-                    n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000)
-                        : n >= 1_000 ? "\(n / 1_000)k" : "\(n)"
-                }
-                if tok > 0 { parts.append("claude \(fmtTok(tok))/5h") }
-            }
-            var models: [ModelUsage] = []
-            if let c = obj["claude"] as? [String: Any],
-               let bym = c["by_model"] as? [[String: Any]] {
-                models = bym.compactMap { m in
-                    guard let name = m["model"] as? String else { return nil }
-                    let tok = (m["input"] as? Int ?? 0) + (m["output"] as? Int ?? 0)
-                    return tok > 0 ? ModelUsage(model: name, tokens: tok) : nil
-                }
-            }
-            let text = parts.joined(separator: "  ")
-            DispatchQueue.main.async {
-                self.gauges = g
-                self.modelUsage = models
-                self.usageText = text
-            }
-        }
-    }
 
     func newSession(in dir: String, agent: String? = nil) {
         appDelegate?.hidePanel()
@@ -1489,7 +1370,6 @@ enum PanelRow: Identifiable, Equatable {
     case session(Session, indented: Bool)
     case command(String, String, String) // id, title, subtitle
     case dropzone(String)   // transient drop target (e.g. pin-to-end)
-    case stats              // usage statistics card
 
     var id: String {
         switch self {
@@ -1498,144 +1378,13 @@ enum PanelRow: Identifiable, Equatable {
         case .session(let s, _): return s.session_id
         case .command(let id, _, _): return "cmd-\(id)"
         case .dropzone(let s): return "dz-\(s)"
-        case .stats: return "stats-card"
         }
     }
 
     var selectable: Bool {
         switch self {
-        case .label, .dropzone, .stats: return false
+        case .label, .dropzone: return false
         default: return true
-        }
-    }
-}
-
-// CodexBar-style quota gauge: [provider window ███████░░░ 37% ↺4d]
-struct QuotaGauge: View {
-    let g: Model.Gauge
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(g.provider)
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .foregroundStyle(g.provider == "CLAUDE" ? claudeOrange : codexBlue)
-                .frame(width: 46, alignment: .leading)
-            Text(g.window)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 20, alignment: .leading)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.08))
-                    Capsule().fill(g.pct >= 85 ? Color(nsColor: .systemRed)
-                                   : g.pct >= 60 ? Color(nsColor: .systemOrange)
-                                   : Color(nsColor: .systemGreen))
-                        .frame(width: max(4, geo.size.width * min(1, g.pct / 100)))
-                }
-            }
-            .frame(height: 7)
-            Text("\(Int(g.pct.rounded()))%")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .frame(width: 36, alignment: .trailing)
-            Text(g.reset)
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .frame(width: 44, alignment: .leading)
-        }
-    }
-}
-
-// pixel-flavored 14-day activity card for the "stats" command
-struct StatsCard: View {
-    let stats: Model.Stats
-    let gauges: [Model.Gauge]
-    let modelUsage: [Model.ModelUsage]
-    let usageText: String
-
-    func fmtTok(_ n: Int) -> String {
-        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1_000_000)
-            : n >= 1_000 ? "\(n / 1_000)k" : "\(n)"
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                statBlock("\(stats.claude_total + stats.codex_total)", "총 세션")
-                statBlock("\(stats.claude_total)", "claude")
-                statBlock("\(stats.codex_total)", "codex")
-                statBlock("\(stats.daily.last?.count ?? 0)", "오늘")
-                statBlock("\(stats.daily.suffix(7).reduce(0) { $0 + $1.count })", "7일")
-                Spacer()
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                Text("최근 14일 활동")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .tracking(1.2)
-                let maxN = max(1, stats.daily.map { $0.count }.max() ?? 1)
-                HStack(alignment: .bottom, spacing: 4) {
-                    ForEach(stats.daily, id: \.date) { d in
-                        VStack(spacing: 2) {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(claudeOrange.opacity(d.count == 0 ? 0.15
-                                    : 0.35 + 0.65 * Double(d.count) / Double(maxN)))
-                                .frame(width: 14, height: max(3, 42 * CGFloat(d.count) / CGFloat(maxN)))
-                            Text(String(d.date.suffix(2)))
-                                .font(.system(size: 7, design: .monospaced))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .help("\(d.date): \(d.count) 세션")
-                    }
-                }
-            }
-            if !gauges.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("사용량")
-                        .font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .tracking(1.2)
-                    ForEach(gauges) { QuotaGauge(g: $0) }
-                }
-                if !modelUsage.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("모델별 · 최근 5시간")
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.secondary)
-                            .tracking(1.2)
-                        let maxTok = max(1, modelUsage.map { $0.tokens }.max() ?? 1)
-                        ForEach(modelUsage) { m in
-                            HStack(spacing: 8) {
-                                Text(shortModel(m.model))
-                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                    .frame(width: 66, alignment: .leading)
-                                GeometryReader { geo in
-                                    Capsule().fill(claudeOrange.opacity(0.75))
-                                        .frame(width: max(4, geo.size.width
-                                            * CGFloat(m.tokens) / CGFloat(maxTok)))
-                                }
-                                .frame(height: 6)
-                                Text(fmtTok(m.tokens))
-                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 44, alignment: .trailing)
-                            }
-                        }
-                    }
-                }
-            } else if !usageText.isEmpty {
-                Text("⚡ \(usageText)")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
-        .padding(.horizontal, 2)
-    }
-
-    func statBlock(_ value: String, _ label: String) -> some View {
-        VStack(spacing: 1) {
-            Text(value).font(.system(size: 15, weight: .bold, design: .rounded))
-            Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
         }
     }
 }
@@ -1747,7 +1496,6 @@ struct PanelView: View {
     @State private var renameText = ""
     @State private var messagingSession: Session? = nil
     @State private var editingCommand = false
-    @State private var showStats = false
     @State private var cmdDraftName = ""
     @State private var cmdDraftBody = ""
     @FocusState private var cmdNameFocused: Bool
@@ -1837,7 +1585,6 @@ struct PanelView: View {
         }
         cmds.append(("cmd-new", "New Command",
                      "커스텀 커맨드 만들기 — {query}/{prompt} 치환, @=백그라운드"))
-        cmds.append(("stats", "Stats", "사용 통계 — 14일 활동, 세션 수, 쿼터"))
         return cmds.filter { $0.1.lowercased().contains(q) || $0.2.lowercased().contains(q) }
             .prefix(8).map { .command($0.0, $0.1, $0.2) }
     }
@@ -1892,11 +1639,6 @@ struct PanelView: View {
         else if id == "tidy-ai" { model.tidy(ai: true, all: alt); query = "" }
         else if id == "quit" { NSApp.terminate(nil) }
         else if id == "agent-toggle" { model.mainAgent = model.otherAgent }
-        else if id == "stats" {
-            model.fetchStats()
-            showStats = true
-            query = ""
-        }
         else if id == "cmd-new" {
             editingCommand = true
             cmdDraftName = ""
@@ -1939,7 +1681,7 @@ struct PanelView: View {
         var out: [HotkeyTarget] = []
         for r in rows {
             switch r {
-            case .label, .command, .dropzone, .stats: break
+            case .label, .command, .dropzone: break
             case .session(let s, _): out.append(.session(s))
             case .header(let g):
                 if !searching && !expanded.contains(g) { out.append(.group(g)) }
@@ -2145,7 +1887,6 @@ struct PanelView: View {
 
     // the navigable list, in display order
     var rows: [PanelRow] {
-        if showStats { return [.stats] }
         if skillQuery != nil { return skillRows }
         if let kw = keywordMatch {
             var out: [PanelRow] = []
@@ -2232,7 +1973,6 @@ struct PanelView: View {
             case .session: return acc + 47
             case .command: return acc + 42
             case .dropzone: return acc + 10
-            case .stats: return acc + 240 + CGFloat(model.modelUsage.count) * 16
             }
         }
         var extra: CGFloat = 0
@@ -2294,7 +2034,7 @@ struct PanelView: View {
         case .session(let s, _): model.jump(s)
         case .header(let g): toggleExpand(g)
         case .command(let id, _, _): runPanelCommand(id, alt: alt)
-        case .label, .dropzone, .stats, nil: break
+        case .label, .dropzone, nil: break
         }
     }
 
@@ -2395,14 +2135,6 @@ struct PanelView: View {
             .contentShape(RoundedRectangle(cornerRadius: 9))
             .onTapGesture { runPanelCommand(id) }
             .id(r.id)
-        case .stats:
-            if let st = model.stats {
-                StatsCard(stats: st, gauges: model.gauges,
-                          modelUsage: model.modelUsage, usageText: model.usageText)
-            } else {
-                ProgressView().controlSize(.small)
-                    .frame(maxWidth: .infinity, minHeight: 120)
-            }
         case .dropzone(let z):
             // silent drop strip — shows a line only while hovered
             Rectangle()
@@ -2620,7 +2352,6 @@ struct PanelView: View {
                     .onExitCommand { appDelegate?.hidePanel(restoreFocus: true) }
                     .onChange(of: query) { q in
                         selected = 0
-                        if !q.isEmpty { showStats = false }
                         model.searchArchive(q)
                     }
                 let counts = model.sessions.reduce(into: (running: 0, waiting: 0)) { acc, s in
@@ -2813,20 +2544,9 @@ struct PanelView: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     Spacer()
-                    if model.usageText.isEmpty {
-                        Text("↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        HStack(spacing: 4) {
-                            Text("⚡").font(.system(size: 10))
-                                .foregroundStyle(claudeOrange)
-                            Text(model.usageText)
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                        .help("claude: 최근 5시간 토큰(로컬 추정) · codex: 공식 주간 사용률\n↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
-                    }
+                    Text("↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
                 }
                 if model.refreshing {
                     ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 16, height: 16)
@@ -2885,7 +2605,6 @@ struct PanelView: View {
             draggingSessionSid = nil
             sessionDropTarget = nil
             // transient editors don't survive the panel losing focus
-            showStats = false
             editingCommand = false
             cmdDraftName = ""
             cmdDraftBody = ""
