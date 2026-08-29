@@ -514,13 +514,15 @@ cmd_jump() {
     jump_bg "$sid" >/dev/null 2>&1 && exit 0
   fi
 
-  # recorded handles missing/stale — resolve from a live client process by cwd
-  if resolve_live "$cwd" && jump_resolved; then exit 0; fi
-
-  # dead session → reopen in a new tab
+  # dead session → reopen in a new tab. This has to come before the cwd
+  # heuristic below: several sessions commonly share a directory, and
+  # resolving by cwd would focus a different, still-running session's tab.
   if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
     open_resume_tab "$cwd" "$sid" >/dev/null 2>&1 && exit 0
   fi
+
+  # recorded handles missing/stale — resolve from a live client process by cwd
+  if resolve_live "$cwd" && jump_resolved; then exit 0; fi
 
   # fallback: no live terminal (desktop session etc.) — resume in a new tab
   if open_resume_tab "$cwd" "$sid" >/dev/null 2>&1; then exit 0; fi
