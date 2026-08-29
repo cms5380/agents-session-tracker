@@ -31,6 +31,14 @@ AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents
 # full `claude agents --json --all` result, reused for 10s — the CLI is a
 # ~300ms Node boot and event-driven refreshes can arrive in bursts
 AGENTS_ALL_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-all-cache.json"
+# memoised sessions-json output: recomputing costs ~200ms, and between
+# events nothing it reads has changed
+SJ_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions-cache.json"
+SJ_KEY="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions-cache.key"
+SJ_PIDS="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions-cache.pids"
+# extra paths whose mtime changes the result (codex rollouts drive the stale-
+# turn decay) — recorded by the last run so the signature can stat them
+SJ_WATCH="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/sessions-cache.watch"
 PINS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/pins.json"
 SORDER_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/session-order.json"
 COLORS_FILE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/colors.json"
@@ -637,9 +645,47 @@ cmd_clean() {
 
 # merged view for UIs: tracked sessions + daemon session list, with dead
 # sessions demoted to "gone" and untracked daemon sessions synthesized
+# everything cmd_sessions_json reads, in one cheap string: record + asset
+# file identities (one stat), liveness of the pids the last run depended on
+# (kill is a builtin), and a coarse time bucket so the time-based decay rules
+# still fire. One stat spawn, no jq.
+sj_signature() { # $1=now
+  local sig alive pid pids="" wp
+  local watched=()
+  if [ -f "$SJ_WATCH" ]; then
+    while IFS= read -r wp; do [ -n "$wp" ] && watched[${#watched[@]}]="$wp"; done <"$SJ_WATCH"
+  fi
+  sig=$(stat -f '%N %Fm %z' "$STATE_DIR"/*.json "$GROUPS_FILE" "$NAMES_FILE" \
+        "$PINS_FILE" "$COLORS_FILE" "$GORDER_FILE" "$SORDER_FILE" \
+        "$AGENTS_ALL_CACHE" ${watched[@]+"${watched[@]}"} 2>/dev/null)
+  [ -f "$SJ_PIDS" ] && read -r pids <"$SJ_PIDS" 2>/dev/null
+  alive=""
+  for pid in ${pids:-}; do
+    if kill -0 "$pid" 2>/dev/null; then alive="$alive$pid+"; else alive="$alive$pid-"; fi
+  done
+  printf '%s|%s|%s' "$sig" "$alive" "$(( ${1:-0} / 30 ))"
+}
+
 cmd_sessions_json() {
   local now sessions agents_json extra
   now=$(date +%s)
+  # nothing changed since the last run — hand back the memoised list. The
+  # daemon query still ages out in the background so busy/idle keeps moving.
+  local sj_sig sj_prev=""
+  sj_sig=$(sj_signature "$now")
+  # the signature spans lines (one per stat'd file) — read the whole file,
+  # not just its first line
+  # read -d '' consumes the whole (multi-line) key and reports EOF, which
+  # set -e would treat as fatal
+  { [ -f "$SJ_KEY" ] && IFS= read -r -d '' sj_prev <"$SJ_KEY"; } 2>/dev/null || true
+  if [ -f "$SJ_CACHE" ] && [ "$sj_sig" = "$sj_prev" ]; then
+    if [ $((now - $(stat -f %m "$AGENTS_ALL_CACHE" 2>/dev/null || echo 0))) -ge 10 ]; then
+      { claude agents --json --all 2>/dev/null >"$AGENTS_ALL_CACHE.tmp.$$" \
+        && mv "$AGENTS_ALL_CACHE.tmp.$$" "$AGENTS_ALL_CACHE"; } &
+    fi
+    cat "$SJ_CACHE"
+    return 0
+  fi
   # the daemon query is the single slowest child (~300ms) and independent of
   # everything until the busy/idle merge — fetch it concurrently, and skip it
   # entirely while the 10s cache is fresh (busy/idle may lag by that much)
@@ -938,7 +984,8 @@ cmd_sessions_json() {
   pairs_json=$(printf '%s\n' "$fork_pairs" \
     | jq -R -s -c 'split("\n") | map(select(test(":")) | split(":") | {p: .[0], f: .[1]})' \
       2>/dev/null || echo '[]')
-  jq --argjson extra "$extra" --argjson agents "$agents_json" \
+  local sj_out
+  sj_out=$(jq --argjson extra "$extra" --argjson agents "$agents_json" \
      --argjson a "$assets" --argjson pairs "$pairs_json" '
     ($a.groups) as $groups | ($a.names) as $names | ($a.pins) as $pins
     | ($a.colors) as $colors | ($a.gorder) as $gorder | ($a.sorder) as $sorder |
@@ -962,7 +1009,19 @@ cmd_sessions_json() {
                pin_order: (.session_id as $s | ($pins | index($s)))})
     | map(. + {group_color: (if .group then ($colors[.group] // null) else null end),
                group_order: (if .group then (.group as $g | ($gorder | index($g))) else null end),
-               sort_order: (.session_id as $s | ($sorder | index($s)))})' <<<"$sessions"
+               sort_order: (.session_id as $s | ($sorder | index($s)))})' <<<"$sessions")
+  printf '%s\n' "$sj_out"
+  # memoise: the pid list feeds the next run's liveness check, and the key is
+  # recomputed after the writes so reaps/lineage updates land in it
+  jq -r '[.[] | .pid // empty] | join(" ")' <<<"$all_records" >"$SJ_PIDS.tmp.$$" 2>/dev/null \
+    && mv "$SJ_PIDS.tmp.$$" "$SJ_PIDS" 2>/dev/null || rm -f "$SJ_PIDS.tmp.$$"
+  jq -r '.[] | select((.agent // "") == "codex") | .transcript_path // empty' \
+    <<<"$all_records" >"$SJ_WATCH.tmp.$$" 2>/dev/null \
+    && mv "$SJ_WATCH.tmp.$$" "$SJ_WATCH" 2>/dev/null || rm -f "$SJ_WATCH.tmp.$$"
+  printf '%s\n' "$sj_out" >"$SJ_CACHE.tmp.$$" 2>/dev/null \
+    && mv "$SJ_CACHE.tmp.$$" "$SJ_CACHE" 2>/dev/null || rm -f "$SJ_CACHE.tmp.$$"
+  sj_signature "$now" >"$SJ_KEY.tmp.$$" 2>/dev/null \
+    && mv "$SJ_KEY.tmp.$$" "$SJ_KEY" 2>/dev/null || rm -f "$SJ_KEY.tmp.$$"
 }
 
 case "${1:-list}" in

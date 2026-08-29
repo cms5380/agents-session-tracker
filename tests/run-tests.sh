@@ -421,8 +421,24 @@ t "T98 inherited group survives parent reap" "상속그룹" \
 t "T99 group promoted to the child's own entry" "상속그룹" \
   "$(jq -r '.["gp-child"] // "null"' "$CST_STATE_DIR/groups.json")"
 
+# T9A-T9C: the memo cache must not serve a stale list
+rm -f "$STATE"/*.json
+sleep 600 </dev/null >/dev/null 2>&1 & LIVE3=$!
+mkrec "sc-one" "{status:\"done\", owner:\"client\", pid:$LIVE3, title:\"c\", parent_resolved:true}"
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9A cached list is correct first" "done" \
+  "$(jq -r '.[] | select(.session_id=="sc-one") | .status' <<<"$out")"
+mkrec "sc-two" "{status:\"waiting\", owner:\"client\", pid:$LIVE3, title:\"d\", parent_resolved:true}"
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9B new record invalidates cache" "waiting" \
+  "$(jq -r '.[] | select(.session_id=="sc-two") | .status' <<<"$out")"
+"$CST" group sc-one "캐시그룹" >/dev/null 2>&1
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9C asset write invalidates cache" "캐시그룹" \
+  "$(jq -r '.[] | select(.session_id=="sc-one") | .group' <<<"$out")"
+
 # ── teardown ─────────────────────────────────────────────────────
-kill "$LIVE1" "$LIVE2" 2>/dev/null
+kill "$LIVE1" "$LIVE2" "${LIVE3:-}" 2>/dev/null
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 for f in "${FAILED[@]:-}"; do [ -n "$f" ] && echo "  ✗ $f"; done
