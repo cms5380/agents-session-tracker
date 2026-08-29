@@ -41,6 +41,8 @@ func namedColor(_ name: String?) -> Color {
 
 let cstPath = ("~/.claude/session-tracker/cst" as NSString).expandingTildeInPath
 
+let homeDirPath = NSHomeDirectory()
+
 @discardableResult
 func runCST(_ args: [String], capture: Bool = false) -> String {
     let p = Process()
@@ -1383,8 +1385,9 @@ struct SessionRow: View {
                         .lineLimit(1)
                 }
                 HStack(spacing: 5) {
-                    if !shortModel(s.model).isEmpty {
-                        Text(shortModel(s.model))
+                    let modelTag = shortModel(s.model)
+                    if !modelTag.isEmpty {
+                        Text(modelTag)
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 4).padding(.vertical, 1)
@@ -1398,7 +1401,7 @@ struct SessionRow: View {
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                     }
-                    Text((s.cwd ?? "").replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                    Text((s.cwd ?? "").replacingOccurrences(of: homeDirPath, with: "~"))
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -1780,8 +1783,11 @@ struct PanelView: View {
         }
     }
 
+    // the trimmed/lowercased query is read several times per render — trim once
+    var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
+
     var filtered: [Session] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = trimmedQuery.lowercased()
         if q.isEmpty { return viewSessions }
         return viewSessions.filter {
             ($0.title ?? "").lowercased().contains(q)
@@ -1790,7 +1796,7 @@ struct PanelView: View {
         }
     }
 
-    var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+    var searching: Bool { !trimmedQuery.isEmpty }
 
     // "/" mode: list Claude skills, pick one → pre-filled quick prompt
     var skillQuery: String? {
@@ -2617,8 +2623,12 @@ struct PanelView: View {
                         if !q.isEmpty { showStats = false }
                         model.searchArchive(q)
                     }
-                let running = model.sessions.filter { $0.status == "running" }.count
-                let waiting = model.sessions.filter { $0.status == "waiting" }.count
+                let counts = model.sessions.reduce(into: (running: 0, waiting: 0)) { acc, s in
+                    if s.status == "running" { acc.running += 1 }
+                    else if s.status == "waiting" { acc.waiting += 1 }
+                }
+                let running = counts.running
+                let waiting = counts.waiting
                 if waiting > 0 {
                     Text("\(waiting) waiting")
                         .font(.system(size: 10, weight: .bold, design: .rounded))

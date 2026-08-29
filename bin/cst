@@ -1216,11 +1216,43 @@ APPLESCRIPT
     # can surface content matches on running work too.
     [ $# -ge 2 ] || { echo "[]"; exit 0; }
     q="$2"
-    hits=$( { grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.claude/projects" 2>/dev/null || true
-              grep -l -i -m1 -r --include='*.jsonl' -- "$q" "$HOME/.codex/sessions" 2>/dev/null || true; } \
-      | xargs -I{} stat -f '%m {}' {} 2>/dev/null | sort -rn | head -12 | cut -d' ' -f2- || true)
-    # ^ || true: head closing early SIGPIPEs sort; with pipefail+set -e that
-    #   killed the whole script (exit 141) — reliably under Process, not a tty
+    # newest-first, in escalating chunks: only 12 hits are shown, and a match
+    # is nearly always in recent work — scanning the whole corpus (hundreds of
+    # MB) on every keystroke cost seconds. ripgrep when present, grep otherwise.
+    all_files=$(find "$HOME/.claude/projects" "$HOME/.codex/sessions" \
+        -name '*.jsonl' -type f -print0 2>/dev/null \
+      | xargs -0 stat -f '%m %N' 2>/dev/null | sort -rn | cut -d' ' -f2- || true)
+    search_chunk() { # stdin: file list → matching paths, order not preserved
+      if command -v rg >/dev/null 2>&1; then
+        tr '\n' '\0' | xargs -0 rg -l -i -F --no-messages -- "$q" 2>/dev/null || true
+      else
+        tr '\n' '\0' | xargs -0 grep -l -i -m1 -F -- "$q" 2>/dev/null || true
+      fi
+    }
+    hits=""
+    nhits=0
+    scanned=0
+    for chunk in 80 400 100000; do
+      [ "$scanned" -ge "$chunk" ] && continue
+      slice=$(printf '%s\n' "$all_files" | sed -n "$((scanned + 1)),${chunk}p")
+      [ -n "$slice" ] || break
+      matched=$(printf '%s\n' "$slice" | search_chunk)
+      scanned="$chunk"
+      # keep the newest-first order of the slice, cap at 12 overall
+      if [ -n "$matched" ]; then
+        while IFS= read -r cand; do
+          [ -n "$cand" ] || continue
+          case "$matched" in (*"$cand"*) ;; (*) continue ;; esac
+          case "$hits" in (*"$cand"*) continue ;; esac
+          hits="$hits$cand
+"
+          nhits=$((nhits + 1))
+          [ "$nhits" -ge 12 ] && break
+        done <<<"$slice"
+      fi
+      [ "$nhits" -ge 12 ] && break
+    done
+    hits=$(printf '%s' "$hits")
     out="[]"
     seen=""
     while IFS= read -r t; do
@@ -1245,9 +1277,8 @@ APPLESCRIPT
           cwd=$(head -n 5 "$t" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | grep -m1 . || true)
           title=$( (head -n 5 "$t" 2>/dev/null \
             | jq -r 'select(.type=="ai-title") | .aiTitle // empty' 2>/dev/null | head -n 1) || true)
-          if [ -z "$title" ]; then
-            title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 | jq -r '.summary // empty' 2>/dev/null) || true)
-          fi
+          # the summary probe reads the whole file, so it now runs only when
+          # the two head-bounded probes came up empty
           if [ -z "$title" ]; then
             # compaction summaries are one giant message — drop them whole,
             # or their body lines ("1. Primary Request…") become titles
@@ -1257,6 +1288,10 @@ APPLESCRIPT
                        | select(test("This session is being continued|Primary Request and Intent|^(Summary|Analysis):") | not)' 2>/dev/null \
               | grep -vE '^\s*(<|$)' \
               | head -n 1 | cut -c1-60) || true)
+          fi
+          if [ -z "$title" ]; then
+            title=$( (grep '"type":"summary"' "$t" 2>/dev/null | tail -1 \
+              | jq -r '.summary // empty' 2>/dev/null) || true)
           fi
           ;;
       esac
