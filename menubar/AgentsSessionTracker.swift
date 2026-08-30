@@ -43,6 +43,20 @@ let astPath = ("~/.claude/session-tracker/ast" as NSString).expandingTildeInPath
 
 let homeDirPath = NSHomeDirectory()
 
+// opt-in panel tracer — defaults write com.dean.agents-session-tracker
+// panelDebug -bool true; log lands next to the state files
+let panelDebugOn = UserDefaults.standard.bool(forKey: "panelDebug")
+func dbg(_ msg: @autoclosure () -> String) {
+    guard panelDebugOn else { return }
+    let line = "\(Date().timeIntervalSince1970) \(msg())\n"
+    let path = homeDirPath + "/.local/state/claude-session-tracker/panel-debug.log"
+    if let h = FileHandle(forWritingAtPath: path) {
+        h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+    } else {
+        try? line.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
 @discardableResult
 func runAST(_ args: [String], capture: Bool = false) -> String {
     let p = Process()
@@ -357,6 +371,34 @@ final class Model: ObservableObject {
 
     // which pixel character fronts the app (menubar + search field)
     @Published var iconChoiceKey = UserDefaults.standard.string(forKey: "menubarAgent") ?? "claude"
+
+    // folder completion used to hit the filesystem from inside a view body:
+    // on the first touch of a protected directory macOS raises its consent
+    // dialog on the main thread, mid-render, and the panel came apart. The
+    // listing now happens off-thread and the view reads this cache.
+    @Published var folderDirs: [String: [String]] = [:]
+    private var folderLoading: Set<String> = []
+    func dirs(under baseExp: String) -> [String] {
+        if let cached = folderDirs[baseExp] { return cached }
+        guard !folderLoading.contains(baseExp) else { return [] }
+        folderLoading.insert(baseExp)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            let items = (try? fm.contentsOfDirectory(atPath: baseExp)) ?? []
+            let dirs = items.filter { item in
+                guard !item.hasPrefix(".") else { return false }
+                var isDir: ObjCBool = false
+                fm.fileExists(atPath: baseExp + "/" + item, isDirectory: &isDir)
+                return isDir.boolValue
+            }
+            DispatchQueue.main.async {
+                self.folderDirs[baseExp] = dirs
+                self.folderLoading.remove(baseExp)
+            }
+        }
+        return []
+    }
+    func invalidateFolderCache() { folderDirs.removeAll() }
 
     func newSession(in dir: String, agent: String? = nil) {
         appDelegate?.hidePanel()
@@ -1782,14 +1824,9 @@ struct PanelView: View {
     func keywordCompletions(template: String, arg: String) -> [(String, String)] {
         guard let base = folderBase(template: template) else { return [] }
         let baseExp = (base as NSString).expandingTildeInPath
-        let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(atPath: baseExp) else { return [] }
         let q = arg.lowercased()
-        let matches = items.filter { item in
-            var isDir: ObjCBool = false
-            fm.fileExists(atPath: baseExp + "/" + item, isDirectory: &isDir)
-            return isDir.boolValue && !item.hasPrefix(".")
-                && (q.isEmpty || item.lowercased().contains(q))
+        let matches = model.dirs(under: baseExp).filter {
+            q.isEmpty || $0.lowercased().contains(q)
         }
         // prefix matches first, then the rest, alphabetical within each
         let sorted = matches.sorted { a, b in
@@ -2874,6 +2911,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     var previousApp: NSRunningApplication?
 
     func showPanel() {
+        model.invalidateFolderCache()
         previousApp = NSWorkspace.shared.frontmostApplication
         model.refresh()
         panel.layoutIfNeeded()
@@ -2892,7 +2930,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         model.focusTick += 1
     }
 
-    func hidePanel(restoreFocus: Bool = false) {
+    func hidePanel(restoreFocus: Bool = false,
+                   caller: String = #function, line: Int = #line) {
+        dbg("hidePanel from \(caller):\(line) restoreFocus=\(restoreFocus)")
         panel.orderOut(nil)
         model.panelVisible = false
         // dismissals (Esc / ⌥Space) hand focus back to where it was; action
@@ -2910,6 +2950,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        dbg("resignKey window=\((notification.object as? NSWindow)?.title ?? "?") "
+            + "front=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil") "
+            + "modal=\(NSApp.modalWindow != nil) appActive=\(NSApp.isActive)")
         // Raycast behavior: clicking elsewhere dismisses the panel — but a
         // macOS permission/security dialog stealing focus must not
         if (notification.object as? NSWindow) === iconPanel {
@@ -2926,8 +2969,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             // them, so "we are still frontmost but the panel lost key" means a
             // system dialog is up — not a click elsewhere. Any Apple-owned
             // agent (SecurityAgent, UserNotificationCenter, …) counts too.
+            dbg("resignKey delayed check front=\(front) visible=\(self.panel.isVisible) key=\(self.panel.isKeyWindow)")
             if front.isEmpty || front.hasPrefix("com.apple.")
-                || front == Bundle.main.bundleIdentifier { return }
+                || front == Bundle.main.bundleIdentifier { dbg("kept open"); return }
             self.hidePanel()
         }
     }
