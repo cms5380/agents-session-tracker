@@ -3212,11 +3212,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         let sid = s.session_id
         let status = s.status
         DispatchQueue.global().async {
-            // the user is already looking at this session's terminal tab —
-            // a banner about it is pure noise
-            let focused = runAST(["focused-sid"], capture: true)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if focused == sid { return }
+            // the idle ping ("waiting for your reply") is redundant when the
+            // session's own tab is already on screen. Approvals and finished
+            // turns always ring — those are worth interrupting for.
+            if status == "input" {
+                let focused = runAST(["focused-sid"], capture: true)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if focused == sid { return }
+            }
             let body: String
             switch status {
             case "waiting": body = "Needs approval"
