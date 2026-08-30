@@ -428,6 +428,10 @@ out=$("$CST" sessions-json 2>/dev/null)
 t "T9C asset write invalidates cache" "캐시그룹" \
   "$(jq -r '.[] | select(.session_id=="sc-one") | .group' <<<"$out")"
 
+# T9D: focused-sid stays quiet when no terminal is frontmost
+out=$("$CST" focused-sid 2>/dev/null)
+t "T9D focused-sid safe without a terminal" "" "$out"
+
 # ── teardown ─────────────────────────────────────────────────────
 kill "$LIVE1" "$LIVE2" "${LIVE3:-}" 2>/dev/null
 echo

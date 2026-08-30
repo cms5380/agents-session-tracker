@@ -1069,6 +1069,43 @@ case "${1:-list}" in
           | grep -v '^\s*$' | tail -n 8 | head -c 600 || true ;;
     esac
     ;;
+  focused-sid)
+    # session id of the terminal tab the user is actually looking at, if any.
+    # Notifications use this to stay quiet about a session already on screen.
+    front=$(lsappinfo info -only bundleid "$(lsappinfo front 2>/dev/null)" 2>/dev/null \
+      | cut -d'"' -f4 || true)
+    case "$front" in
+      (com.googlecode.iterm2)
+        uuid=$(osascript -e 'tell application "iTerm2" to return id of current session of current tab of current window' 2>/dev/null || true)
+        [ -n "$uuid" ] || exit 0
+        f=$(grep -l "$uuid" "$STATE_DIR"/*.json 2>/dev/null | head -1 || true)
+        if [ -n "$f" ]; then basename "$f" .json; exit 0; fi
+        # daemon-hosted sessions record no terminal of their own — identify the
+        # live agent (or attach client) sitting in that tab instead
+        for fpid in $(pgrep -f 'claude|codex' 2>/dev/null); do
+          fenv=$(ps eww -o command= -p "$fpid" 2>/dev/null | tr ' ' '\n' \
+            | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+          case "$fenv" in (*"$uuid"*) ;; (*) continue ;; esac
+          fcmd=$(ps -o command= -p "$fpid" 2>/dev/null || true)
+          case "$fcmd" in
+            (*" attach "*)
+              short=${fcmd##* attach }; short=${short%% *}
+              g=$(ls "$STATE_DIR"/"$short"*.json 2>/dev/null | head -1 || true)
+              [ -n "$g" ] && { basename "$g" .json; exit 0; } ;;
+          esac
+          g=$(grep -l "\"pid\": *$fpid," "$STATE_DIR"/*.json 2>/dev/null | head -1 || true)
+          [ -n "$g" ] && { basename "$g" .json; exit 0; }
+        done
+        ;;
+      (com.apple.Terminal)
+        ftty=$(osascript -e 'tell application "Terminal" to return tty of selected tab of front window' 2>/dev/null || true)
+        [ -n "$ftty" ] || exit 0
+        f=$(grep -l "\"tty\": *\"${ftty##*/}\"" "$STATE_DIR"/*.json 2>/dev/null | head -1 || true)
+        [ -n "$f" ] && basename "$f" .json
+        ;;
+    esac
+    exit 0
+    ;;
   input-kind)
     # ast input-kind <sid> — what kind of reply the session is waiting on:
     # question (AskUserQuestion) | plan (ExitPlanMode) | reply (anything else)
