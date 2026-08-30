@@ -2903,6 +2903,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        // returning from a system dialog leaves the search field unfocused
+        guard (notification.object as? NSWindow) === panel else { return }
+        model.focusTick += 1
+    }
+
     func windowDidResignKey(_ notification: Notification) {
         // Raycast behavior: clicking elsewhere dismisses the panel — but a
         // macOS permission/security dialog stealing focus must not
@@ -2912,14 +2918,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            // a modal system sheet (file-access consent, keychain, …) is not
+            // the user clicking away
+            if NSApp.modalWindow != nil { return }
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
-            let systemDialogs = [
-                "com.apple.SecurityAgent",
-                "com.apple.UserNotificationCenter",
-                "com.apple.coreservices.uiagent",
-                "com.apple.universalaccessAuthWarn",
-            ]
-            if systemDialogs.contains(front) { return }
+            // TCC consent prompts are attributed to the app that triggered
+            // them, so "we are still frontmost but the panel lost key" means a
+            // system dialog is up — not a click elsewhere. Any Apple-owned
+            // agent (SecurityAgent, UserNotificationCenter, …) counts too.
+            if front.isEmpty || front.hasPrefix("com.apple.")
+                || front == Bundle.main.bundleIdentifier { return }
             self.hidePanel()
         }
     }
