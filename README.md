@@ -37,9 +37,9 @@ macOS용 Claude Code / Codex 세션 트래커. Raycast 스타일 플로팅 패�
 - **아이콘은 CLI로도** — AI 에이전트에게 시키기 좋게 한 줄이면 됨 (앱이 자동 감지):
 
   ```sh
-  cst icon codex          # 마스코트 (claude | codex)
-  cst icon 🦖             # 아무 이모지
-  cst icon ~/pikachu.gif  # 이미지 — gif는 프레임 애니메이션, png는 바운스
+  ast icon codex          # 마스코트 (claude | codex)
+  ast icon 🦖             # 아무 이모지
+  ast icon ~/pikachu.gif  # 이미지 — gif는 프레임 애니메이션, png는 바운스
   ```
 
 ## 요구 사항
@@ -68,7 +68,7 @@ cd agents-session-tracker
 
 설치 내용:
 
-1. `~/.claude/session-tracker/`에 CLI(`cst`)와 훅 스크립트 복사
+1. `~/.claude/session-tracker/`에 CLI(`ast`, 구버전 호환 `cst` 심링크)와 훅 스크립트 복사
 2. `~/.claude/settings.json`에 훅 6개 등록 (기존 설정은 `.bak-cst`로 백업)
 3. 메뉴바 앱을 소스에서 빌드 (`AgentsSessionTracker.app`) + 로그인 자동 시작 등록
 4. 시작용 커스텀 커맨드 시드 (`commands.json` 없을 때만)
