@@ -135,13 +135,19 @@ if [ "$agent" = "codex" ]; then
   done
 fi
 
+# headless one-shot runs (claude -p …, batch harnesses, CI) have no terminal
+# to jump to and nothing to resume — they would only churn the list
+owner_cmd=$(ps -o command= -p "$owner_pid" 2>/dev/null || true)
+case "$owner_cmd" in
+  (*" -p "*|*" --print "*|*" -p"|*" --print") exit 0 ;;
+esac
+
 # tty of the agent process — Terminal.app fallback driver uses it
 claude_tty=$(ps -o tty= -p "$owner_pid" 2>/dev/null | tr -d ' ' || true)
 [ "$claude_tty" = "??" ] && claude_tty=""
 
 # classify the owning process so phantom sessions (spawned by agents-view
 # TUIs / the spare pool) can be told apart from real clients after death
-owner_cmd=$(ps -o command= -p "$owner_pid" 2>/dev/null || true)
 case "$owner_cmd" in
   *bg-spare*|*bg-pty-host*|*"claude agents"*) owner="pool" ;;
   *) owner="client" ;;
