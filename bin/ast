@@ -1288,11 +1288,20 @@ APPLESCRIPT
     fi
     ;;
   new-session)
-    # ast new-session <dir> [claude|codex] — open a new session in a fresh tab
-    [ $# -ge 2 ] || { echo "usage: ast new-session <dir> [agent]" >&2; exit 1; }
+    # ast new-session <dir> [claude|codex] [initial prompt…] — open a new
+    # session in a fresh tab, optionally starting on a prompt (the skill
+    # palette uses this to run "/review" etc. in a clean session)
+    [ $# -ge 2 ] || { echo "usage: ast new-session <dir> [agent] [prompt]" >&2; exit 1; }
     agent_cmd="claude"
     [ "${3:-}" = "codex" ] && agent_cmd="codex"
-    open_tab_with "cd $(shquote "$2") && $agent_cmd"
+    ns_dir="$2"
+    ns_prompt=""
+    if [ $# -ge 4 ]; then shift 3; ns_prompt="$*"; fi
+    if [ -n "$ns_prompt" ]; then
+      open_tab_with "cd $(shquote "$ns_dir") && $agent_cmd $(shquote "$ns_prompt")"
+    else
+      open_tab_with "cd $(shquote "$ns_dir") && $agent_cmd"
+    fi
     ;;
   resume-tab)
     # ast resume-tab <session-id> <cwd> — reopen an archived session in a tab

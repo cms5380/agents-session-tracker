@@ -432,10 +432,12 @@ final class Model: ObservableObject {
     }
     func invalidateFolderCache() { folderDirs.removeAll() }
 
-    func newSession(in dir: String, agent: String? = nil) {
+    func newSession(in dir: String, agent: String? = nil, prompt: String? = nil) {
         appDelegate?.hidePanel()
         let a = agent ?? mainAgent
-        DispatchQueue.global().async { runAST(["new-session", dir, a]) }
+        var args = ["new-session", dir, a]
+        if let p = prompt, !p.isEmpty { args.append(p) }
+        DispatchQueue.global().async { runAST(args) }
     }
 
     func saveCommand(name: String, command: String) {
@@ -1666,8 +1668,14 @@ struct PanelView: View {
         guard let q = skillQuery else { return [] }
         let list = q.isEmpty ? model.skills
             : model.skills.filter { $0.name.lowercased().contains(q) || $0.description.lowercased().contains(q) }
-        return list.prefix(12).map { .command("skill:\($0.name)", "/\($0.name)",
-                                              $0.description.isEmpty ? "skill" : $0.description) }
+        let near = viewSessions.first(where: { $0.session_id == lastSessionSid })
+            ?? attention.first ?? viewSessions.first
+        let dir = (near?.cwd ?? model.recentDirs.first ?? NSHomeDirectory())
+            .replacingOccurrences(of: homeDirPath, with: "~")
+        return list.prefix(12).map {
+            .command("skill:\($0.name)", "/\($0.name)",
+                     "새 세션 · \(dir)" + ($0.description.isEmpty ? "" : " — \($0.description)"))
+        }
     }
 
     // Raycast-style: typing matches commands right alongside sessions
@@ -1709,16 +1717,17 @@ struct PanelView: View {
 
     func runPanelCommand(_ id: String, alt: Bool = false) {
         if id.hasPrefix("skill:") {
+            // a skill is its own piece of work: run it in a fresh session
+            // rather than pushing it into a conversation that is mid-thought
+            // (typing "/" inside that session is the direct route anyway).
+            // The folder comes from the selected session, else the last used.
             let name = String(id.dropFirst(6))
-            // target: the session selected before entering "/" mode, else the
-            // most attention-worthy one
-            let target = viewSessions.first(where: { $0.session_id == lastSessionSid })
+            let near = viewSessions.first(where: { $0.session_id == lastSessionSid })
                 ?? attention.first ?? viewSessions.first
-            if let t = target {
-                messagingSession = t
-                messageText = "/\(name) "
-                query = ""
-            }
+            let dir = near?.cwd ?? model.recentDirs.first ?? NSHomeDirectory()
+            model.newSession(in: dir, agent: alt ? model.otherAgent : model.mainAgent,
+                             prompt: "/\(name)")
+            query = ""
             return
         }
         if id == "kw" {
