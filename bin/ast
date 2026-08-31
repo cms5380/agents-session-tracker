@@ -1069,6 +1069,44 @@ case "${1:-list}" in
           | grep -v '^\s*$' | tail -n 8 | head -c 600 || true ;;
     esac
     ;;
+  retitle)
+    # ast retitle <session-id> — name the session from its own transcript.
+    # Deliberately terminal-independent: reads the conversation, asks claude
+    # headlessly for a short title, stores it as the user-name override.
+    [ $# -ge 2 ] || { echo "usage: ast retitle <session-id>" >&2; exit 1; }
+    f=$(ls "$STATE_DIR"/"$2"*.json 2>/dev/null | head -1 || true)
+    [ -n "$f" ] || { echo "unknown session: $2" >&2; exit 1; }
+    rsid=$(jq -r '.session_id' "$f")
+    rt=$(jq -r '.transcript_path // ""' "$f")
+    if [ -z "$rt" ] || [ ! -f "$rt" ]; then
+      rt=$(ls "$HOME/.claude/projects"/*/"$rsid.jsonl" 2>/dev/null | head -1 || true)
+    fi
+    [ -f "$rt" ] || { echo "no transcript for $rsid" >&2; exit 1; }
+    case "$rt" in
+      (*/.codex/*)
+        convo=$( (head -n 120 "$rt" 2>/dev/null \
+          | jq -r 'select(.type=="response_item") | .payload
+                   | select(.type=="message")
+                   | ((.content // []) | map(.text // "") | join(" "))
+                   | select(length > 0) | select(startswith("<") | not)' 2>/dev/null \
+          | head -n 8 | cut -c1-400) || true) ;;
+      (*)
+        convo=$( (head -n 120 "$rt" 2>/dev/null \
+          | jq -r 'select(.type=="user" or .type=="assistant") | .message.content
+                   | if type=="string" then . else ((map(select(.type=="text")) | first // {}).text // empty) end
+                   | select(length > 0)
+                   | select(test("This session is being continued|Primary Request and Intent") | not)' 2>/dev/null \
+          | head -n 8 | cut -c1-400) || true) ;;
+    esac
+    [ -n "$convo" ] || { echo "empty transcript" >&2; exit 1; }
+    newname=$(CST_INTERNAL=1 claude -p "다음 대화에 어울리는 짧은 제목을 지어라. 한국어 대화면 한국어로, 20자 이내, 조사·마침표 없이 명사구로. 제목만 출력하고 다른 말은 하지 마라.
+
+$convo" 2>/dev/null \
+      | tr -d '\r"' | grep -v '^\s*$' | head -n 1 | cut -c1-40 || true)
+    [ -n "$newname" ] || { echo "no title generated" >&2; exit 1; }
+    "$0" title "$rsid" "$newname"
+    printf '%s\n' "$newname"
+    ;;
   focused-sid)
     # session id of the terminal tab the user is actually looking at, if any.
     # Notifications use this to stay quiet about a session already on screen.

@@ -280,6 +280,17 @@ final class Model: ObservableObject {
         }
     }
 
+    // name a session from its own transcript — no terminal involved
+    func retitle(_ s: Session) {
+        showToast("이름 짓는 중…")
+        DispatchQueue.global().async {
+            let out = runAST(["retitle", s.session_id], capture: true)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            self.refresh()
+            self.showToast(out.isEmpty ? "이름을 짓지 못함" : "이름: \(out)")
+        }
+    }
+
     func copyResume(_ s: Session) {
         DispatchQueue.global().async { runAST(["copy-resume", s.session_id]) }
     }
@@ -2689,6 +2700,7 @@ struct PanelView: View {
                 case "pin": model.togglePin(s.session_id)
                 case "rename": renamingSession = s
                 case "copyresume": model.copyResume(s)
+                case "retitle": model.retitle(s)
                 case "ungroup":
                     guard s.group != nil else { return false }
                     model.assign(s.session_id, to: nil)
@@ -3066,6 +3078,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         ("rename", "이름 변경", kVK_ANSI_R, controlKey),
         ("pin", "핀 토글", kVK_ANSI_P, controlKey),
         ("copyresume", "resume 명령 복사", kVK_ANSI_C, controlKey),
+        ("retitle", "AI로 이름 짓기", kVK_ANSI_T, controlKey),
         ("ungroup", "그룹 해제", kVK_Delete, controlKey),
     ]
 
