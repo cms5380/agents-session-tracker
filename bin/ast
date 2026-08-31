@@ -36,6 +36,8 @@ AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents
 # TCC service (media library included), and macOS attributes those asks to
 # whichever app is responsible — us. A one-shot title needs no tools at all.
 HEADLESS_FLAGS='--strict-mcp-config --disallowed-tools Bash --settings {"enabledPlugins":{},"sandbox":{"enabled":false}}'
+# the daemon query is not a prompt, but it still boots claude — same isolation
+QUERY_FLAGS='--strict-mcp-config --settings {"enabledPlugins":{},"sandbox":{"enabled":false}}'
 AGENTS_ALL_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-all-cache.json"
 # memoised sessions-json output: recomputing costs ~200ms, and between
 # events nothing it reads has changed
@@ -58,7 +60,7 @@ fetch_agents() {
     if [ "$age" -lt 10 ]; then cat "$AGENTS_CACHE"; return 0; fi
   fi
   local out
-  out=$(claude agents --json 2>/dev/null || echo '[]')
+  out=$(claude agents --json $QUERY_FLAGS 2>/dev/null || echo '[]')
   printf '%s' "$out" >"$AGENTS_CACHE.tmp" 2>/dev/null && mv "$AGENTS_CACHE.tmp" "$AGENTS_CACHE" 2>/dev/null
   printf '%s' "$out"
 }
@@ -448,7 +450,7 @@ cmd_jump() {
       if [ -n "$(bg_agent_status "$sid")" ]; then jump_bg "$sid" && exit 0; fi
       # completed-but-resumable daemon job (rows synthesized from --all):
       # reopen it in a resume tab at its recorded cwd
-      acwd=$(claude agents --json --all 2>/dev/null \
+      acwd=$(claude agents --json --all $QUERY_FLAGS 2>/dev/null \
         | jq -r --arg sid "$sid" '[.[] | select(.sessionId == $sid)] | (first // {}).cwd // empty')
       if [ -n "$acwd" ]; then
         open_resume_tab "$acwd" "$sid" >/dev/null 2>&1 && exit 0
@@ -688,7 +690,7 @@ cmd_sessions_json() {
   { [ -f "$SJ_KEY" ] && IFS= read -r -d '' sj_prev <"$SJ_KEY"; } 2>/dev/null || true
   if [ -f "$SJ_CACHE" ] && [ "$sj_sig" = "$sj_prev" ]; then
     if [ $((now - $(stat -f %m "$AGENTS_ALL_CACHE" 2>/dev/null || echo 0))) -ge 10 ]; then
-      { claude agents --json --all 2>/dev/null >"$AGENTS_ALL_CACHE.tmp.$$" \
+      { claude agents --json --all $QUERY_FLAGS 2>/dev/null >"$AGENTS_ALL_CACHE.tmp.$$" \
         && mv "$AGENTS_ALL_CACHE.tmp.$$" "$AGENTS_ALL_CACHE"; } &
     fi
     cat "$SJ_CACHE"
@@ -699,7 +701,7 @@ cmd_sessions_json() {
   # entirely while the 10s cache is fresh (busy/idle may lag by that much)
   local agents_fetch="$AGENTS_CACHE.fetch.$$" agents_bgpid=""
   if [ $((now - $(stat -f %m "$AGENTS_ALL_CACHE" 2>/dev/null || echo 0))) -ge 10 ]; then
-    { claude agents --json --all 2>/dev/null || printf '[]'; } >"$agents_fetch" &
+    { claude agents --json --all $QUERY_FLAGS 2>/dev/null || printf '[]'; } >"$agents_fetch" &
     agents_bgpid=$!
   fi
   # ended tombstones exist only so the dying client's SessionEnd can't
