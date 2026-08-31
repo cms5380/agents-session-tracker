@@ -3078,7 +3078,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         ("rename", "이름 변경", kVK_ANSI_R, controlKey),
         ("pin", "핀 토글", kVK_ANSI_P, controlKey),
         ("copyresume", "resume 명령 복사", kVK_ANSI_C, controlKey),
-        ("retitle", "AI로 이름 짓기", kVK_ANSI_T, controlKey),
+        ("retitle", "AI로 이름 짓기", kVK_ANSI_R, controlKey | cmdKey),
         ("ungroup", "그룹 해제", kVK_Delete, controlKey),
     ]
 
