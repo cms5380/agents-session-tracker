@@ -331,9 +331,20 @@ final class Model: ObservableObject {
 
     func renameSession(_ sid: String, to name: String) {
         patchLocal(sid, title: .some(name.isEmpty ? nil : name))
+        let panelWasUp = panelVisible
         DispatchQueue.global().async {
             runAST(["title", sid, name.isEmpty ? "-" : name])
             self.refresh()
+            // the /rename injection can pull the terminal forward; if the user
+            // was still in the panel, take focus back here rather than having
+            // the shell launch apps to fix it
+            if panelWasUp {
+                DispatchQueue.main.async {
+                    guard self.panelVisible else { return }
+                    NSApp.activate(ignoringOtherApps: true)
+                    appDelegate?.panel.makeKeyAndOrderFront(nil)
+                }
+            }
         }
     }
 

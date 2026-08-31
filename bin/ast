@@ -1214,13 +1214,6 @@ $convo" 2>/dev/null \
       exit 1
     fi
     uuid="${iterm_id##*:}"
-    # a quiet injection must not pull iTerm forward — remember who is in front
-    # and hand focus straight back if the AppleScript raises it
-    prev_front=""
-    if [ -n "${QUIET:-}" ]; then
-      prev_front=$(lsappinfo info -only bundleid "$(lsappinfo front 2>/dev/null)" 2>/dev/null \
-        | cut -d'"' -f4 || true)
-    fi
     osascript - "$uuid" "$msg" "${QUIET:-0}" <<'APPLESCRIPT' >/dev/null 2>&1
 on run argv
   set target to item 1 of argv
@@ -1246,11 +1239,6 @@ on run argv
   end tell
 end run
 APPLESCRIPT
-    if [ -n "$prev_front" ] && [ "$prev_front" != "com.googlecode.iterm2" ]; then
-      now_front=$(lsappinfo info -only bundleid "$(lsappinfo front 2>/dev/null)" 2>/dev/null \
-        | cut -d'"' -f4 || true)
-      [ "$now_front" != "$prev_front" ] && open -g -b "$prev_front" 2>/dev/null || true
-    fi
     ;;
   run-command)
     # ast run-command <name> — execute a user command from commands.json.
