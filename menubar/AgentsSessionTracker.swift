@@ -1661,7 +1661,20 @@ struct PanelView: View {
     // "/" mode: list Claude skills, pick one → pre-filled quick prompt
     var skillQuery: String? {
         guard query.hasPrefix("/") else { return nil }
-        return String(query.dropFirst()).trimmingCharacters(in: .whitespaces).lowercased()
+        let body = String(query.dropFirst()).trimmingCharacters(in: .whitespaces)
+        return body.split(separator: " ", maxSplits: 1,
+                          omittingEmptySubsequences: false).first.map {
+            String($0).lowercased()
+        } ?? ""
+    }
+
+    // everything typed after the skill name — "/review 이 PR 봐줘" carries
+    // "이 PR 봐줘" into the new session along with the command
+    var skillArg: String {
+        guard query.hasPrefix("/") else { return "" }
+        let body = String(query.dropFirst()).trimmingCharacters(in: .whitespaces)
+        let parts = body.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespaces) : ""
     }
 
     var skillRows: [PanelRow] {
@@ -1672,8 +1685,10 @@ struct PanelView: View {
             ?? attention.first ?? viewSessions.first
         let dir = (near?.cwd ?? model.recentDirs.first ?? NSHomeDirectory())
             .replacingOccurrences(of: homeDirPath, with: "~")
+        let arg = skillArg
         return list.prefix(12).map {
-            .command("skill:\($0.name)", "/\($0.name)",
+            .command("skill:\($0.name)",
+                     arg.isEmpty ? "/\($0.name)" : "/\($0.name) \(arg)",
                      "새 세션 · \(dir)" + ($0.description.isEmpty ? "" : " — \($0.description)"))
         }
     }
@@ -1725,8 +1740,9 @@ struct PanelView: View {
             let near = viewSessions.first(where: { $0.session_id == lastSessionSid })
                 ?? attention.first ?? viewSessions.first
             let dir = near?.cwd ?? model.recentDirs.first ?? NSHomeDirectory()
+            let arg = skillArg
             model.newSession(in: dir, agent: alt ? model.otherAgent : model.mainAgent,
-                             prompt: "/\(name)")
+                             prompt: arg.isEmpty ? "/\(name)" : "/\(name) \(arg)")
             query = ""
             return
         }
