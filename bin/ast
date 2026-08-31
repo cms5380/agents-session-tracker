@@ -1104,7 +1104,7 @@ case "${1:-list}" in
 $convo" 2>/dev/null \
       | tr -d '\r"' | grep -v '^\s*$' | head -n 1 | cut -c1-40 || true)
     [ -n "$newname" ] || { echo "no title generated" >&2; exit 1; }
-    "$0" title "$rsid" "$newname"
+    "$0" title "$rsid" "$newname" --no-sync
     printf '%s\n' "$newname"
     ;;
   focused-sid)
@@ -1211,6 +1211,13 @@ $convo" 2>/dev/null \
       exit 1
     fi
     uuid="${iterm_id##*:}"
+    # a quiet injection must not pull iTerm forward — remember who is in front
+    # and hand focus straight back if the AppleScript raises it
+    prev_front=""
+    if [ -n "${QUIET:-}" ]; then
+      prev_front=$(lsappinfo info -only bundleid "$(lsappinfo front 2>/dev/null)" 2>/dev/null \
+        | cut -d'"' -f4 || true)
+    fi
     osascript - "$uuid" "$msg" "${QUIET:-0}" <<'APPLESCRIPT' >/dev/null 2>&1
 on run argv
   set target to item 1 of argv
@@ -1236,6 +1243,11 @@ on run argv
   end tell
 end run
 APPLESCRIPT
+    if [ -n "$prev_front" ] && [ "$prev_front" != "com.googlecode.iterm2" ]; then
+      now_front=$(lsappinfo info -only bundleid "$(lsappinfo front 2>/dev/null)" 2>/dev/null \
+        | cut -d'"' -f4 || true)
+      [ "$now_front" != "$prev_front" ] && open -g -b "$prev_front" 2>/dev/null || true
+    fi
     ;;
   run-command)
     # ast run-command <name> — execute a user command from commands.json.
@@ -1438,12 +1450,15 @@ APPLESCRIPT
       jq --arg sid "$2" --arg t "$3" '.[$sid] = $t' <<<"$existing" >"$NAMES_FILE.tmp"
     fi
     mv "$NAMES_FILE.tmp" "$NAMES_FILE"
+    # --no-sync keeps this purely local (ast retitle wants no terminal at all)
+    SYNC=1
+    case "${4:-}" in (--no-sync) SYNC="" ;; esac
     # sync claude's own session name too (/rename is REPL-only, so it gets
     # typed into the live tab without stealing focus). Slash commands are
     # processed locally even mid-turn, so running is fine — but not while a
     # dialog owns the keyboard (waiting = permission prompt, input = option
     # picker), where injected keys would operate the dialog.
-    if [ "$3" != "-" ]; then
+    if [ "$3" != "-" ] && [ -n "$SYNC" ]; then
       f="$STATE_DIR/$2.json"
       if [ -f "$f" ]; then
         IFS=$'\t' read -r r_agent r_pid r_status <<<"$(jq -r \
