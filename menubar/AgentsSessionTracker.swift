@@ -101,6 +101,7 @@ final class Model: ObservableObject {
     var cmdEnterInEditor: (() -> Bool)?  // ⌘↩ inside the quick-prompt bar
     var messageSelected: (() -> Void)?
     var actionKey: ((String) -> Bool)?
+    var cycleSort: (() -> Void)?
     var timer: Timer?
 
     func start() {
@@ -1582,6 +1583,26 @@ struct PanelView: View {
     @State private var sessionDropTarget: String? = nil
     @State private var draggingSessionSid: String? = nil
     private let groupLayout = "chips" // chips is the one true layout
+
+    // temporary sort axis (⌘S cycles, resets when the panel closes) — the
+    // stable default is what the list is designed around; the others are for
+    // a quick "show me by …" glance
+    enum SortMode: String, CaseIterable {
+        case standard, status, folder, name
+        var label: String {
+            switch self {
+            case .standard: return "기본"
+            case .status: return "상태별"
+            case .folder: return "폴더별"
+            case .name: return "이름순"
+            }
+        }
+        var next: SortMode {
+            let all = SortMode.allCases
+            return all[(all.firstIndex(of: self)! + 1) % all.count]
+        }
+    }
+    @State private var sortMode: SortMode = .standard
     @State private var selectedChip: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
@@ -1900,10 +1921,25 @@ struct PanelView: View {
             }
         let rest = pool.filter { !attnOrder.contains($0.status) }
             .sorted { a, b in
-                if (a.status == "gone") != (b.status == "gone") { return b.status == "gone" }
-                let oa = a.sort_order ?? Int.max
-                let ob = b.sort_order ?? Int.max
-                if oa != ob { return oa < ob }
+                switch sortMode {
+                case .status:
+                    let order = ["running", "done", "gone"]
+                    let ia = order.firstIndex(of: a.status) ?? 9
+                    let ib = order.firstIndex(of: b.status) ?? 9
+                    if ia != ib { return ia < ib }
+                case .folder:
+                    let fa = ((a.cwd ?? "") as NSString).lastPathComponent
+                    let fb = ((b.cwd ?? "") as NSString).lastPathComponent
+                    if fa != fb { return fa.localizedCaseInsensitiveCompare(fb) == .orderedAscending }
+                case .name:
+                    let na = a.title ?? "", nb = b.title ?? ""
+                    if na != nb { return na.localizedCaseInsensitiveCompare(nb) == .orderedAscending }
+                case .standard:
+                    if (a.status == "gone") != (b.status == "gone") { return b.status == "gone" }
+                    let oa = a.sort_order ?? Int.max
+                    let ob = b.sort_order ?? Int.max
+                    if oa != ob { return oa < ob }
+                }
                 return (a.updated_at ?? 0) > (b.updated_at ?? 0)
             }
         // purely visual nesting: a child renders indented under its parent —
@@ -2612,7 +2648,9 @@ struct PanelView: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     Spacer()
-                    Text("↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · Tab 완성 · / 스킬")
+                    Text(sortMode == .standard
+                         ? "↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · ⌘S 정렬 · / 스킬"
+                         : "정렬: \(sortMode.label) · ⌘S 전환 · Esc 닫으면 기본으로")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
@@ -2673,6 +2711,7 @@ struct PanelView: View {
             draggingSessionSid = nil
             sessionDropTarget = nil
             // transient editors don't survive the panel losing focus
+            sortMode = .standard
             editingCommand = false
             cmdDraftName = ""
             cmdDraftBody = ""
@@ -2685,6 +2724,11 @@ struct PanelView: View {
             model.moveSelection = { move($0) }
             model.arrowLR = { handleLR($0) }
             model.hotkeyNumber = { handleHotkey($0) }
+            model.cycleSort = {
+                sortMode = sortMode.next
+                selected = firstSelectable()
+                model.showToast("정렬: \(sortMode.label)")
+            }
             model.enterKey = { activateSelected(alt: $0) }
             model.isTextEditing = {
                 renamingSession != nil || editingCommand || messagingSession != nil
@@ -2920,6 +2964,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     }
                     if event.keyCode == 15 { // ⌘R — refresh now
                         self.model.refresh()
+                        return nil
+                    }
+                    if event.keyCode == 1 { // ⌘S — cycle the sort axis
+                        self.model.cycleSort?()
                         return nil
                     }
                     if event.keyCode == 36 { // ⌘↩ — activate with the alt agent
