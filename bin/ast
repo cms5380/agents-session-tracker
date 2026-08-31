@@ -32,7 +32,10 @@ AGENTS_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents
 # ~300ms Node boot and event-driven refreshes can arrive in bursts
 # flags for our own headless claude calls — plugins and MCP servers belong to
 # the user's interactive sessions, not to a one-shot title/grouping request
-HEADLESS_FLAGS='--strict-mcp-config --settings {"enabledPlugins":{}}'
+# sandbox off as well: claude's bash sandbox makes sandboxd preflight every
+# TCC service (media library included), and macOS attributes those asks to
+# whichever app is responsible — us. A one-shot title needs no tools at all.
+HEADLESS_FLAGS='--strict-mcp-config --disallowed-tools Bash --settings {"enabledPlugins":{},"sandbox":{"enabled":false}}'
 AGENTS_ALL_CACHE="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/agents-all-cache.json"
 # memoised sessions-json output: recomputing costs ~200ms, and between
 # events nothing it reads has changed
