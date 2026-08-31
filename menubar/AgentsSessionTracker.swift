@@ -670,6 +670,7 @@ struct SettingsView: View {
     @AppStorage("notifyWaiting") private var notifyWaiting = true
     @AppStorage("notifyInput") private var notifyInput = true
     @AppStorage("notifyFinished") private var notifyFinished = true
+    @AppStorage("notifySound") private var notifySound = true
 
     @State private var panelKeyLabels: [String: String] = [:]
 
@@ -782,6 +783,7 @@ struct SettingsView: View {
                             Toggle("승인 필요 (Needs approval)", isOn: $notifyWaiting)
                             Toggle("답변 대기 (Waiting for reply)", isOn: $notifyInput)
                             Toggle("작업 완료 (Finished)", isOn: $notifyFinished)
+                            Toggle("알림 소리", isOn: $notifySound)
                         } footer: {
                             Text("알림을 클릭하면 해당 세션의 터미널로 점프합니다. 세션을 확인하면 남은 배너는 자동으로 지워집니다.")
                                 .font(.system(size: 10.5)).foregroundStyle(.secondary)
@@ -3369,6 +3371,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             let content = UNMutableNotificationContent()
             content.title = title
             content.body = body
+            if UserDefaults.standard.object(forKey: "notifySound") as? Bool ?? true {
+                content.sound = .default
+            }
             content.userInfo = ["sid": sid]
             let req = UNNotificationRequest(identifier: sid, content: content, trigger: nil)
             UNUserNotificationCenter.current().add(req)
