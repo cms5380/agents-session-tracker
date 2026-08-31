@@ -1099,7 +1099,7 @@ case "${1:-list}" in
           | head -n 8 | cut -c1-400) || true) ;;
     esac
     [ -n "$convo" ] || { echo "empty transcript" >&2; exit 1; }
-    newname=$(CST_INTERNAL=1 claude -p "다음 대화에 어울리는 짧은 제목을 지어라. 한국어 대화면 한국어로, 20자 이내, 조사·마침표 없이 명사구로. 제목만 출력하고 다른 말은 하지 마라.
+    newname=$(CST_INTERNAL=1 claude -p --strict-mcp-config "다음 대화에 어울리는 짧은 제목을 지어라. 한국어 대화면 한국어로, 20자 이내, 조사·마침표 없이 명사구로. 제목만 출력하고 다른 말은 하지 마라.
 
 $convo" 2>/dev/null \
       | tr -d '\r"' | grep -v '^\s*$' | head -n 1 | cut -c1-40 || true)
@@ -1657,7 +1657,7 @@ APPLESCRIPT
 
 세션 목록 (id, 제목, 경로):
 $items"
-      raw=$(CST_INTERNAL=1 claude -p "$prompt" 2>/dev/null | sed 's/^```json//; s/^```//; s/```$//' | tr -d '\r' || true)
+      raw=$(CST_INTERNAL=1 claude -p --strict-mcp-config "$prompt" 2>/dev/null | sed 's/^```json//; s/^```//; s/```$//' | tr -d '\r' || true)
       if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$raw"; then
         # reuse existing group names case-insensitively — the model tends to
         # invent "ADP" next to an existing "adp"
