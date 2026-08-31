@@ -1655,6 +1655,12 @@ struct PanelView: View {
         nonmutating set { sortModeRaw = newValue.rawValue }
     }
 
+    // a running session is active now, whatever its last recorded event says —
+    // the daemon can report busy long after the last hook fired
+    func recencyTime(_ s: Session) -> Int {
+        s.status == "running" ? Int(Date().timeIntervalSince1970) : (s.updated_at ?? 0)
+    }
+
     // section heading for the active sort axis (nil = no sections)
     func sortSectionKey(_ s: Session) -> String? {
         switch sortMode {
@@ -1662,7 +1668,7 @@ struct PanelView: View {
         case .recent:
             // day buckets read better than a flat stream of timestamps
             let cal = Calendar.current
-            let d = Date(timeIntervalSince1970: TimeInterval(s.updated_at ?? 0))
+            let d = Date(timeIntervalSince1970: TimeInterval(recencyTime(s)))
             if cal.isDateInToday(d) { return "오늘" }
             if cal.isDateInYesterday(d) { return "어제" }
             let days = cal.dateComponents([.day], from: d, to: Date()).day ?? 99
@@ -2021,7 +2027,8 @@ struct PanelView: View {
             .sorted { a, b in
                 switch sortMode {
                 case .recent:
-                    break  // pure recency, handled by the shared tiebreak below
+                    let ra = recencyTime(a), rb = recencyTime(b)
+                    if ra != rb { return ra > rb }
                 case .status:
                     let order = ["running", "done", "gone"]
                     let ia = order.firstIndex(of: a.status) ?? 9
