@@ -1657,8 +1657,8 @@ struct PanelView: View {
 
     // a running session is active now, whatever its last recorded event says —
     // the daemon can report busy long after the last hook fired
-    func recencyTime(_ s: Session) -> Int {
-        s.status == "running" ? Int(Date().timeIntervalSince1970) : (s.updated_at ?? 0)
+    func recencyTime(_ s: Session) -> Double {
+        s.status == "running" ? Date().timeIntervalSince1970 : Double(s.updated_at ?? 0)
     }
 
     // section heading for the active sort axis (nil = no sections)
