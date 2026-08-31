@@ -1604,7 +1604,12 @@ struct PanelView: View {
             return all[(all.firstIndex(of: self)! + 1) % all.count]
         }
     }
-    @State private var sortMode: SortMode = .standard
+    // the chosen axis sticks across panel opens and restarts
+    @AppStorage("panelSortMode") private var sortModeRaw = SortMode.standard.rawValue
+    var sortMode: SortMode {
+        get { SortMode(rawValue: sortModeRaw) ?? .standard }
+        nonmutating set { sortModeRaw = newValue.rawValue }
+    }
 
     // section heading for the active sort axis (nil = no sections)
     func sortSectionKey(_ s: Session) -> String? {
@@ -2698,7 +2703,7 @@ struct PanelView: View {
                     Spacer()
                     Text(sortMode == .standard
                          ? "↩ 열기 · ⌘1-9 점프 · ⌃X 중지 · ⌘S 정렬 · / 스킬"
-                         : "정렬: \(sortMode.label) · ⌘S 전환 · Esc 닫으면 기본으로")
+                         : "정렬: \(sortMode.label) · ⌘S 전환")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
@@ -2759,7 +2764,6 @@ struct PanelView: View {
             draggingSessionSid = nil
             sessionDropTarget = nil
             // transient editors don't survive the panel losing focus
-            sortMode = .standard
             editingCommand = false
             cmdDraftName = ""
             cmdDraftBody = ""
