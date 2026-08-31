@@ -295,7 +295,24 @@ final class Model: ObservableObject {
         DispatchQueue.global().async { runAST(["copy-resume", s.session_id]) }
     }
 
+    // these three all persist through a subprocess and only then refresh, so
+    // the row used to sit in its old place for the whole round trip. Patch the
+    // published copy first; the refresh that follows corrects anything else.
+    private func patchLocal(_ sid: String, group: String?? = nil,
+                            title: String?? = nil, pinOrder: Int?? = nil) {
+        guard let i = sessions.firstIndex(where: { $0.session_id == sid }) else { return }
+        let s = sessions[i]
+        sessions[i] = Session(
+            session_id: s.session_id, status: s.status, cwd: s.cwd,
+            title: title ?? s.title, message: s.message, updated_at: s.updated_at,
+            bg: s.bg, kind: s.kind, group: group ?? s.group,
+            pin_order: pinOrder ?? s.pin_order, group_color: s.group_color,
+            group_order: s.group_order, sort_order: s.sort_order, agent: s.agent,
+            model: s.model, parent: s.parent, continuation: s.continuation)
+    }
+
     func assign(_ sid: String, to group: String?) {
+        patchLocal(sid, group: .some(group))
         DispatchQueue.global().async {
             runAST(["group", sid, group ?? "-"])
             self.refresh()
@@ -303,6 +320,8 @@ final class Model: ObservableObject {
     }
 
     func togglePin(_ sid: String) {
+        let pinned = sessions.first { $0.session_id == sid }?.pin_order != nil
+        patchLocal(sid, pinOrder: .some(pinned ? nil : 0))
         DispatchQueue.global().async {
             runAST(["pin", sid])
             self.refresh()
@@ -310,6 +329,7 @@ final class Model: ObservableObject {
     }
 
     func renameSession(_ sid: String, to name: String) {
+        patchLocal(sid, title: .some(name.isEmpty ? nil : name))
         DispatchQueue.global().async {
             runAST(["title", sid, name.isEmpty ? "-" : name])
             self.refresh()
