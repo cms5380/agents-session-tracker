@@ -1603,6 +1603,22 @@ struct PanelView: View {
         }
     }
     @State private var sortMode: SortMode = .standard
+
+    // section heading for the active sort axis (nil = no sections)
+    func sortSectionKey(_ s: Session) -> String? {
+        switch sortMode {
+        case .standard, .name: return nil
+        case .status:
+            switch s.status {
+            case "running": return "실행 중"
+            case "gone": return "종료됨"
+            default: return "유휴"
+            }
+        case .folder:
+            let f = ((s.cwd ?? "") as NSString).lastPathComponent
+            return f.isEmpty ? "기타" : f
+        }
+    }
     @State private var selectedChip: String? = nil
     @State private var pendingGroups: [String] = []
     @State private var expanded: Set<String> = []
@@ -1982,7 +1998,14 @@ struct PanelView: View {
         }
         if !rest.isEmpty {
             if !attn.isEmpty || !pinnedSessions.isEmpty { out.append(.label("SESSIONS")) }
+            // while a temporary sort is active the list is already ordered by
+            // that key — label each run so the boundaries are visible
+            var lastKey: String? = nil
             for m in rest where !nestedIds.contains(m.session_id) {
+                if let key = sortSectionKey(m), key != lastKey {
+                    out.append(.label(key))
+                    lastKey = key
+                }
                 appendWithChildren(m)
             }
         }
