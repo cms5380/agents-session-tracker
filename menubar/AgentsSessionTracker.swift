@@ -1633,10 +1633,11 @@ struct PanelView: View {
     // stable default is what the list is designed around; the others are for
     // a quick "show me by …" glance
     enum SortMode: String, CaseIterable {
-        case standard, status, folder, name
+        case standard, recent, status, folder, name
         var label: String {
             switch self {
             case .standard: return "기본"
+            case .recent: return "최근순"
             case .status: return "상태별"
             case .folder: return "폴더별"
             case .name: return "이름순"
@@ -1658,6 +1659,14 @@ struct PanelView: View {
     func sortSectionKey(_ s: Session) -> String? {
         switch sortMode {
         case .standard, .name: return nil
+        case .recent:
+            // day buckets read better than a flat stream of timestamps
+            let cal = Calendar.current
+            let d = Date(timeIntervalSince1970: TimeInterval(s.updated_at ?? 0))
+            if cal.isDateInToday(d) { return "오늘" }
+            if cal.isDateInYesterday(d) { return "어제" }
+            let days = cal.dateComponents([.day], from: d, to: Date()).day ?? 99
+            return days <= 7 ? "지난 7일" : "그 이전"
         case .status:
             switch s.status {
             case "running": return "실행 중"
@@ -2011,6 +2020,8 @@ struct PanelView: View {
         let rest = pool.filter { !attnOrder.contains($0.status) }
             .sorted { a, b in
                 switch sortMode {
+                case .recent:
+                    break  // pure recency, handled by the shared tiebreak below
                 case .status:
                     let order = ["running", "done", "gone"]
                     let ia = order.firstIndex(of: a.status) ?? 9
