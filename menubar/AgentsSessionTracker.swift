@@ -153,6 +153,28 @@ final class Model: ObservableObject {
             let parsed = (try? JSONDecoder().decode([Session].self, from: Data(out.utf8))) ?? []
             DispatchQueue.main.async {
                 self.refreshing = false
+                for s in parsed {
+                    if let p = self.pendingTitles[s.session_id], p == s.title {
+                        self.pendingTitles.removeValue(forKey: s.session_id)
+                    }
+                    if let p = self.pendingGroups[s.session_id], p == s.group {
+                        self.pendingGroups.removeValue(forKey: s.session_id)
+                    }
+                }
+                let merged = self.pendingTitles.isEmpty && self.pendingGroups.isEmpty
+                    ? parsed : parsed.map { s -> Session in
+                        let t = self.pendingTitles[s.session_id] ?? s.title
+                        let g = self.pendingGroups[s.session_id] ?? s.group
+                        guard t != s.title || g != s.group else { return s }
+                        return Session(
+                            session_id: s.session_id, status: s.status, cwd: s.cwd,
+                            title: t, message: s.message, updated_at: s.updated_at,
+                            bg: s.bg, kind: s.kind, group: g, pin_order: s.pin_order,
+                            group_color: s.group_color, group_order: s.group_order,
+                            sort_order: s.sort_order, agent: s.agent, model: s.model,
+                            parent: s.parent, continuation: s.continuation)
+                    }
+                let parsed = merged
                 if parsed != self.sessions { self.sessions = parsed }
                 appDelegate?.updateTitle(sessions: parsed)
                 // notify on transitions into states that need the user
@@ -299,8 +321,16 @@ final class Model: ObservableObject {
     // these three all persist through a subprocess and only then refresh, so
     // the row used to sit in its old place for the whole round trip. Patch the
     // published copy first; the refresh that follows corrects anything else.
+    // a refresh that started before the edit lands after it and would put the
+    // old value back for one beat — keep the local answer until the data
+    // catches up
+    @Published var pendingTitles: [String: String?] = [:]
+    @Published var pendingGroups: [String: String?] = [:]
+
     private func patchLocal(_ sid: String, group: String?? = nil,
                             title: String?? = nil, pinOrder: Int?? = nil) {
+        if let t = title { pendingTitles[sid] = t }
+        if let g = group { pendingGroups[sid] = g }
         guard let i = sessions.firstIndex(where: { $0.session_id == sid }) else { return }
         let s = sessions[i]
         sessions[i] = Session(
