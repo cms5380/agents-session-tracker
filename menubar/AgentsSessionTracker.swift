@@ -3719,8 +3719,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     self.statusItem.button?.image = fr[self.menubarFrameIdx]
                 }
             }
-                }
-            }
         }
         if let st = active, let fr = menubarStatusFrames[st] {
             button.image = fr[menubarFrameIdx % fr.count]
