@@ -1170,6 +1170,15 @@ $convo" 2>/dev/null \
     "$0" title "$rsid" "$newname" --no-sync
     printf '%s\n' "$newname"
     ;;
+  counts)
+    # ast counts — just what the menubar badge needs. Reuses the memoised
+    # session list, so a hit is one stat plus a jq.
+    cmd_sessions_json 2>/dev/null \
+      | jq -c '{running: ([.[] | select(.status == "running")] | length),
+                waiting: ([.[] | select(.status == "waiting")] | length),
+                attention: ([.[] | select(.status == "waiting" or .status == "input"
+                                          or .status == "finished")] | length)}'
+    ;;
   focused-sid)
     # session id of the terminal tab the user is actually looking at, if any.
     # Notifications use this to stay quiet about a session already on screen.

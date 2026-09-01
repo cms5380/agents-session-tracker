@@ -108,13 +108,27 @@ final class Model: ObservableObject {
         refresh()
         loadSkills()
         startDirWatch()
+        startAttentionWatch()
         // hooks push changes through the kqueue watcher, so the timer is only
         // a fallback for what leaves no file event: process death, decay
         var tick = 0
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            guard let self else { return }
+            guard let self, !self.displayAsleep else { return }
             tick += 1
             if (self.panelVisible && tick % 3 == 0) || tick % 12 == 0 { self.refresh() }
+        }
+        // a sleeping display has nobody to show anything to: stop the poll and
+        // the menubar animation until it comes back
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(forName: NSWorkspace.screensDidSleepNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.displayAsleep = true
+            appDelegate?.suspendMenubarAnimation()
+        }
+        nc.addObserver(forName: NSWorkspace.screensDidWakeNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.displayAsleep = false
+            self?.refresh()
         }
     }
 
@@ -123,6 +137,50 @@ final class Model: ObservableObject {
     private var dirWatchFD: Int32 = -1
     private var dirWatchSource: DispatchSourceFileSystemObject?
     private var watchDebounce: DispatchWorkItem?
+    private var lastWatchRefresh = Date.distantPast
+    // one small append-only file, read directly — no subprocess, no list
+    private var attnFD: Int32 = -1
+    private var attnSource: DispatchSourceFileSystemObject?
+    private var attnOffset: UInt64 = 0
+    private var attnPath: String {
+        homeDirPath + "/.local/state/claude-session-tracker/attention.jsonl"
+    }
+    struct AttnEvent: Decodable { let sid: String; let status: String; let title: String }
+    private func startAttentionWatch() {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: attnPath) { fm.createFile(atPath: attnPath, contents: nil) }
+        attnOffset = (try? fm.attributesOfItem(atPath: attnPath)[.size] as? UInt64) as? UInt64 ?? 0
+        attnFD = open(attnPath, O_EVTONLY)
+        guard attnFD >= 0 else { return }
+        let src = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: attnFD, eventMask: [.write, .extend], queue: .main)
+        src.setEventHandler { [weak self] in self?.drainAttention() }
+        let fd = attnFD
+        src.setCancelHandler { close(fd) }
+        src.resume()
+        attnSource = src
+    }
+    private func drainAttention() {
+        guard let h = FileHandle(forReadingAtPath: attnPath) else { return }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        if size < attnOffset { attnOffset = 0 }   // truncated
+        guard size > attnOffset else { return }
+        try? h.seek(toOffset: attnOffset)
+        let data = (try? h.readToEnd()) ?? Data()
+        attnOffset = size
+        // the log grows forever otherwise; it is only ever read forward
+        if size > 64_000 {
+            try? Data().write(to: URL(fileURLWithPath: attnPath))
+            attnOffset = 0
+        }
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+            guard let e = try? JSONDecoder().decode(AttnEvent.self, from: Data(line.utf8))
+            else { continue }
+            appDelegate?.notify(sid: e.sid, status: e.status, title: e.title)
+        }
+    }
+
     private func startDirWatch() {
         let dir = NSHomeDirectory() + "/.local/state/claude-session-tracker/sessions"
         dirWatchFD = open(dir, O_EVTONLY)
@@ -131,7 +189,12 @@ final class Model: ObservableObject {
             fileDescriptor: dirWatchFD, eventMask: .write, queue: .main)
         src.setEventHandler { [weak self] in
             guard let self else { return }
-            // hook bursts (one write per tool call) collapse into one refresh
+            // hook bursts (one write per tool call) collapse into one refresh.
+            // With the panel hidden only the menubar badge depends on this, so
+            // events coalesce into a much wider window — an agent working
+            // through a task writes a record every couple of seconds and each
+            // refresh costs a subprocess.
+            guard self.panelVisible else { return }
             self.watchDebounce?.cancel()
             let w = DispatchWorkItem { [weak self] in self?.refresh() }
             self.watchDebounce = w
@@ -143,6 +206,7 @@ final class Model: ObservableObject {
         dirWatchSource = src
     }
 
+    var displayAsleep = false
     private var prevStatuses: [String: String] = [:]
     private var firstLoad = true
 
@@ -177,16 +241,12 @@ final class Model: ObservableObject {
                 let parsed = merged
                 if parsed != self.sessions { self.sessions = parsed }
                 appDelegate?.updateTitle(sessions: parsed)
-                // notify on transitions into states that need the user
+                // turn starts still come from here; the banners themselves are
+                // driven by the hook's attention log (see startAttentionWatch)
                 if !self.firstLoad {
-                    for s in parsed {
-                        let old = self.prevStatuses[s.session_id]
-                        if old != s.status, s.status == "running" {
-                            appDelegate?.runStart[s.session_id] = Date()
-                        }
-                        if old != s.status, ["waiting", "finished", "input"].contains(s.status) {
-                            appDelegate?.notify(session: s)
-                        }
+                    for s in parsed where self.prevStatuses[s.session_id] != s.status
+                        && s.status == "running" {
+                        appDelegate?.runStart[s.session_id] = Date()
                     }
                 }
                 self.firstLoad = false
@@ -593,7 +653,10 @@ var customIconExists: Bool {
     FileManager.default.fileExists(atPath: customIconGIFPath)
         || FileManager.default.fileExists(atPath: customIconPath)
 }
-var _customIconCache: (key: String, frames: [NSImage])? = nil
+// keyed by path+mtime+height: the menubar and the panel ask for different
+// sizes, and a single slot made them evict each other — re-decoding every
+// frame of the gif on each alternation
+var _customIconCache: [String: [NSImage]] = [:]
 
 func resizedIcon(_ img: NSImage, height: CGFloat) -> NSImage {
     let w = img.size.height > 0 ? img.size.width * height / img.size.height : height
@@ -613,12 +676,12 @@ func customIconFrames(height: CGFloat) -> [NSImage] {
     let mtime = ((try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?
         .timeIntervalSince1970 ?? 0
     let key = "\(path):\(mtime):\(height)"
-    if let c = _customIconCache, c.key == key { return c.frames }
+    if let cached = _customIconCache[key] { return cached }
     var frames: [NSImage] = []
     if let img = NSImage(contentsOfFile: path) {
         if let rep = img.representations.first as? NSBitmapImageRep,
            let n = rep.value(forProperty: .frameCount) as? Int, n > 1 {
-            for i in 0..<min(n, 24) {
+            for i in 0..<min(n, 12) {
                 rep.setProperty(.currentFrame, withValue: i)
                 if let data = rep.representation(using: .png, properties: [:]),
                    let f = NSImage(data: data) {
@@ -629,7 +692,8 @@ func customIconFrames(height: CGFloat) -> [NSImage] {
             frames = [resizedIcon(img, height: height)]
         }
     }
-    _customIconCache = (key, frames)
+    if _customIconCache.count > 6 { _customIconCache.removeAll() }
+    _customIconCache[key] = frames
     return frames
 }
 
@@ -712,6 +776,7 @@ struct SettingsView: View {
     @AppStorage("notifyInput") private var notifyInput = true
     @AppStorage("notifyFinished") private var notifyFinished = true
     @AppStorage("notifySound") private var notifySound = true
+    @AppStorage("menubarAnimation") private var menubarAnimation = "attention"
 
     @State private var panelKeyLabels: [String: String] = [:]
 
@@ -864,6 +929,12 @@ struct SettingsView: View {
                                 Text("codex").tag("codex")
                             }
                             .pickerStyle(.segmented)
+                            Picker("메뉴바 애니메이션", selection: $menubarAnimation) {
+                                Text("어텐션만").tag("attention")
+                                Text("항상").tag("always")
+                                Text("끄기").tag("off")
+                            }
+                            .pickerStyle(.segmented)
                             Picker("기본 터미널", selection: $defaultTerminal) {
                                 Text("자동").tag("")
                                 Text("iTerm2").tag("iterm")
@@ -902,6 +973,9 @@ struct SettingsView: View {
 struct PixelAppIcon: View {
     var choice: String = "claude"
     var pixel: CGFloat = 3
+    // a ticking TimelineView in an ordered-out window still lays the whole
+    // view tree out every frame — hold a still image while the panel is hidden
+    var animate: Bool = true
     @Environment(\.displayScale) private var scale
     var body: some View {
         let px = quantizedPixel(pixel, scale: scale)
@@ -913,7 +987,7 @@ struct PixelAppIcon: View {
                 .frame(height: px * 10)
         } else if choice == "custom", !customIconFrames(height: px * 10).isEmpty {
             let frames = customIconFrames(height: px * 10)
-            if frames.count > 1 {
+            if frames.count > 1, animate {
                 TimelineView(.periodic(from: .now, by: 0.12)) { tl in
                     let i = Int(tl.date.timeIntervalSince1970 / 0.12) % frames.count
                     Image(nsImage: frames[i])
@@ -2574,7 +2648,8 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                PixelAppIcon(choice: model.iconChoiceKey, pixel: 2.2)
+                PixelAppIcon(choice: model.iconChoiceKey, pixel: 2.2,
+                             animate: model.panelVisible)
                 TextField("Search…  (/ skills)", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
@@ -3398,23 +3473,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // start-of-turn timestamps, for the "(4m 32s)" tag on completion
     var runStart: [String: Date] = [:]
 
-    func notify(session s: Session) {
+    func notify(sid: String, status: String, title rawTitle: String) {
         guard notificationsReady else { return }
         let d = UserDefaults.standard
-        switch s.status {
+        switch status {
         case "waiting": guard d.object(forKey: "notifyWaiting") as? Bool ?? true else { return }
         case "input": guard d.object(forKey: "notifyInput") as? Bool ?? true else { return }
         default: guard d.object(forKey: "notifyFinished") as? Bool ?? true else { return }
         }
-        var title = s.title ?? ((s.cwd ?? "session") as NSString).lastPathComponent
-        if s.status == "finished", let start = runStart[s.session_id] {
+        var title = rawTitle.isEmpty ? "session" : rawTitle
+        if status == "finished", let start = runStart[sid] {
             let e = Int(Date().timeIntervalSince(start))
             title += e >= 60 ? " (\(e / 60)m \(e % 60)s)" : " (\(e)s)"
         }
         // body = the session state, plain English. "input" is refined by
         // what the session actually asked for (question / plan / reply)
-        let sid = s.session_id
-        let status = s.status
         DispatchQueue.global().async {
             // the idle ping ("waiting for your reply") is redundant when the
             // session's own tab is already on screen. Approvals and finished
@@ -3601,12 +3674,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         p.makeKeyAndOrderFront(nil)
     }
 
+    func suspendMenubarAnimation() {
+        menubarTimer?.invalidate()
+        menubarTimer = nil
+        menubarStatus = nil
+        statusItem.button?.image = menubarStaticImage
+    }
+
     func updateTitle(sessions: [Session]) {
+        if model.displayAsleep { return }
         lastSessions = sessions
         guard let button = statusItem.button else { return }
         // most attention-worthy state wins: approval ask > running
         let statuses = Set(sessions.map(\.status))
-        let active = ["waiting", "running"].first { statuses.contains($0) }
+        var active: String? = ["waiting", "running"].first { statuses.contains($0) }
+        // 항상 / 어텐션만 / 끄기 — a running turn can last minutes, so animating
+        // it is the expensive default; approvals are brief and worth noticing
+        let policy = UserDefaults.standard.string(forKey: "menubarAnimation") ?? "attention"
+        if policy == "off" || (policy == "attention" && active == "running") { active = nil }
         if active != menubarStatus {
             menubarStatus = active
             menubarFrameIdx = 0
@@ -3614,8 +3699,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             menubarTimer = nil
             if let st = active, let frames = menubarStatusFrames[st], frames.count > 1 {
                 // many-frame custom GIFs play fast; two-frame mascots stay calm
-                let interval = frames.count > 2 ? 0.12
-                    : ["running": 0.35, "waiting": 0.4, "input": 0.6][st] ?? 0.4
+                let interval = frames.count > 2 ? 0.35
+                    : ["running": 0.6, "waiting": 0.5, "input": 0.6][st] ?? 0.5
                 menubarTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
                     guard let self, let st = self.menubarStatus,
                           let fr = self.menubarStatusFrames[st] else { return }
@@ -3629,10 +3714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         } else {
             button.image = menubarStaticImage
         }
-        // only sessions blocked on an approval (permission prompt)
-        let n = sessions.filter { $0.status == "waiting" }.count
-        button.title = n > 0 ? " \(n)" : ""
-        button.imagePosition = .imageLeading
+        button.title = ""
     }
 }
 
