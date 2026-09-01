@@ -3186,7 +3186,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // whoever had focus before the panel opened — Esc/⌥Space return it
     var previousApp: NSRunningApplication?
 
+    // panel state on disk: lets `ast` (and a human debugging battery use)
+    // tell which regime the app is in without asking the UI
+    func notePanelState(_ visible: Bool) {
+        let p = homeDirPath + "/.local/state/claude-session-tracker/panel-visible"
+        try? (visible ? "1" : "0").write(toFile: p, atomically: true, encoding: .utf8)
+    }
+
     func showPanel() {
+        notePanelState(true)
         model.invalidateFolderCache()
         previousApp = NSWorkspace.shared.frontmostApplication
         model.refresh()
@@ -3208,6 +3216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func hidePanel(restoreFocus: Bool = false,
                    caller: String = #function, line: Int = #line) {
+        notePanelState(false)
         dbg("hidePanel from \(caller):\(line) restoreFocus=\(restoreFocus)")
         panel.orderOut(nil)
         model.panelVisible = false
@@ -3698,7 +3707,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             menubarTimer?.invalidate()
             menubarTimer = nil
             if let st = active, let frames = menubarStatusFrames[st], frames.count > 1 {
-                // many-frame custom GIFs play fast; two-frame mascots stay calm
+                // a status-item redraw per frame is the whole cost of this
+                // animation (~3% of a core), so it stays slow and, by default,
+                // only runs for states that actually want the user
                 let interval = frames.count > 2 ? 0.35
                     : ["running": 0.6, "waiting": 0.5, "input": 0.6][st] ?? 0.5
                 menubarTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -3706,6 +3717,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                           let fr = self.menubarStatusFrames[st] else { return }
                     self.menubarFrameIdx = (self.menubarFrameIdx + 1) % fr.count
                     self.statusItem.button?.image = fr[self.menubarFrameIdx]
+                }
+            }
                 }
             }
         }
