@@ -135,11 +135,17 @@ if [ "$agent" = "codex" ]; then
   done
 fi
 
-# headless one-shot runs (claude -p …, batch harnesses, CI) have no terminal
-# to jump to and nothing to resume — they would only churn the list
+# headless one-shot runs have no terminal of their own: claude -p and
+# codex exec inherit the launching session's tab, so a row for them would
+# only jump back to their parent. Skills that shell out to another agent
+# (e.g. /create-pr calling codex) land here.
 owner_cmd=$(ps -o command= -p "$owner_pid" 2>/dev/null || true)
+# match the binary itself, not any ancestor that merely mentions these words
+# in its command line (a shell running this very script would qualify)
 case "$owner_cmd" in
-  (*" -p "*|*" --print "*|*" -p"|*" --print") exit 0 ;;
+  (*/claude" -p "*|*/claude" --print "*|*/claude" -p"|*/claude" --print") exit 0 ;;
+  (claude" -p "*|claude" --print "*) exit 0 ;;
+  (*/codex" exec "*|codex" exec "*) exit 0 ;;
 esac
 
 # tty of the agent process — Terminal.app fallback driver uses it
