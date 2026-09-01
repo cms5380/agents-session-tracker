@@ -840,11 +840,23 @@ cmd_sessions_json() {
             is_continuation="true"
           fi
         fi
+        # a background hand-off leaves no marker at all: no logicalParentUuid,
+        # no forkParentSessionId, no --fork-session in the cmdline. But the
+        # copied history is the evidence — seed the owner scan with our own
+        # first message uuid and the original session still owns it.
+        if [ -z "$lp" ] && [ -z "$parent_sid" ]; then
+          lp=$(head -n 60 "$tpath0" 2>/dev/null \
+            | jq -r 'select(.type=="user" or .type=="assistant") | .uuid // empty' 2>/dev/null \
+            | head -n 1 || true)
+        fi
         if [ -n "$lp" ]; then
           # forks copy the parent's full history (and rewrite sessionId on
           # every line), so the uuid appears in every sibling fork too — the
           # true parent is the OLDEST session whose transcript contains it
-          local best_started=""
+          # a parent is necessarily older: without this the two halves of a
+          # background hand-off name each other and the pair cycles
+          local best_started="" my_started
+          my_started=$(jq -r '.started_at // 9999999999' "$STATE_DIR/$sid.json" 2>/dev/null || echo 9999999999)
           for pf in "$STATE_DIR"/*.json; do
             [ -e "$pf" ] || continue
             psid=$(basename "$pf" .json)
@@ -854,6 +866,7 @@ cmd_sessions_json() {
             grep -m1 -q "\"uuid\":\"$lp\"" "$pt" 2>/dev/null || continue
             local pstarted
             pstarted=$(jq -r '.started_at // 9999999999' "$pf" 2>/dev/null)
+            [ "$pstarted" -lt "$my_started" ] 2>/dev/null || continue
             if [ -z "$best_started" ] || [ "$pstarted" -lt "$best_started" ] 2>/dev/null; then
               best_started="$pstarted"
               parent_sid="$psid"
