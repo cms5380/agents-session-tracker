@@ -216,4 +216,17 @@ jq -n \
     } | with_entries(select(.value != ""))))
   ' >"$file.tmp.$$" && mv "$file.tmp.$$" "$file"
 
+# the menubar app watches this one small file instead of re-reading every
+# record: a state worth a banner is appended here as it happens, so nothing
+# has to poll while the panel is closed
+case "$status" in
+  (waiting|input|finished)
+    ATTN="${CST_STATE_DIR:-$HOME/.local/state/claude-session-tracker}/attention.jsonl"
+    jq -c -n --arg sid "$session_id" --arg st "$status" \
+      --arg title "$(jq -r '.title // ""' "$file" 2>/dev/null)" \
+      --arg ts "$(date +%s)" \
+      '{sid: $sid, status: $st, title: $title, ts: ($ts | tonumber)}' >>"$ATTN" 2>/dev/null || true
+    ;;
+esac
+
 exit 0
