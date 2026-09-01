@@ -800,7 +800,7 @@ struct SettingsView: View {
                                              refresh: { appDelegate?.currentAttentionLabel() ?? "" })
                             }
                         }
-                        Section("패널 안 — 세션 액션 (변경 가능)") {
+                        Section("패널 안 — 변경 가능") {
                             ForEach(AppDelegate.panelActions, id: \.id) { a in
                                 LabeledContent(a.label) {
                                     hotkeyButton(a.id,
@@ -813,8 +813,9 @@ struct SettingsView: View {
                         }
                         Section("패널 안 — 고정") {
                             keyRow("↩ / ⌘1–9", "세션 점프 · ⌘↩ 대체 동작")
+                            keyRow("↑↓ / ←→", "이동 · 그룹 칩 전환")
                             keyRow("Tab", "퀵 프롬프트 · 커맨드 자동완성")
-                            keyRow("/", "스킬 팔레트 · ⌘R 새로고침")
+                            keyRow("/ · Esc", "스킬 팔레트 · 닫기")
                         }
                     }
                     .formStyle(.grouped)
@@ -3073,9 +3074,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 if carbon != 0 {
                     for a in Self.panelActions {
                         let b = self.panelBinding(a.id)
-                        if Int(event.keyCode) == b.code, carbon == b.mods,
-                           self.model.actionKey?(a.id) == true {
-                            return nil
+                        guard Int(event.keyCode) == b.code, carbon == b.mods else { continue }
+                        switch a.id {
+                        case "refresh": self.model.refresh(); return nil
+                        case "sort": self.model.cycleSort?(); return nil
+                        default:
+                            if self.model.actionKey?(a.id) == true { return nil }
                         }
                     }
                 }
@@ -3085,14 +3089,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                                                  22: 6, 26: 7, 28: 8, 25: 9]
                     if let n = digits[event.keyCode] {
                         self.model.hotkeyNumber?(n)
-                        return nil
-                    }
-                    if event.keyCode == 15 { // ⌘R — refresh now
-                        self.model.refresh()
-                        return nil
-                    }
-                    if event.keyCode == 1 { // ⌘S — cycle the sort axis
-                        self.model.cycleSort?()
                         return nil
                     }
                     if event.keyCode == 36 { // ⌘↩ — activate with the alt agent
@@ -3272,6 +3268,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         ("pin", "핀 토글", kVK_ANSI_P, controlKey),
         ("copyresume", "resume 명령 복사", kVK_ANSI_C, controlKey),
         ("retitle", "AI로 이름 짓기", kVK_ANSI_R, controlKey | cmdKey),
+        ("refresh", "새로고침", kVK_ANSI_R, cmdKey),
+        ("sort", "정렬 전환", kVK_ANSI_S, cmdKey),
         ("ungroup", "그룹 해제", kVK_Delete, controlKey),
     ]
 
