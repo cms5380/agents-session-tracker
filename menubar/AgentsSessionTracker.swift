@@ -1284,6 +1284,17 @@ func statusColor(_ status: String) -> Color {
     }
 }
 
+// the age capsule sits on the row's own grey background, so the grey status
+// colours washed out — idle and ended rows borrow the label colour instead
+func ageTint(_ status: String) -> (fg: Color, bg: Color) {
+    switch status {
+    case "waiting", "input", "running", "finished":
+        return (statusColor(status).opacity(0.9), statusColor(status).opacity(0.13))
+    default:
+        return (Color.secondary, Color.primary.opacity(0.09))
+    }
+}
+
 // "claude-opus-5" → "opus 5", "gpt-5.6-sol" → "gpt-5.6", "claude-haiku-4-5-…" → "haiku 4.5"
 func shortModel(_ model: String?) -> String {
     guard var m = model, !m.isEmpty, !m.hasPrefix("<") else { return "" }
@@ -1422,11 +1433,12 @@ struct SessionRow: View {
             } else if s.status != "running", !ageString(s.updated_at).isEmpty {
                 // running rows skip the age capsule — it reflects the last
                 // hook event, which reads oddly mid-turn ("running · 41m")
+                let tint = ageTint(s.status)
                 Text(ageString(s.updated_at))
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Capsule().fill(statusColor(s.status).opacity(0.13)))
-                    .foregroundStyle(statusColor(s.status).opacity(0.85))
+                    .background(Capsule().fill(tint.bg))
+                    .foregroundStyle(tint.fg)
             }
             if hovering {
                 if s.status != "archived", onMessage != nil {
