@@ -428,6 +428,22 @@ out=$("$CST" sessions-json 2>/dev/null)
 t "T9C asset write invalidates cache" "캐시그룹" \
   "$(jq -r '.[] | select(.session_id=="sc-one") | .group' <<<"$out")"
 
+# T9E-T9F: a hand-off hides the superseded half, and gives it back once used
+sleep 600 </dev/null >/dev/null 2>&1 & LIVE4=$!
+mkrec "ho-old" "{status:\"done\", owner:\"client\", pid:$LIVE4, title:\"old\", parent_resolved:true, started_at: $((NOW - 500))}"
+mkrec "ho-new" "{status:\"done\", owner:\"client\", pid:$LIVE4, title:\"new\", parent_resolved:true, continues:\"ho-old\", started_at: $((NOW - 100))}"
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9E hand-off hides the older half" "" \
+  "$(jq -r '.[] | select(.session_id=="ho-old") | .session_id' <<<"$out")"
+t "T9E2 the continuation stays"       "ho-new" \
+  "$(jq -r '.[] | select(.session_id=="ho-new") | .session_id' <<<"$out")"
+mkrec "ho-old" "{status:\"done\", owner:\"client\", pid:$LIVE4, title:\"old\", parent_resolved:true, started_at: $((NOW - 500)), updated_at: $((NOW + 60))}"
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9F used again → shown again" "ho-old" \
+  "$(jq -r '.[] | select(.session_id=="ho-old") | .session_id' <<<"$out")"
+kill "$LIVE4" 2>/dev/null
+rm -f "$STATE/ho-old.json" "$STATE/ho-new.json"
+
 # T9D: focused-sid stays quiet when no terminal is frontmost
 out=$("$CST" focused-sid 2>/dev/null)
 t "T9D focused-sid safe without a terminal" "" "$out"
