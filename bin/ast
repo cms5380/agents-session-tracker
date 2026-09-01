@@ -760,6 +760,11 @@ cmd_sessions_json() {
   fork_pairs=$(ps -axo command= 2>/dev/null \
     | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*--fork-session.*--resume [^ ]*\/\([0-9a-f-]\{36\}\)\.jsonl.*/\2:\1/p' || true)
 
+  # older:newer for hand-offs recorded by the lineage pass
+  local handoff_pairs
+  handoff_pairs=$(jq -r '.[] | select((.continues // "") != "") | "\(.continues):\(.session_id)"' \
+    <<<"$all_records" 2>/dev/null || true)
+
   # one jq per record extracts every scalar the shell logic needs — the
   # previous field-at-a-time reads were ~8 jq spawns per record and dominated
   # the whole command's latency. Tab-separated with "-" standing in for empty
@@ -785,6 +790,18 @@ cmd_sessions_json() {
     if [ "$presolved" = "-" ]; then presolved=""; fi
     if [ "$status" = "-" ]; then status=""; fi
     if [ "$tpath" = "-" ]; then tpath=""; fi
+    # a hand-off (background transfer) is one conversation with two ids: hide
+    # the half that was left behind, unless it has been used since
+    case "$handoff_pairs" in
+      (*"$sid:"*)
+        ho_new=$(printf '%s\n' "$handoff_pairs" | sed -n "s/^$sid://p" | head -1)
+        if [ -n "$ho_new" ] && [ -f "$STATE_DIR/$ho_new.json" ]; then
+          IFS=$'\t' read -r ho_upd ho_pid <<<"$(jq -r '[(.updated_at // 0 | tostring), (.pid // 0 | tostring)] | @tsv' "$STATE_DIR/$ho_new.json")"
+          if kill -0 "$ho_pid" 2>/dev/null && [ "$ho_upd" -ge "$tu" ] 2>/dev/null; then
+            continue
+          fi
+        fi ;;
+    esac
     # conversation continued by a live fork → show the fork, not the parent
     # (unless the parent has newer activity again)
     local fork_sid=""
@@ -808,6 +825,7 @@ cmd_sessions_json() {
     # the record; spare-pool forks have no --fork-session cmdline to read
     if [ -z "$presolved" ] && [ "$agent" = "claude" ]; then
       local tpath0 lp parent_sid pf psid pt is_continuation jstate jparent
+      local handoff_seed="" handoff_from="" scan_uuid=""
       is_continuation=""
       tpath0="$tpath"
       parent_sid=""
@@ -841,15 +859,18 @@ cmd_sessions_json() {
           fi
         fi
         # a background hand-off leaves no marker at all: no logicalParentUuid,
-        # no forkParentSessionId, no --fork-session in the cmdline. But the
-        # copied history is the evidence — seed the owner scan with our own
-        # first message uuid and the original session still owns it.
+        # no forkParentSessionId, no --fork-session in the cmdline. The copied
+        # history is the evidence — our own first message uuid still belongs to
+        # the session we were handed off from. That is not a fork (no branch,
+        # no second conversation), so it is recorded as a hand-off and the
+        # superseded row is dropped rather than nested.
         if [ -z "$lp" ] && [ -z "$parent_sid" ]; then
-          lp=$(head -n 60 "$tpath0" 2>/dev/null \
+          handoff_seed=$(head -n 60 "$tpath0" 2>/dev/null \
             | jq -r 'select(.type=="user" or .type=="assistant") | .uuid // empty' 2>/dev/null \
             | head -n 1 || true)
         fi
-        if [ -n "$lp" ]; then
+        if [ -n "$lp" ] || [ -n "${handoff_seed:-}" ]; then
+          scan_uuid="${lp:-$handoff_seed}"
           # forks copy the parent's full history (and rewrite sessionId on
           # every line), so the uuid appears in every sibling fork too — the
           # true parent is the OLDEST session whose transcript contains it
@@ -863,13 +884,13 @@ cmd_sessions_json() {
             [ "$psid" = "$sid" ] && continue
             pt=$(jq -r '.transcript_path // ""' "$pf" 2>/dev/null)
             [ -n "$pt" ] && [ -f "$pt" ] || continue
-            grep -m1 -q "\"uuid\":\"$lp\"" "$pt" 2>/dev/null || continue
+            grep -m1 -q "\"uuid\":\"$scan_uuid\"" "$pt" 2>/dev/null || continue
             local pstarted
             pstarted=$(jq -r '.started_at // 9999999999' "$pf" 2>/dev/null)
             [ "$pstarted" -lt "$my_started" ] 2>/dev/null || continue
             if [ -z "$best_started" ] || [ "$pstarted" -lt "$best_started" ] 2>/dev/null; then
               best_started="$pstarted"
-              parent_sid="$psid"
+              if [ -n "$lp" ]; then parent_sid="$psid"; else handoff_from="$psid"; fi
             fi
           done
         fi
@@ -879,8 +900,10 @@ cmd_sessions_json() {
       rf0="$STATE_DIR/$sid.json"
       if [ -f "$rf0" ]; then
         jq --arg p "$parent_sid" --arg cont "${is_continuation:-false}" \
+           --arg ho "${handoff_from:-}" \
           '.parent_resolved = true
            | if $p != "" then .parent = $p else . end
+           | if $ho != "" then .continues = $ho else . end
            | if $cont == "true" then .continuation = true else . end' \
           "$rf0" >"$rf0.tmp.$$" && mv "$rf0.tmp.$$" "$rf0" && rflag="R"
       fi
@@ -962,7 +985,13 @@ cmd_sessions_json() {
     | jq -R -s -c 'split("\n") | map(select(length > 0))' 2>/dev/null || echo '[]')
   ended_json=$(jq -c '[.[] | select(.status == "ended") | .session_id]' \
     <<<"$all_records" 2>/dev/null || echo '[]')
-  hidden_json=$(jq -c -n --argjson a "$fork_parents_json" --argjson b "$ended_json" '$a + $b')
+  # a hand-off predecessor we just dropped must not come back as a synthesized
+  # daemon row — the same resurrection trap fork parents and ended rows hit
+  local handoff_from_json
+  handoff_from_json=$(jq -c '[.[] | select((.continues // "") != "") | .continues]' \
+    <<<"$all_records" 2>/dev/null || echo '[]')
+  hidden_json=$(jq -c -n --argjson a "$fork_parents_json" --argjson b "$ended_json" \
+    --argjson c "$handoff_from_json" '$a + $b + $c')
   extra=$(jq -c --argjson tracked_src "$sessions" --argjson forked "$hidden_json" '
     ([$tracked_src[].session_id]) as $tracked |
     [.[] | select([.sessionId] | inside($tracked) | not)
@@ -1043,8 +1072,14 @@ cmd_sessions_json() {
     && mv "$SJ_WATCH.tmp.$$" "$SJ_WATCH" 2>/dev/null || rm -f "$SJ_WATCH.tmp.$$"
   printf '%s\n' "$sj_out" >"$SJ_CACHE.tmp.$$" 2>/dev/null \
     && mv "$SJ_CACHE.tmp.$$" "$SJ_CACHE" 2>/dev/null || rm -f "$SJ_CACHE.tmp.$$"
-  sj_signature "$now" >"$SJ_KEY.tmp.$$" 2>/dev/null \
-    && mv "$SJ_KEY.tmp.$$" "$SJ_KEY" 2>/dev/null || rm -f "$SJ_KEY.tmp.$$"
+  # a pass that resolved lineage rewrote records after building this output,
+  # so the output is already one step behind — leave no key and let the next
+  # call recompute with what was just learned
+  case "$decisions" in
+    (*"$(printf '\t')R"*) rm -f "$SJ_KEY" 2>/dev/null || true ;;
+    (*) sj_signature "$now" >"$SJ_KEY.tmp.$$" 2>/dev/null \
+          && mv "$SJ_KEY.tmp.$$" "$SJ_KEY" 2>/dev/null || rm -f "$SJ_KEY.tmp.$$" ;;
+  esac
 }
 
 case "${1:-list}" in
