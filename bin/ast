@@ -792,16 +792,23 @@ cmd_sessions_json() {
     if [ "$tpath" = "-" ]; then tpath=""; fi
     # a hand-off (background transfer) is one conversation with two ids: hide
     # the half that was left behind, unless it has been used since
+    ho_other=""
     case "$handoff_pairs" in
-      (*"$sid:"*)
-        ho_new=$(printf '%s\n' "$handoff_pairs" | sed -n "s/^$sid://p" | head -1)
-        if [ -n "$ho_new" ] && [ -f "$STATE_DIR/$ho_new.json" ]; then
-          IFS=$'\t' read -r ho_upd ho_pid <<<"$(jq -r '[(.updated_at // 0 | tostring), (.pid // 0 | tostring)] | @tsv' "$STATE_DIR/$ho_new.json")"
-          if kill -0 "$ho_pid" 2>/dev/null && [ "$ho_upd" -ge "$tu" ] 2>/dev/null; then
-            continue
-          fi
-        fi ;;
+      (*"$sid:"*) ho_other=$(printf '%s\n' "$handoff_pairs" | sed -n "s/^$sid://p" | head -1) ;;
+      (*":$sid"*) ho_other=$(printf '%s\n' "$handoff_pairs" | sed -n "s/:$sid\$//p" | head -1) ;;
     esac
+    # whichever half was used last is the live conversation; the other is a
+    # leftover id for the same thread. Ties go to the continuation.
+    if [ -n "$ho_other" ] && [ -f "$STATE_DIR/$ho_other.json" ]; then
+      IFS=$'\t' read -r ho_upd ho_pid <<<"$(jq -r '[(.updated_at // 0 | tostring), (.pid // 0 | tostring)] | @tsv' "$STATE_DIR/$ho_other.json")"
+      if kill -0 "$ho_pid" 2>/dev/null && [ "$ho_upd" -gt "$tu" ] 2>/dev/null; then
+        continue
+      fi
+      # equal timestamps: the predecessor yields
+      case "$handoff_pairs" in
+        (*"$sid:"*) [ "$ho_upd" -eq "$tu" ] 2>/dev/null && kill -0 "$ho_pid" 2>/dev/null && continue ;;
+      esac
+    fi
     # conversation continued by a live fork → show the fork, not the parent
     # (unless the parent has newer activity again)
     local fork_sid=""

@@ -441,6 +441,8 @@ mkrec "ho-old" "{status:\"done\", owner:\"client\", pid:$LIVE4, title:\"old\", p
 out=$("$CST" sessions-json 2>/dev/null)
 t "T9F used again → shown again" "ho-old" \
   "$(jq -r '.[] | select(.session_id=="ho-old") | .session_id' <<<"$out")"
+t "T9G and the stale continuation steps aside" "" \
+  "$(jq -r '.[] | select(.session_id=="ho-new") | .session_id' <<<"$out")"
 kill "$LIVE4" 2>/dev/null
 rm -f "$STATE/ho-old.json" "$STATE/ho-new.json"
 
