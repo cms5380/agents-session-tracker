@@ -1608,10 +1608,26 @@ APPLESCRIPT
     if [ -n "$f" ] && [ "$rowner" = "client" ] && [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
       # client-owned live session (claude or codex) — record-driven
       rstatus=$(jq -r '.status // empty' "$f")
-      iterm_id=$(jq -r '.terminal.iterm_session_id // empty' "$f")
+      # Esc goes to the tab this process is *actually* sitting in. The
+      # recorded handle can be stale — a session handed to the background
+      # leaves its old tab behind, and a fork often gets attached there, so
+      # trusting the record would interrupt the child instead of the parent.
+      iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
+        | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
       if [ -z "$iterm_id" ]; then
-        iterm_id=$(ps eww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n' \
-          | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+        rec_it=$(jq -r '.terminal.iterm_session_id // empty' "$f")
+        # only reuse the recorded tab when nothing else lives there now
+        if [ -n "$rec_it" ]; then
+          uuid_only="${rec_it##*:}"
+          other=""
+          for q in $(pgrep -f 'claude|codex' 2>/dev/null); do
+            [ "$q" = "$cpid" ] && continue
+            qit=$(ps eww -o command= -p "$q" 2>/dev/null | tr ' ' '\n' \
+              | grep -m1 '^ITERM_SESSION_ID=' | cut -d= -f2- || true)
+            case "$qit" in (*"$uuid_only"*) other="$q"; break ;; esac
+          done
+          [ -z "$other" ] && iterm_id="$rec_it"
+        fi
       fi
       if [ "$rstatus" = "running" ] || [ "$rstatus" = "waiting" ]; then
         # running turn: inject Esc (stop-generation) — a SIGINT signal
