@@ -1010,7 +1010,9 @@ cmd_sessions_json() {
                else "done" end),
       cwd: .cwd,
       title: (if (.name // "") != "" then .name else null end),
-      updated_at: 0,
+      # the daemon only reports startedAt (ms) — without it these rows landed
+      # at epoch 0 and sank to the bottom of every time-ordered view
+      updated_at: ((.startedAt // 0) / 1000 | floor),
       bg: true,
       kind: .kind
     }]' <<<"$agents_all")
