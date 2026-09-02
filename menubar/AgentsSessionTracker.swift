@@ -2166,10 +2166,11 @@ struct PanelView: View {
             (rest + pinnedSessions).map { ($0.session_id, $0) })
         func displayParent(_ s: Session) -> String? {
             guard let p = s.parent else { return nil }
-            // a live child must not be buried under a parent that has moved
-            // on: nesting drags it along wherever the parent sorts, so a
-            // running fork under a stopped parent read as stopped too
-            if let par = byId[p] {
+            // where position encodes time or state, nesting lies: the child
+            // rides along to wherever the parent sorted, so a running fork
+            // under a stopped parent lands among the ended rows. The
+            // structural axes (기본·폴더별·이름순) keep the family together.
+            if sortMode == .recent || sortMode == .status, let par = byId[p] {
                 if par.status == "gone", s.status != "gone" { return nil }
                 if s.status == "running", par.status != "running" { return nil }
             }
