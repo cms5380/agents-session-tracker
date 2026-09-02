@@ -446,6 +446,29 @@ t "T9G and the stale continuation steps aside" "" \
 kill "$LIVE4" 2>/dev/null
 rm -f "$STATE/ho-old.json" "$STATE/ho-new.json"
 
+# T9H-T9I: the daemon's richer background state wins over stale hook state
+rm -f "$STATE"/*.json "$CST_STATE_DIR/agents-all-cache.json" "$CST_STATE_DIR/sessions-cache.key"
+cat >"$SANDBOX/.local/bin/claude" <<'EOF'
+#!/bin/bash
+if [ "${1:-}" = "agents" ]; then
+  echo '[{"sessionId":"st-blocked","kind":"background","state":"blocked","name":"b"},
+        {"sessionId":"st-stopped","kind":"background","state":"stopped","name":"s"}]'
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$SANDBOX/.local/bin/claude"
+sleep 600 </dev/null >/dev/null 2>&1 & LIVE5=$!
+mkrec "st-blocked" "{status:\"running\", owner:\"client\", pid:$LIVE5, title:\"b\", parent_resolved:true}"
+mkrec "st-stopped" "{status:\"running\", owner:\"client\", pid:$LIVE5, title:\"s\", parent_resolved:true}"
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9H blocked job needs attention" "waiting" \
+  "$(jq -r '.[] | select(.session_id=="st-blocked") | .status' <<<"$out")"
+t "T9I stopped job stops running"   "done" \
+  "$(jq -r '.[] | select(.session_id=="st-stopped") | .status' <<<"$out")"
+kill "$LIVE5" 2>/dev/null
+rm -f "$STATE/st-blocked.json" "$STATE/st-stopped.json" "$CST_STATE_DIR/agents-all-cache.json"
+
 # T9D: focused-sid stays quiet when no terminal is frontmost
 out=$("$CST" focused-sid 2>/dev/null)
 t "T9D focused-sid safe without a terminal" "" "$out"
