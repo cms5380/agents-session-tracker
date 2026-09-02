@@ -658,14 +658,33 @@ var customIconExists: Bool {
 // frame of the gif on each alternation
 var _customIconCache: [String: [NSImage]] = [:]
 
+// lockFocus hands back a window-backed cached rep, and the status item pays
+// for that on every redraw — a plain bitmap makes each frame a blit
+func bitmapImage(size: NSSize, _ draw: () -> Void) -> NSImage {
+    let scale = NSScreen.main?.backingScaleFactor ?? 2
+    guard let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: max(1, Int(size.width * scale)), pixelsHigh: max(1, Int(size.height * scale)),
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+        return NSImage(size: size)
+    }
+    rep.size = size
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    draw()
+    NSGraphicsContext.restoreGraphicsState()
+    let out = NSImage(size: size)
+    out.addRepresentation(rep)
+    return out
+}
+
 func resizedIcon(_ img: NSImage, height: CGFloat) -> NSImage {
     let w = img.size.height > 0 ? img.size.width * height / img.size.height : height
-    let out = NSImage(size: NSSize(width: w, height: height))
-    out.lockFocus()
-    img.draw(in: NSRect(x: 0, y: 0, width: w, height: height),
-             from: .zero, operation: .sourceOver, fraction: 1)
-    out.unlockFocus()
-    return out
+    return bitmapImage(size: NSSize(width: w, height: height)) {
+        img.draw(in: NSRect(x: 0, y: 0, width: w, height: height),
+                 from: .zero, operation: .sourceOver, fraction: 1)
+    }
 }
 
 // all frames at the given height: n frames for a GIF, 1 for a PNG, [] if none
@@ -3563,12 +3582,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         if menubarAgent == "emoji", !savedEmojiIcon.isEmpty {
             let img = emojiNSImage(savedEmojiIcon, height: 16)
             func offsetFrame(_ dy: CGFloat) -> NSImage {
-                let out = NSImage(size: NSSize(width: img.size.width, height: 20))
-                out.lockFocus()
-                img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: img.size.height),
-                         from: .zero, operation: .sourceOver, fraction: 1)
-                out.unlockFocus()
-                return out
+                bitmapImage(size: NSSize(width: img.size.width, height: 20)) {
+                    img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: img.size.height),
+                             from: .zero, operation: .sourceOver, fraction: 1)
+                }
             }
             menubarStaticImage = offsetFrame(1)
             menubarStatusFrames = [
@@ -3587,12 +3604,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             }
             if let img = frames.first {
                 func offsetFrame(_ dy: CGFloat) -> NSImage {
-                    let out = NSImage(size: NSSize(width: img.size.width, height: 18))
-                    out.lockFocus()
-                    img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: 16),
-                             from: .zero, operation: .sourceOver, fraction: 1)
-                    out.unlockFocus()
-                    return out
+                    bitmapImage(size: NSSize(width: img.size.width, height: 18)) {
+                        img.draw(in: NSRect(x: 0, y: dy, width: img.size.width, height: 16),
+                                 from: .zero, operation: .sourceOver, fraction: 1)
+                    }
                 }
                 menubarStaticImage = offsetFrame(1)
                 menubarStatusFrames = [
@@ -3606,12 +3621,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         if menubarAgent == "codex" {
             if let img = Optional(codexLogoNSImage(size: 17)) {
                 func offsetFrame(_ dy: CGFloat) -> NSImage {
-                    let out = NSImage(size: NSSize(width: 17, height: 19))
-                    out.lockFocus()
-                    img.draw(in: NSRect(x: 0, y: dy, width: 17, height: 17),
-                             from: .zero, operation: .sourceOver, fraction: 1)
-                    out.unlockFocus()
-                    return out
+                    bitmapImage(size: NSSize(width: 17, height: 19)) {
+                        img.draw(in: NSRect(x: 0, y: dy, width: 17, height: 17),
+                                 from: .zero, operation: .sourceOver, fraction: 1)
+                    }
                 }
                 menubarStaticImage = offsetFrame(1)
                 menubarStatusFrames = [
