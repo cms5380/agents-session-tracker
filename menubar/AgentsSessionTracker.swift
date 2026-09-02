@@ -2162,8 +2162,17 @@ struct PanelView: View {
             .union(pinnedSessions.map { $0.session_id })
         // a hidden parent (dead original) is represented by its live
         // continuation — nest siblings under that row instead
+        let byId = Dictionary(uniqueKeysWithValues:
+            (rest + pinnedSessions).map { ($0.session_id, $0) })
         func displayParent(_ s: Session) -> String? {
             guard let p = s.parent else { return nil }
+            // a live child must not be buried under a parent that has moved
+            // on: nesting drags it along wherever the parent sorts, so a
+            // running fork under a stopped parent read as stopped too
+            if let par = byId[p] {
+                if par.status == "gone", s.status != "gone" { return nil }
+                if s.status == "running", par.status != "running" { return nil }
+            }
             if parentIds.contains(p) { return p }
             if let proxy = (rest + pinnedSessions).first(where: {
                 $0.session_id != s.session_id && $0.parent == p && ($0.continuation ?? false)
