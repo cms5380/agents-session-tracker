@@ -469,6 +469,14 @@ t "T9I stopped job stops running"   "done" \
 kill "$LIVE5" 2>/dev/null
 rm -f "$STATE/st-blocked.json" "$STATE/st-stopped.json" "$CST_STATE_DIR/agents-all-cache.json"
 
+# T9J: a dead session whose transcript is gone cannot be resumed → drop it
+mkrec "no-transcript" '{status:"gone", owner:"client", pid:99999, title:"t", parent_resolved:true, transcript_path:"/tmp/does-not-exist.jsonl"}'
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9J unresumable session dropped" "" \
+  "$(jq -r '.[] | select(.session_id=="no-transcript") | .session_id' <<<"$out")"
+t "T9K and its record is deleted"   "" \
+  "$([ -f "$STATE/no-transcript.json" ] && echo yes)"
+
 # T9D: focused-sid stays quiet when no terminal is frontmost
 out=$("$CST" focused-sid 2>/dev/null)
 t "T9D focused-sid safe without a terminal" "" "$out"
