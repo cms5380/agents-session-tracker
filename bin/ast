@@ -308,8 +308,29 @@ resume_command() { # $1=session id → the agent-appropriate resume command
   printf 'claude --resume %s' "$1"
 }
 
+# claude only resumes from the directory the conversation belongs to —
+# anywhere else it silently starts a NEW session whose first message is the
+# "conversation is from a different directory" error, which then shows up as
+# a junk row. The transcript knows the right directory; it wins over the
+# record, whose cwd can be stale or inherited from a fork.
+resume_cwd() { # $1=session id, $2=fallback
+  local sid="$1" rcwd="${2:-$HOME}" t tc=""
+  t=$(ls "$HOME/.claude/projects"/*/"$sid.jsonl" 2>/dev/null | head -1 || true)
+  if [ -n "$t" ]; then
+    # the first lines are metadata with no cwd at all, so scan for the first
+    # one that has it — grep stops at the match, no need to parse the file
+    tc=$(grep -m1 -o '"cwd":"[^"]*"' "$t" 2>/dev/null | cut -d'"' -f4 || true)
+  else
+    t=$(ls "$HOME/.codex/sessions"/*/*/*/rollout-*-"$sid".jsonl 2>/dev/null | head -1 || true)
+    [ -n "$t" ] && tc=$(head -n 2 "$t" 2>/dev/null \
+      | jq -r 'select(.type=="session_meta") | .payload.cwd // empty' 2>/dev/null | grep -m1 . || true)
+  fi
+  [ -n "$tc" ] && [ -d "$tc" ] && rcwd="$tc"
+  printf '%s' "$rcwd"
+}
+
 open_resume_tab() { # $1=cwd, $2=session id
-  open_tab_with "cd $(shquote "$1") && $(resume_command "$2")"
+  open_tab_with "cd $(shquote "$(resume_cwd "$2" "$1")") && $(resume_command "$2")"
 }
 
 # The hub: one persistent terminal tab running the 'claude agents' dashboard.
@@ -1391,6 +1412,11 @@ APPLESCRIPT
     else
       open_tab_with "cd $(shquote "$ns_dir") && $agent_cmd"
     fi
+    ;;
+  resume-cwd)
+    # ast resume-cwd <session-id> [fallback] — the directory a resume needs
+    [ $# -ge 2 ] || { echo "usage: ast resume-cwd <session-id> [fallback]" >&2; exit 1; }
+    resume_cwd "$2" "${3:-$HOME}"; echo
     ;;
   resume-tab)
     # ast resume-tab <session-id> <cwd> — reopen an archived session in a tab

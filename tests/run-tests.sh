@@ -490,6 +490,17 @@ t "T9M a fresh ask still shouts" "waiting" \
 kill "$LIVE6" 2>/dev/null
 rm -f "$STATE/stale-wait.json" "$STATE/fresh-wait.json"
 
+# T9N: a resume tab opens in the directory the transcript belongs to
+mkdir -p "$SANDBOX/.claude/projects/-tmp-elsewhere" "/tmp/qa-resume"
+RT="$SANDBOX/.claude/projects/-tmp-elsewhere/rt-0001.jsonl"
+printf '{"type":"user","cwd":"/tmp/qa-resume","message":{"content":"hi"}}\n' >"$RT"
+mkrec "rt-0001" '{status:"gone", owner:"client", pid:99999, title:"r", parent_resolved:true, cwd:"/tmp/wrong-dir", transcript_path:"'"$RT"'"}'
+t "T9N resume uses the transcript's directory" "/tmp/qa-resume" \
+  "$("$CST" resume-cwd rt-0001 /tmp/wrong-dir 2>/dev/null)"
+t "T9O unknown session keeps the fallback" "/tmp/wrong-dir" \
+  "$("$CST" resume-cwd no-such-session /tmp/wrong-dir 2>/dev/null)"
+rm -f "$STATE/rt-0001.json"
+
 # T9D: focused-sid stays quiet when no terminal is frontmost
 out=$("$CST" focused-sid 2>/dev/null)
 t "T9D focused-sid safe without a terminal" "" "$out"
