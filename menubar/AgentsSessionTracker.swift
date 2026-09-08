@@ -374,6 +374,14 @@ final class Model: ObservableObject {
         }
     }
 
+    // jump attaches to whatever is already running; this starts the
+    // conversation again in a tab of its own (claude --resume / codex resume)
+    func resumeInNewTab(_ s: Session) {
+        appDelegate?.hidePanel()
+        let cwd = s.cwd ?? NSHomeDirectory()
+        DispatchQueue.global().async { runAST(["resume-tab", s.session_id, cwd]) }
+    }
+
     func copyResume(_ s: Session) {
         DispatchQueue.global().async { runAST(["copy-resume", s.session_id]) }
     }
@@ -1575,6 +1583,7 @@ struct SessionRow: View {
             Button("Copy resume command  ⌃C") { model.copyResume(s) }
             if s.group != nil {
                 Button("Remove from group  ⌃⌫") { model.assign(s.session_id, to: nil) }
+                Button("Resume in a new tab  ⌘↩") { model.resumeInNewTab(s) }
             }
             if s.status == "gone" {
                 Divider()
@@ -2365,7 +2374,7 @@ struct PanelView: View {
     func activateSelected(alt: Bool = false) {
         if case .label? = rows[safe: selected] { selected = firstSelectable() }
         switch rows[safe: selected] ?? rows.first {
-        case .session(let s, _): model.jump(s)
+        case .session(let s, _): alt ? model.resumeInNewTab(s) : model.jump(s)
         case .header(let g): toggleExpand(g)
         case .command(let id, _, _): runPanelCommand(id, alt: alt)
         case .label, .dropzone, nil: break
