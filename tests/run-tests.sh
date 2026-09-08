@@ -477,6 +477,30 @@ t "T9J unresumable session dropped" "" \
 t "T9K and its record is deleted"   "" \
   "$([ -f "$STATE/no-transcript.json" ] && echo yes)"
 
+# T9L: an ask nobody answered for 30 minutes stops shouting
+sleep 600 </dev/null >/dev/null 2>&1 & LIVE6=$!
+mkrec "stale-wait" "{status:\"waiting\", owner:\"client\", pid:$LIVE6, title:\"w\", parent_resolved:true, updated_at: $((NOW - 3600))}"
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9L stale attention decays" "done" \
+  "$(jq -r '.[] | select(.session_id=="stale-wait") | .status' <<<"$out")"
+mkrec "fresh-wait" "{status:\"waiting\", owner:\"client\", pid:$LIVE6, title:\"w2\", parent_resolved:true}"
+out=$("$CST" sessions-json 2>/dev/null)
+t "T9M a fresh ask still shouts" "waiting" \
+  "$(jq -r '.[] | select(.session_id=="fresh-wait") | .status' <<<"$out")"
+kill "$LIVE6" 2>/dev/null
+rm -f "$STATE/stale-wait.json" "$STATE/fresh-wait.json"
+
+# T9N: a resume tab opens in the directory the transcript belongs to
+mkdir -p "$SANDBOX/.claude/projects/-tmp-elsewhere" "/tmp/qa-resume"
+RT="$SANDBOX/.claude/projects/-tmp-elsewhere/rt-0001.jsonl"
+printf '{"type":"user","cwd":"/tmp/qa-resume","message":{"content":"hi"}}\n' >"$RT"
+mkrec "rt-0001" '{status:"gone", owner:"client", pid:99999, title:"r", parent_resolved:true, cwd:"/tmp/wrong-dir", transcript_path:"'"$RT"'"}'
+t "T9N resume uses the transcript's directory" "/tmp/qa-resume" \
+  "$("$CST" resume-cwd rt-0001 /tmp/wrong-dir 2>/dev/null)"
+t "T9O unknown session keeps the fallback" "/tmp/wrong-dir" \
+  "$("$CST" resume-cwd no-such-session /tmp/wrong-dir 2>/dev/null)"
+rm -f "$STATE/rt-0001.json"
+
 # T9D: focused-sid stays quiet when no terminal is frontmost
 out=$("$CST" focused-sid 2>/dev/null)
 t "T9D focused-sid safe without a terminal" "" "$out"
