@@ -1084,8 +1084,11 @@ cmd_sessions_json() {
         elif ($a.status // "") == "busy" and (.status | IN("waiting", "finished", "input") | not) then .status = "running"
         elif ($a.status // "") == "idle" and .status == "running" then .status = "done"
         else . end
-      # unacknowledged results / input waits decay to idle after 30 minutes
-      | if (.status | IN("finished", "input")) and (now - (.updated_at // 0)) > 1800 then .status = "done" else . end)
+      # an ask nobody answered stops being urgent: after 30 quiet minutes any
+      # attention state sinks back into the list. A live prompt re-raises it
+      # the moment the session does anything again.
+      | if (.status | IN("finished", "input", "waiting")) and (now - (.updated_at // 0)) > 1800
+        then .status = "done" else . end)
     | . + $extra
     | map(. + {group: ($groups[.session_id]
                        # a fork inherits its parent'\''s group unless assigned
