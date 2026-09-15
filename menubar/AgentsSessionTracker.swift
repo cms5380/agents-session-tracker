@@ -224,16 +224,24 @@ final class Model: ObservableObject {
                     if let p = self.pendingGroups[s.session_id], p == s.group {
                         self.pendingGroups.removeValue(forKey: s.session_id)
                     }
+                    // a pin lands in the list at whatever slot the file gave
+                    // it, so "is it pinned at all" is the thing to compare
+                    if let p = self.pendingPins[s.session_id],
+                       (p == nil) == (s.pin_order == nil) {
+                        self.pendingPins.removeValue(forKey: s.session_id)
+                    }
                 }
                 let merged = self.pendingTitles.isEmpty && self.pendingGroups.isEmpty
+                    && self.pendingPins.isEmpty
                     ? parsed : parsed.map { s -> Session in
                         let t = self.pendingTitles[s.session_id] ?? s.title
                         let g = self.pendingGroups[s.session_id] ?? s.group
-                        guard t != s.title || g != s.group else { return s }
+                        let pin = self.pendingPins[s.session_id] ?? s.pin_order
+                        guard t != s.title || g != s.group || pin != s.pin_order else { return s }
                         return Session(
                             session_id: s.session_id, status: s.status, cwd: s.cwd,
                             title: t, message: s.message, updated_at: s.updated_at,
-                            bg: s.bg, kind: s.kind, group: g, pin_order: s.pin_order,
+                            bg: s.bg, kind: s.kind, group: g, pin_order: pin,
                             group_color: s.group_color, group_order: s.group_order,
                             sort_order: s.sort_order, agent: s.agent, model: s.model,
                             parent: s.parent, continuation: s.continuation)
@@ -394,11 +402,13 @@ final class Model: ObservableObject {
     // catches up
     @Published var pendingTitles: [String: String?] = [:]
     @Published var pendingGroups: [String: String?] = [:]
+    @Published var pendingPins: [String: Int?] = [:]
 
     private func patchLocal(_ sid: String, group: String?? = nil,
                             title: String?? = nil, pinOrder: Int?? = nil) {
         if let t = title { pendingTitles[sid] = t }
         if let g = group { pendingGroups[sid] = g }
+        if let p = pinOrder { pendingPins[sid] = p }
         guard let i = sessions.firstIndex(where: { $0.session_id == sid }) else { return }
         let s = sessions[i]
         sessions[i] = Session(
