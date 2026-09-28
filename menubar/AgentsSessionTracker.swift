@@ -177,7 +177,11 @@ final class Model: ObservableObject {
         for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
             guard let e = try? JSONDecoder().decode(AttnEvent.self, from: Data(line.utf8))
             else { continue }
-            appDelegate?.notify(sid: e.sid, status: e.status, title: e.title)
+            // the hook logs the first-prompt title; a rename (⌃R, ⌃⌘R,
+            // /rename) only exists in the list the app already holds
+            let shown = sessions.first { $0.session_id == e.sid }?.title
+            appDelegate?.notify(sid: e.sid, status: e.status,
+                                title: (shown?.isEmpty == false ? shown! : e.title))
         }
     }
 
