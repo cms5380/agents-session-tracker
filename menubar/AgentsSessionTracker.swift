@@ -2687,6 +2687,21 @@ struct PanelView: View {
                 DispatchQueue.main.async { draggingGroup = g }
                 return NSItemProvider(object: "group:\(g)" as NSString)
             }
+            // chips are the only group UI in this layout, so they carry the
+            // rename / colour / dissolve actions the old headers had
+            .contextMenu {
+                Button("Rename group") { renaming = g; renameText = g }
+                Menu("Color") {
+                    ForEach(["orange", "blue", "green", "purple", "pink", "gray"], id: \.self) { c in
+                        Button(c) { model.setGroupColor(g, c) }
+                    }
+                }
+                Divider()
+                Button("Dissolve group") {
+                    if selectedChip == g { selectedChip = nil }
+                    model.dissolveGroup(g)
+                }
+            }
         } else {
             body
         }
