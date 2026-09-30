@@ -305,7 +305,16 @@ resume_command() { # $1=session id → the agent-appropriate resume command
     # archived codex session — no tracker record, but a rollout exists
     printf 'codex resume %s' "$1"; return
   fi
-  printf 'claude --resume %s' "$1"
+  # carry the name the user gave it in the panel, so the new tab's title and
+  # claude's own name match the list. Only a chosen name (⌃R / ⌃⌘R) — the
+  # first-prompt fallback is a sentence, not a name.
+  local nm
+  nm=$(jq -r --arg s "$1" '.[$s] // empty' "$NAMES_FILE" 2>/dev/null || true)
+  if [ -n "$nm" ]; then
+    printf 'claude --resume %s -n %s' "$1" "$(shquote "$nm")"
+  else
+    printf 'claude --resume %s' "$1"
+  fi
 }
 
 # claude only resumes from the directory the conversation belongs to —
@@ -1412,6 +1421,11 @@ APPLESCRIPT
     else
       open_tab_with "cd $(shquote "$ns_dir") && $agent_cmd"
     fi
+    ;;
+  resume-cmd)
+    # ast resume-cmd <session-id> — the command a resume tab would run
+    [ $# -ge 2 ] || { echo "usage: ast resume-cmd <session-id>" >&2; exit 1; }
+    resume_command "$2"; echo
     ;;
   resume-cwd)
     # ast resume-cwd <session-id> [fallback] — the directory a resume needs
