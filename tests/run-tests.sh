@@ -501,6 +501,14 @@ t "T9O unknown session keeps the fallback" "/tmp/wrong-dir" \
   "$("$CST" resume-cwd no-such-session /tmp/wrong-dir 2>/dev/null)"
 rm -f "$STATE/rt-0001.json"
 
+# T9P-T9Q: a resume carries the panel name, and only a chosen one
+echo '{"nm-yes":"내 세션"}' >"$CST_STATE_DIR/names.json"
+t "T9P resume passes the chosen name" "claude --resume nm-yes -n '내 세션'" \
+  "$("$CST" resume-cmd nm-yes 2>/dev/null)"
+t "T9Q no chosen name, no -n"        "claude --resume nm-no" \
+  "$("$CST" resume-cmd nm-no 2>/dev/null)"
+echo '{}' >"$CST_STATE_DIR/names.json"
+
 # T9D: focused-sid stays quiet when no terminal is frontmost
 out=$("$CST" focused-sid 2>/dev/null)
 t "T9D focused-sid safe without a terminal" "" "$out"
